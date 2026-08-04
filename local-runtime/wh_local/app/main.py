@@ -16,6 +16,7 @@ from ..data_collection import (
 from ..data_collection.provider import OneBound1688Provider
 from ..db import init_db
 from ..modules.basic_settings.router import create_router as create_basic_settings_router
+from ..modules.help_diagnostics.router import create_router as create_help_diagnostics_router
 from ..session import Actor, actor_from_authorization
 
 
@@ -24,21 +25,16 @@ def _resolve_daily_selection_actor(
 ) -> dict[str, str]:
     """Bridge host Actor to the data-collection module's DailySelectionActor.
 
-    In local dev mode the actor id doubles as workspace id.  When the full
+    In local dev mode the actor id doubles as workspace id. When the full
     customer-auth framework lands this should map the platform workspace_id.
     """
     if actor is None:
-        # Fallback when called outside a request context (e.g. health check).
         return {"actor_id": "local-demo", "workspace_id": "local-demo"}
     return {"actor_id": actor.id, "workspace_id": actor.id}
 
 
 def _provider_config(actor: DailySelectionActor) -> Mapping[str, Any]:
-    """Resolve OneBound 1688 credentials from environment variables.
-
-    All secrets stay in the process environment; they are never written to
-    the response or persisted outside the provider instance.
-    """
+    """Resolve OneBound 1688 credentials from environment variables."""
     api_key = os.environ.get("DAILY_SELECTION_ONEBOUND_API_KEY", "")
     api_secret = os.environ.get("DAILY_SELECTION_ONEBOUND_API_SECRET", "")
     base_url = os.environ.get(
@@ -46,7 +42,9 @@ def _provider_config(actor: DailySelectionActor) -> Mapping[str, Any]:
         "https://api.onebound.cn/1688/api_call.php",
     )
     enabled = os.environ.get("DAILY_SELECTION_ONEBOUND_ENABLED", "").strip().lower() in (
-        "1", "true", "yes",
+        "1",
+        "true",
+        "yes",
     )
     return {
         "api_key": api_key,
@@ -74,7 +72,8 @@ def create_app(database_path: Path | None = None) -> FastAPI:
 
     # 基础设置模块
     app.include_router(create_basic_settings_router(db_path))
-
+    # 使用手册模块
+    app.include_router(create_help_diagnostics_router(db_path))
     # 每日选品数据采集模块
     _register_data_collection(app, db_path)
 
