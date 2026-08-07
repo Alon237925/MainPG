@@ -1,0 +1,593 @@
+import { useEffect, useMemo, useRef, useState, type ClipboardEvent } from "react";
+
+import {
+  deleteProfitActivityProducts,
+  downloadProfitActivityCatalog,
+  listProfitActivityProducts,
+  loadProductImage,
+  updateProductImage,
+  updateProfitActivityProduct,
+} from "../api/profitActivityApi";
+import type { ProfitActivityProduct, ProfitActivityScope, ProfitActivitySite } from "../types/products";
+import { ProductSourceDrawer } from "../components/ProductSourceDrawer";
+import "../styles/profitActivityProducts.css";
+
+const siteLabels: Record<ProfitActivitySite, string> = { US: "美区", CO: "哥伦比亚", EC: "厄瓜多尔" };
+const allSites: ProfitActivitySite[] = ["US", "CO", "EC"];
+const pageSizeOptions = [10, 50, 100] as const;
+
+const productKey = (item: ProfitActivityProduct) => `${item.site || item.site_code || "US"}-${item.skc}`;
+
+export function ProfitActivityProductsPage() {
+  const [sites, setSites] = useState<Set<ProfitActivitySite>>(() => new Set(allSites));
+  const masterRef = useRef<HTMLInputElement>(null);
+  const [scope, setScope] = useState<ProfitActivityScope>("default");
+  const [querySkcs, setQuerySkcs] = useState("");
+  const [products, setProducts] = useState<ProfitActivityProduct[]>([]);
+  const [selected, setSelected] = useState<Set<string>>(new Set());
+  const [page, setPage] = useState(1);
+  const [pageSize, setPageSize] = useState<(typeof pageSizeOptions)[number]>(10);
+  // 页码输入框的草稿值：允许用户自由填写，回车/失焦/点“跳转”才生效
+  const [pageInput, setPageInput] = useState("1");
+  const [busy, setBusy] = useState("");
+  const [message, setMessage] = useState("输入 SKC 查询；留空展示数据库中当前权限可见产品。");
+  const [activeProduct, setActiveProduct] = useState<ProfitActivityProduct | null>(null);
+  const [previewImage, setPreviewImage] = useState<{ url: string; label: string } | null>(null);
+  const [edits, setEdits] = useState<Record<string, Partial<Record<"selling_price" | "cost_price" | "weight_kg", string>>>>({});
+  const tableWrapRef = useRef<HTMLDivElement>(null);
+  // 首次进入时若备注列过宽会自动收敛列宽；用户手动拖动后不再自动调整。
+  const columnAdjusted = useRef(false);
+
+  const dirtyCount = Object.keys(edits).length;
+
+  const totalPages = Math.max(1, Math.ceil(products.length / pageSize));
+  const safePage = Math.min(page, totalPages);
+  const pageProducts = useMemo(
+    () => products.slice((safePage - 1) * pageSize, safePage * pageSize),
+    [products, safePage, pageSize],
+  );
+  const selectedCount = selected.size;
+  const pageSelected = pageProducts.length > 0 && pageProducts.every((item) => selected.has(productKey(item)));
+  const allSitesChecked = sites.size === allSites.length;
+  const someSitesChecked = sites.size > 0 && !allSitesChecked;
+
+  useEffect(() => {
+    if (masterRef.current) masterRef.current.indeterminate = someSitesChecked;
+  }, [someSitesChecked]);
+
+  // 页码输入框与当前页保持同步（翻页按钮/查询刷新后同步显示），但不打断输入过程
+  useEffect(() => {
+    setPageInput(String(safePage));
+  }, [safePage]);
+
+  const goToPageInput = () => {
+    const target = Math.max(1, Math.min(totalPages, Math.floor(Number(pageInput) || 1)));
+    setPage(target);
+    setPageInput(String(target));
+  };
+
+  const withBusy = async (label: string, action: () => Promise<void>) => {
+    setBusy(label);
+    setMessage(`${label}中...`);
+    try {
+      await action();
+    } catch (error) {
+      setMessage(error instanceof Error ? error.message : String(error));
+    } finally {
+      setBusy("");
+    }
+  };
+
+  const fetchProducts = async () => {
+    if (!sites.size) return [];
+    const results = await Promise.all(
+      [...sites].map((site) => listProfitActivityProducts({ site, scope, skcs: querySkcs })),
+    );
+    return results.flat();
+  };
+
+  const queryProducts = () => withBusy("查询产品", async () => {
+    if (!sites.size) {
+      setProducts([]);
+      setSelected(new Set());
+      setEdits({});
+      setPage(1);
+      setMessage("请至少勾选一个站点。");
+      return;
+    }
+    const nextProducts = await fetchProducts();
+    setProducts(nextProducts);
+    setSelected(new Set());
+    setEdits({});
+    setPage(1);
+    setMessage(`查询数据库产品 完成。\n已查询到 ${nextProducts.length} 个产品。`);
+  });
+
+  useEffect(() => {
+    // 仅首次进入自动查询；之后筛选/查询条件变化后需手动点击“查询产品”生效
+    void queryProducts();
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, []);
+
+  // 刷新产品列表但保留页码/选择/未保存修改：用于图片上传等局部更新，避免把用户“弹回”首页。
+  const refreshProducts = async () => {
+    if (!sites.size) return;
+    const nextProducts = await fetchProducts();
+    setProducts(nextProducts);
+  };
+
+  useEffect(() => {
+    // 表头拖拽调整列宽
+    const table = tableWrapRef.current?.querySelector("table") as HTMLTableElement | null;
+    if (!table) return;
+    let drag: { th: HTMLElement; startX: number; startWidth: number } | null = null;
+
+    // auto 布局下仅改目标列宽度会被浏览器按内容/剩余空间重新分配而“吞掉”，
+    // 拖拽开始时先冻结整表所有列当前宽度并临时切到 fixed 布局，保证拖动精确生效。
+    // 松手后保持 fixed 布局不恢复，否则 auto 布局会按内容把列宽（尤其是备注列）撑回原样。
+    const freezeColumns = () => {
+      table.querySelectorAll("th").forEach((th) => {
+        const element = th as HTMLElement;
+        element.style.width = `${element.offsetWidth}px`;
+        element.style.minWidth = `${element.offsetWidth}px`;
+      });
+      table.style.tableLayout = "fixed";
+    };
+
+    // 首次进入：备注列若被长文本内容撑得过宽，先收敛为固定宽度，避免一进页面就占满整行。
+    if (!columnAdjusted.current) {
+      const noteTh = table.querySelector("th:nth-child(10)") as HTMLElement | null;
+      if (noteTh && noteTh.offsetWidth > 220) {
+        freezeColumns();
+        noteTh.style.width = "200px";
+        noteTh.style.minWidth = "200px";
+        columnAdjusted.current = true;
+      }
+    }
+
+    const onMouseDown = (event: MouseEvent) => {
+      const handle = (event.target as HTMLElement).closest(".profit-col-resizer") as HTMLElement | null;
+      if (!handle) return;
+      const th = handle.closest("th") as HTMLElement | null;
+      if (!th) return;
+      freezeColumns();
+      columnAdjusted.current = true;
+      drag = { th, startX: event.clientX, startWidth: th.offsetWidth };
+      handle.classList.add("is-dragging");
+      document.body.style.cursor = "col-resize";
+      document.body.style.userSelect = "none";
+      event.preventDefault();
+    };
+
+    const onMouseMove = (event: MouseEvent) => {
+      if (!drag) return;
+      const width = Math.max(64, drag.startWidth + (event.clientX - drag.startX));
+      drag.th.style.width = `${width}px`;
+      drag.th.style.minWidth = `${width}px`;
+    };
+
+    const onMouseUp = () => {
+      if (!drag) return;
+      drag.th.querySelector(".profit-col-resizer")?.classList.remove("is-dragging");
+      document.body.style.cursor = "";
+      document.body.style.userSelect = "";
+      drag = null;
+    };
+
+    document.addEventListener("mousedown", onMouseDown);
+    document.addEventListener("mousemove", onMouseMove);
+    document.addEventListener("mouseup", onMouseUp);
+    return () => {
+      document.removeEventListener("mousedown", onMouseDown);
+      document.removeEventListener("mousemove", onMouseMove);
+      document.removeEventListener("mouseup", onMouseUp);
+    };
+  }, [pageProducts]);
+
+  const toggleSite = (item: ProfitActivitySite, checked: boolean) => {
+    setSites((current) => {
+      const next = new Set(current);
+      if (checked) next.add(item);
+      else next.delete(item);
+      return next;
+    });
+  };
+
+  const toggleAllSites = () => {
+    setSites(allSitesChecked ? new Set() : new Set(allSites));
+  };
+
+  const togglePageSelected = () => {
+    setSelected((current) => {
+      const next = new Set(current);
+      for (const product of pageProducts) {
+        const key = productKey(product);
+        if (pageSelected) next.delete(key);
+        else next.add(key);
+      }
+      return next;
+    });
+  };
+
+  const deleteSelected = () => withBusy("删除已选产品", async () => {
+    if (!selectedCount) return;
+    const confirmed = window.confirm(`确认删除已选 ${selectedCount} 个产品？`);
+    if (!confirmed) {
+      setMessage("已取消删除。");
+      return;
+    }
+    const bySite = new Map<ProfitActivitySite, string[]>();
+    for (const product of products) {
+      if (!selected.has(productKey(product))) continue;
+      const site = (product.site || product.site_code || "US") as ProfitActivitySite;
+      bySite.set(site, [...(bySite.get(site) || []), product.skc]);
+    }
+    let deleted = 0;
+    for (const [site, skcs] of bySite) {
+      const result = await deleteProfitActivityProducts({ site, skcs });
+      deleted += result.deleted ?? skcs.length;
+    }
+    const nextProducts = await fetchProducts();
+    setProducts(nextProducts);
+    setSelected(new Set());
+    setPage((current) => Math.min(current, Math.max(1, Math.ceil(nextProducts.length / pageSize))));
+    setMessage(`删除完成，后端确认删除 ${deleted} 个产品。`);
+  });
+
+  const downloadCatalog = () => withBusy("下载产品档案", async () => {
+    if (!sites.size) throw new Error("请至少勾选一个站点。");
+    for (const site of sites) {
+      await downloadProfitActivityCatalog({ site, scope });
+    }
+    setMessage("产品档案已开始下载。");
+  });
+
+  const setEditValue = (key: string, field: "selling_price" | "cost_price" | "weight_kg", value: string) => {
+    setEdits((current) => ({ ...current, [key]: { ...current[key], [field]: value } }));
+  };
+
+  const saveEdits = () => withBusy("保存修改", async () => {
+    if (!dirtyCount) return;
+    let saved = 0;
+    const errors: string[] = [];
+    for (const key of Object.keys(edits)) {
+      const product = products.find((item) => productKey(item) === key);
+      if (!product) continue;
+      const patch = edits[key];
+      try {
+        await updateProfitActivityProduct({
+          site: (product.site || product.site_code || "US") as ProfitActivitySite,
+          skc: product.skc,
+          selling_price: patch.selling_price,
+          cost_price: patch.cost_price,
+          weight_kg: patch.weight_kg,
+        });
+        saved += 1;
+      } catch (error) {
+        errors.push(`${product.skc}: ${error instanceof Error ? error.message : String(error)}`);
+      }
+    }
+    setEdits({});
+    const nextProducts = await fetchProducts();
+    setProducts(nextProducts);
+    setSelected(new Set());
+    setPage((current) => Math.min(current, Math.max(1, Math.ceil(nextProducts.length / pageSize))));
+    setMessage(errors.length
+      ? `保存完成：成功 ${saved} 个，失败 ${errors.length} 个（${errors.join("；")}）`
+      : `保存完成，已更新 ${saved} 个产品。`);
+  });
+
+  const cancelEdits = () => {
+    setEdits({});
+    setMessage("已撤销未保存的修改。");
+  };
+
+  return (
+    <div className="profit-products-page">
+      <section className="profit-products-head">
+        <div>
+          <p className="eyebrow">PROFIT ACTIVITY</p>
+          <h1>产品库</h1>
+          <p>查询数据库产品，按站点管理当前账号权限可见的利润活动产品。</p>
+        </div>
+      </section>
+
+      <section className="profit-products-panel">
+        <div className="profit-products-filters">
+          <div className="profit-site-check-group">
+            <label className={`profit-site-master ${allSitesChecked ? "is-active" : ""}`}>
+              <input ref={masterRef} type="checkbox" checked={allSitesChecked} onChange={toggleAllSites} />
+              <span>全选</span>
+            </label>
+            {allSites.map((item) => (
+              <label key={item} className={`profit-site-check ${sites.has(item) ? "is-active" : ""}`}>
+                <input type="checkbox" checked={sites.has(item)} onChange={(event) => toggleSite(item, event.target.checked)} />
+                <span>{siteLabels[item]}</span>
+              </label>
+            ))}
+          </div>
+          <label>查询范围<select value={scope} onChange={(event) => setScope(event.target.value as ProfitActivityScope)}><option value="default">本人 + 核价入库</option><option value="company">查本公司在档产品</option></select></label>
+          <label>每页条数<select value={pageSize} onChange={(event) => { setPageSize(Number(event.target.value) as typeof pageSize); setPage(1); }}>{pageSizeOptions.map((value) => <option key={value} value={value}>每页 {value} 条</option>)}</select></label>
+        </div>
+
+        <div className="profit-products-query">
+          <textarea value={querySkcs} onChange={(event) => setQuerySkcs(event.target.value)} placeholder="输入 SKC，支持换行、空格、逗号批量查询；留空展示数据库里当前权限可见产品" />
+          <div className="profit-products-actions">
+            <button className="primary-button" onClick={queryProducts} disabled={!!busy}>查询产品</button>
+            <button onClick={togglePageSelected} disabled={!pageProducts.length}>{pageSelected ? "取消本页" : "全选本页"}</button>
+            <button className="danger-button" onClick={deleteSelected} disabled={!selectedCount || !!busy}>删除已选 {selectedCount}</button>
+            <button onClick={downloadCatalog} disabled={!!busy}>下载产品档案</button>
+            <button className="primary-button" onClick={saveEdits} disabled={!dirtyCount || !!busy}>保存修改{dirtyCount ? ` (${dirtyCount})` : ""}</button>
+            <button onClick={cancelEdits} disabled={!dirtyCount || !!busy}>撤销修改{dirtyCount ? ` (${dirtyCount})` : ""}</button>
+          </div>
+        </div>
+        <p className="profit-products-message">{busy || message.split("\n").map((line, index) => (<span key={index}>{line}<br /></span>))}</p>
+
+        <div className="profit-table-wrap" ref={tableWrapRef}>
+          <table className="profit-table">
+            <thead>
+              <tr><th>选择<span className="profit-col-resizer" /></th><th>站点<span className="profit-col-resizer" /></th><th>SKC<span className="profit-col-resizer" /></th><th>SKC对应图<span className="profit-col-resizer" /></th><th>售价<span className="profit-col-resizer" /></th><th>成本<span className="profit-col-resizer" /></th><th>重量<span className="profit-col-resizer" /></th><th>利润<span className="profit-col-resizer" /></th><th>利润率<span className="profit-col-resizer" /></th><th>备注<span className="profit-col-resizer" /></th><th>货源<span className="profit-col-resizer" /></th><th>图片<span className="profit-col-resizer" /></th></tr>
+            </thead>
+            <tbody>
+              {pageProducts.length ? pageProducts.map((item) => {
+                const key = productKey(item);
+                return (
+                  <tr key={key}>
+                    <td><input type="checkbox" checked={selected.has(key)} onChange={(event) => setSelected(toggleSet(selected, key, event.target.checked))} /></td>
+                    <td>{siteLabels[(item.site || item.site_code || "US") as ProfitActivitySite]}</td>
+                    <td>{item.skc}{item.source_type === "price_verification" && <em className="profit-source-badge" title="来自核价及货源板块自动入库">核价</em>}</td>
+                    <td><ProductImageCell item={item} onChanged={refreshProducts} /></td>
+                    <td><EditNumberInput value={edits[key]?.selling_price ?? (typeof item.selling_price === "number" ? String(item.selling_price) : "")} onChange={(value) => setEditValue(key, "selling_price", value)} /></td>
+                    <td><EditNumberInput value={edits[key]?.cost_price ?? (typeof item.cost_price === "number" ? String(item.cost_price) : "")} onChange={(value) => setEditValue(key, "cost_price", value)} /></td>
+                    <td><EditNumberInput value={edits[key]?.weight_kg ?? (typeof item.weight_kg === "number" ? String(item.weight_kg) : "")} onChange={(value) => setEditValue(key, "weight_kg", value)} /></td>
+                    <td className={(item.net_profit ?? 0) >= 0 ? "profit-good" : "profit-bad"}>{money(item.net_profit)}</td>
+                    <td>{percent(item.profit_rate)}</td>
+                    <td className="profit-note-cell" title={item.note}>{item.note || "-"}</td>
+                    <td>{item.source_url ? <button className="profit-source-open" onClick={() => setActiveProduct(item)} title="查看该 SKC 已关联的 1688 货源">打开（{(item.source_groups ?? []).filter((group) => group?.source_url).length}）</button> : "-"}</td>
+                    <td><SourceImagesCell item={item} onPreview={(url) => setPreviewImage({ url, label: `${item.skc} 货源图` })} /></td>
+                  </tr>
+                );
+              }) : (
+                <tr><td colSpan={12}>暂无产品。输入 SKC 后查询，或留空查询当前权限可见产品。</td></tr>
+              )}
+            </tbody>
+          </table>
+        </div>
+
+        <div className="profit-products-pagination">
+          <span>共 {products.length} 条，当前第 {safePage} / {totalPages} 页</span>
+          <div>
+            <button onClick={() => setPage(1)} disabled={safePage <= 1}>首页</button>
+            <button onClick={() => setPage((current) => Math.max(1, current - 1))} disabled={safePage <= 1}>上一页</button>
+            <label className="profit-page-jump">第
+              <input
+                value={pageInput}
+                type="number"
+                min={1}
+                max={totalPages}
+                onChange={(event) => setPageInput(event.target.value)}
+                onKeyDown={(event) => { if (event.key === "Enter") goToPageInput(); }}
+                onBlur={goToPageInput}
+                aria-label="跳转页码"
+              />
+              页</label>
+            <button onClick={goToPageInput}>跳转</button>
+            <button onClick={() => setPage((current) => Math.min(totalPages, current + 1))} disabled={safePage >= totalPages}>下一页</button>
+            <button onClick={() => setPage(totalPages)} disabled={safePage >= totalPages}>末页</button>
+          </div>
+        </div>
+      </section>
+      <ProductSourceDrawer
+        product={activeProduct}
+        onClose={() => setActiveProduct(null)}
+        onChanged={queryProducts}
+      />
+      {previewImage ? (
+        <ImagePreviewModal
+          url={previewImage.url}
+          label={previewImage.label}
+          onClose={() => setPreviewImage(null)}
+        />
+      ) : null}
+    </div>
+  );
+}
+
+/** 大图预览弹窗：点击遮罩或关闭按钮关闭。 */
+function ImagePreviewModal({ url, label, onClose }: { url: string; label: string; onClose: () => void }) {
+  useEffect(() => {
+    const onKeyDown = (event: KeyboardEvent) => {
+      if (event.key === "Escape") onClose();
+    };
+    document.addEventListener("keydown", onKeyDown);
+    return () => document.removeEventListener("keydown", onKeyDown);
+  }, [onClose]);
+
+  return (
+    <div className="profit-image-preview-mask" onClick={onClose}>
+      <div className="profit-image-preview-modal" onClick={(event) => event.stopPropagation()}>
+        <button type="button" className="profit-image-preview-close" onClick={onClose} title="关闭">×</button>
+        <img className="profit-image-preview-img" src={url} alt={label} />
+      </div>
+    </div>
+  );
+}
+
+function toggleSet(source: Set<string>, value: string, checked: boolean) {
+  const next = new Set(source);
+  if (checked) next.add(value);
+  else next.delete(value);
+  return next;
+}
+
+/** SKC 对应图单元格：展示产品主图，支持 Ctrl+V 粘贴或手动上传替换并保存。 */
+function ProductImageCell({ item, onChanged }: { item: ProfitActivityProduct; onChanged: () => void }) {
+  const site = (item.site || item.site_code || "US") as ProfitActivitySite;
+  const fileRef = useRef<HTMLInputElement>(null);
+  const [imageUrl, setImageUrl] = useState("");
+  const [localPreview, setLocalPreview] = useState("");
+  const [uploading, setUploading] = useState(false);
+  const [error, setError] = useState("");
+
+  useEffect(() => {
+    let cancelled = false;
+    let objectUrl = "";
+    setError("");
+    if (item.image_path) {
+      loadProductImage({ skc: item.skc, site, kind: "product" })
+        .then((url) => {
+          if (cancelled) {
+            URL.revokeObjectURL(url);
+            return;
+          }
+          objectUrl = url;
+          setImageUrl(url);
+          // 新图已从服务器加载，清除粘贴/选择的本地预览
+          setLocalPreview("");
+        })
+        .catch(() => {});
+    } else {
+      setImageUrl("");
+      setLocalPreview("");
+    }
+    return () => {
+      cancelled = true;
+      if (objectUrl) URL.revokeObjectURL(objectUrl);
+    };
+  }, [item.skc, site, item.image_path]);
+
+  const upload = async (file: File | undefined) => {
+    if (!file) return;
+    // 先本地预览，让用户立刻看到粘贴/选择结果；上传完成后保留预览，
+    // 直到列表刷新后服务器新图加载出来再切换，避免闪回旧图。
+    setLocalPreview(URL.createObjectURL(file));
+    setUploading(true);
+    setError("");
+    try {
+      await updateProductImage({
+        site,
+        skc: item.skc,
+        image: file,
+        selling_price: item.selling_price,
+        cost_price: item.cost_price,
+        weight_kg: item.weight_kg,
+        note: item.note,
+        source_url: item.source_url,
+        source_groups: item.source_groups,
+      });
+      await onChanged();
+    } catch (err) {
+      setError(err instanceof Error ? err.message : String(err));
+    } finally {
+      setUploading(false);
+    }
+  };
+
+  const onPaste = (event: ClipboardEvent<HTMLDivElement>) => {
+    const image = [...event.clipboardData.files].find((item) => item.type.startsWith("image/"));
+    if (image) void upload(image);
+  };
+
+  return (
+    <div className="profit-product-image-cell" tabIndex={0} onPaste={onPaste} title="可 Ctrl+V 粘贴截图，或点击上传">
+      {(localPreview || imageUrl) ? (
+        <img className="profit-product-image" src={localPreview || imageUrl} alt={`${item.skc} 主图`} />
+      ) : (
+        <span className="profit-product-image-empty">无图</span>
+      )}
+      <input
+        ref={fileRef}
+        type="file"
+        accept="image/*"
+        hidden
+        onChange={(event) => {
+          void upload(event.target.files?.[0]);
+          event.target.value = "";
+        }}
+      />
+      <button
+        type="button"
+        className="profit-product-image-upload"
+        disabled={uploading}
+        onClick={() => fileRef.current?.click()}
+      >
+        {uploading ? "上传中…" : (imageUrl || localPreview) ? "替换" : "上传"}
+      </button>
+      {error ? <small className="profit-product-image-error" title={error}>保存失败</small> : null}
+    </div>
+  );
+}
+
+/** 图片列：展示标准审核表识别到的货源截图（source_groups 各组图片），点击可放大查看规格。 */
+function SourceImagesCell({ item, onPreview }: { item: ProfitActivityProduct; onPreview: (url: string) => void }) {
+  const site = (item.site || item.site_code || "US") as ProfitActivitySite;
+  const groups = item.source_groups ?? [];
+  const imageCount = groups.reduce((sum, group) => sum + (group?.image_paths?.length ?? 0), 0);
+  const [urls, setUrls] = useState<(string | null)[]>([]);
+
+  useEffect(() => {
+    let cancelled = false;
+    const created: string[] = [];
+    if (!imageCount) {
+      setUrls([]);
+      return;
+    }
+    const entries: Array<{ group: number; index: number }> = [];
+    groups.forEach((group, groupIndex) => {
+      (group?.image_paths ?? []).forEach((_, index) => entries.push({ group: groupIndex, index }));
+    });
+    Promise.all(
+      entries.map((entry) =>
+        loadProductImage({ skc: item.skc, site, kind: "source", group: entry.group, index: entry.index })
+          .then((url) => {
+            if (cancelled) {
+              URL.revokeObjectURL(url);
+              return null;
+            }
+            created.push(url);
+            return url;
+          })
+          .catch(() => null),
+      ),
+    ).then((loaded) => {
+      if (!cancelled) setUrls(loaded);
+    });
+    return () => {
+      cancelled = true;
+      created.forEach((url) => URL.revokeObjectURL(url));
+    };
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [item.skc, site, imageCount]);
+
+  if (!imageCount) return <span className="profit-product-image-empty">无图</span>;
+  return (
+    <div className="profit-source-thumbs">
+      {urls.map((url, index) => (
+        <button key={index} type="button" className="profit-source-thumb-btn" title="点击查看大图" onClick={() => url && onPreview(url)}>
+          {url ? <img className="profit-source-thumb" src={url} alt={`货源图 ${index + 1}`} loading="lazy" /> : null}
+        </button>
+      ))}
+    </div>
+  );
+}
+
+function EditNumberInput({ value, onChange }: { value: string; onChange: (next: string) => void }) {
+  return (
+    <input
+      className="profit-edit-input"
+      type="number"
+      step="any"
+      min="0"
+      value={value}
+      onChange={(event) => onChange(event.target.value)}
+    />
+  );
+}
+
+function money(value: unknown) {
+  return typeof value === "number" ? value.toFixed(2) : "-";
+}
+
+function percent(value: unknown) {
+  return typeof value === "number" ? `${(value * 100).toFixed(2)}%` : "-";
+}
