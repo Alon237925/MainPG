@@ -24,12 +24,23 @@ BATCH_BILLING_PROFILE_POD = "pod_random_v1"
 # POD 每条款式定价：服务器随机取 40..50 整数积分。
 POD_LINK_PRICE_MIN_POINTS = 40
 POD_LINK_PRICE_VARIANTS = 11
+# Fixed-package topup gifts are tiered by package: higher packages gift more.
 # The historical ``topup_double`` configuration remains in SQLite for audit
-# and old order snapshots.  New orders use this fixed rule and deliberately do
-# not read that mutable configuration.
-TOPUP_PROMOTION_ID = "fixed_package_bonus_25"
-TOPUP_PROMOTION_NAME = "固定套餐赠送 25%"
-TOPUP_PROMOTION_BONUS_PERCENT = 25
+# and old order snapshots.  New orders use this fixed tiered rule and
+# deliberately do not read that mutable configuration.
+TOPUP_TIER_BONUS_PERCENTS = {
+    "points_49": 25,
+    "points_99": 50,
+    "points_499": 75,
+    "points_4999": 100,
+}
+TOPUP_PROMOTION_ID = "fixed_package_tiered_bonus"
+TOPUP_PROMOTION_NAME = "固定套餐档位递增赠送（25%~100%）"
+
+
+def topup_bonus_percent(package_id: str) -> int:
+    """Return the fixed-package bonus percent for a topup package id (0 if none)."""
+    return TOPUP_TIER_BONUS_PERCENTS.get(package_id, 0)
 
 
 @dataclass(frozen=True)
@@ -84,11 +95,15 @@ def active_pricing(database_path: Path) -> dict[str, Any]:
 
 
 def topup_promotion_status() -> dict[str, Any]:
-    """Describe the permanent rule used for new fixed-package orders."""
+    """Describe the permanent tiered rule used for new fixed-package orders."""
     return {
         "active": True,
         "name": TOPUP_PROMOTION_NAME,
-        "bonus_rate_percent": TOPUP_PROMOTION_BONUS_PERCENT,
+        "bonus_rate_percent": max(TOPUP_TIER_BONUS_PERCENTS.values()),
+        "tiers": [
+            {"package_id": package_id, "bonus_rate_percent": percent}
+            for package_id, percent in TOPUP_TIER_BONUS_PERCENTS.items()
+        ],
         "applies_to": "fixed_packages",
     }
 

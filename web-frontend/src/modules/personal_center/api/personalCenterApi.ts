@@ -8,6 +8,8 @@ export type BillingPackage = {
   points?: number;
   base_points?: number;
   promotion_bonus_points?: number;
+  /** 该固定套餐的赠送比例（如 25/50/75/100）；custom 或非赠送档为 0。 */
+  promotion_bonus_percent?: number;
   total_points?: number;
 };
 
@@ -75,8 +77,10 @@ export type BillingSummary = {
   topup_products: BillingPackage[];
   topup_promotion?: {
     name: string;
-    /** 固定套餐的常驻赠送百分比。 */
+    /** 固定套餐可达到的最高赠送百分比。 */
     bonus_rate_percent: number;
+    /** 每个固定套餐的赠送比例。 */
+    tiers?: Array<{ package_id: string; bonus_rate_percent: number }>;
     applies_to: "fixed_packages";
     /** 常驻规则始终为 true；保留该字段供服务端摘要表达规则状态。 */
     active: true;

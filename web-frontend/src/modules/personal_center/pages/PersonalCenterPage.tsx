@@ -714,7 +714,7 @@ export function PersonalCenterPage() {
             </button>
           </div>
           <p className="topup-promotion-banner">
-            {summary?.topup_promotion?.name || "固定套餐常驻赠送 25%"}：仅 49 / 99 / 499 / 4999 元固定套餐享赠送，自定义金额按原价到账。
+            {summary?.topup_promotion?.name || "固定套餐档位递增赠送"}：仅固定套餐享赠送，自定义金额按原价到账。
           </p>
           <div className="topup-products">
             {summary?.topup_products.map((item) => (
@@ -728,7 +728,9 @@ export function PersonalCenterPage() {
                 <span>{money(item.amount_cents)}</span>
                 <small>
                   基础 {basePoints(item).toLocaleString()}
-                  {promotionBonusPoints(item) ? ` + 赠送 25% ${promotionBonusPoints(item).toLocaleString()}` : ""}
+                  {promotionBonusPoints(item)
+                    ? ` + 赠送${item.promotion_bonus_percent ? ` ${item.promotion_bonus_percent}%` : ""} ${promotionBonusPoints(item).toLocaleString()}`
+                    : ""}
                   {promotionBonusPoints(item) ? ` = 合计 ${totalPoints(item).toLocaleString()}` : ""}
                 </small>
               </button>
