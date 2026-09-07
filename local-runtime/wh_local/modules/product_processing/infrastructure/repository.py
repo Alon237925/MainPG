@@ -656,12 +656,156 @@ class ProductProcessingRepository:
             else:
                 statement = statement.where(ProductDraftRow.status == "draft")
             if selection_run_id is not None:
-                statement = statement.where(ProductDraftRow.selection_run_id == selection_run_id)
+                if selection_run_id == "__unassigned__":
+                    statement = statement.where(ProductDraftRow.selection_run_id.is_(None))
+                else:
+                    statement = statement.where(ProductDraftRow.selection_run_id == selection_run_id)
             if source_type is not None:
                 statement = statement.where(ProductDraftRow.source_type == source_type)
             statement = statement.order_by(ProductDraftRow.created_at.desc(), ProductDraftRow.id.desc()).offset(offset).limit(limit + 1)
             rows = session.scalars(statement).all()
             return [self._draft(row) for row in rows[:limit]], len(rows) > limit
+
+    def list_draft_batches(
+        self,
+        limit: int,
+        offset: int,
+        *,
+        workspace_id: str = "local",
+    ) -> tuple[list[dict[str, Any]], bool]:
+        """聚合草稿池批次（按 selection_run_id 分组），最新批次在前。
+
+        返回每个批次的标识、条数、首末时间，并为每个批次抽取一条最新草稿的
+        raw_payload 以解析采集入口（collection_channel）与平台（source_platform）。
+        """
+        with self.database.sessions() as session:
+            statement = (
+                select(
+                    ProductDraftRow.selection_run_id,
+                    func.count().label("draft_count"),
+                    func.min(ProductDraftRow.created_at).label("first_created_at"),
+                    func.max(ProductDraftRow.updated_at).label("latest_updated_at"),
+                )
+                .where(
+                    ProductDraftRow.workspace_id == workspace_id,
+                    ProductDraftRow.status != "deleted",
+                )
+                .group_by(ProductDraftRow.selection_run_id)
+                .order_by(func.max(ProductDraftRow.created_at).desc())
+                .offset(offset)
+                .limit(limit + 1)
+            )
+            rows = session.execute(statement).all()
+            batches: list[dict[str, Any]] = []
+            for row in rows[:limit]:
+                batch_id = str(row.selection_run_id) if row.selection_run_id is not None else ""
+                sample = None
+                if batch_id:
+                    sample = session.execute(
+                        select(ProductDraftRow.raw_payload_json, ProductDraftRow.source_type)
+                        .where(
+                            ProductDraftRow.workspace_id == workspace_id,
+                            ProductDraftRow.selection_run_id == batch_id,
+                            ProductDraftRow.status != "deleted",
+                        )
+                        .order_by(ProductDraftRow.created_at.desc(), ProductDraftRow.id.desc())
+                        .limit(1)
+                    ).first()
+                else:
+                    sample = session.execute(
+                        select(ProductDraftRow.raw_payload_json, ProductDraftRow.source_type)
+                        .where(
+                            ProductDraftRow.workspace_id == workspace_id,
+                            ProductDraftRow.selection_run_id.is_(None),
+                            ProductDraftRow.status != "deleted",
+                        )
+                        .order_by(ProductDraftRow.created_at.desc(), ProductDraftRow.id.desc())
+                        .limit(1)
+                    ).first()
+                raw: dict[str, Any] = {}
+                source_type = str(sample.source_type) if sample is not None else ""
+                if sample is not None:
+                    try:
+                        parsed = loads(sample.raw_payload_json, {})
+                        if isinstance(parsed, dict):
+                            raw = parsed
+                    except ValueError:
+                        raw = {}
+                batches.append(
+                    {
+                        "batch_id": batch_id,
+                        "source_type": source_type,
+                        "collection_channel": str(raw.get("collection_channel") or "") or "",
+                        "platform": str(raw.get("source_platform") or "") or "",
+                        "channel_name": str(raw.get("source_title") or raw.get("title") or "")[:60],
+                        "count": int(row.draft_count),
+                        "first_created_at": str(row.first_created_at or ""),
+                        "latest_updated_at": str(row.latest_updated_at or ""),
+                    }
+                )
+            return batches, len(rows) > limit
+
+    def delete_draft_batch(
+        self, *, batch_id: str, workspace_id: str = "local"
+    ) -> int:
+        """软删整个采集批次（selection_run_id 分组）的全部草稿。"""
+        with self.database.sessions.begin() as session:
+            statement = select(ProductDraftRow).where(
+                ProductDraftRow.workspace_id == workspace_id,
+                ProductDraftRow.status != "deleted",
+            )
+            if batch_id:
+                statement = statement.where(ProductDraftRow.selection_run_id == batch_id)
+            else:
+                statement = statement.where(ProductDraftRow.selection_run_id.is_(None))
+            rows = session.scalars(statement).all()
+            now = utc_now()
+            for row in rows:
+                row.status = "deleted"
+                row.updated_at = now
+            return len(rows)
+
+    def purge_expired_draft_batches(
+        self, *, retention_hours: int = 24, workspace_id: str = "local"
+    ) -> int:
+        """软删超过保留时长（默认 24h）的采集批次草稿。
+
+        批次入口时间取该批次草稿的最早创建时间；未分组草稿（selection_run_id
+        为空）按同规则一并清理。
+        """
+        cutoff = (datetime.now(timezone.utc) - timedelta(hours=retention_hours)).isoformat()
+        with self.database.sessions() as session:
+            statement = (
+                select(
+                    ProductDraftRow.selection_run_id,
+                    func.min(ProductDraftRow.created_at).label("first_created_at"),
+                )
+                .where(
+                    ProductDraftRow.workspace_id == workspace_id,
+                    ProductDraftRow.status != "deleted",
+                )
+                .group_by(ProductDraftRow.selection_run_id)
+                .having(func.min(ProductDraftRow.created_at) < cutoff)
+            )
+            expired = session.execute(statement).all()
+            removed = 0
+            for row in expired:
+                batch_id = str(row.selection_run_id) if row.selection_run_id is not None else ""
+                rows = session.scalars(
+                    select(ProductDraftRow).where(
+                        ProductDraftRow.workspace_id == workspace_id,
+                        ProductDraftRow.status != "deleted",
+                        ProductDraftRow.selection_run_id == batch_id
+                        if batch_id
+                        else ProductDraftRow.selection_run_id.is_(None),
+                    )
+                ).all()
+                now = utc_now()
+                for draft in rows:
+                    draft.status = "deleted"
+                    draft.updated_at = now
+                removed += len(rows)
+            return removed
 
     def drafts_revision(self, workspace_id: str = "local") -> str:
         """轻量变更指纹：最近一次草稿写入/更新的时间（ISO 字符串，字典序即时间序）。

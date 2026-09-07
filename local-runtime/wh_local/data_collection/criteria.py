@@ -50,7 +50,7 @@ class DailySelectionCriteria(BaseModel):
 
     keywords: tuple[str, ...] = ()
     collection_mode: Literal["keyword", "image"] = "keyword"
-    collection_platform: Literal["1688"] = "1688"
+    collection_platform: Literal["1688", "taobao"] = "1688"
     selection_scope: Literal["exact", "divergent"] = "divergent"
     reference_image_url: str | None = None
     category: str = ""
@@ -65,7 +65,7 @@ class DailySelectionCriteria(BaseModel):
     max_sku_stock: int | None = None
     target_count: int = Field(default=30, ge=1, le=100)
     max_api_calls: int = Field(default=0, ge=0, description="兼容旧客户端字段；不再限制万邦调用次数")
-    detail_count: int = Field(default=50, ge=1, le=190, description="详情拉取的最低覆盖数；采集器会尽量全量拉取候选详情，保证 SKU/发源地/属性完整")
+    detail_count: int = Field(default=50, ge=1, le=190, description="启用 SKU 筛选时的详情覆盖上限；未启用时只拉取前 target_count 个候选的详情")
     exclude_risks: bool = True
     site: Literal["US", "CO", "EC"] = "US"
     max_parallel_collect: int = Field(default=8, ge=1, le=10, description="采集并行数，1=串行")

@@ -6,7 +6,7 @@ import ipaddress
 import socket
 import threading
 import uuid
-from collections.abc import Callable, Mapping
+from collections.abc import Callable, Mapping, Sequence
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Any, Protocol
@@ -30,7 +30,7 @@ from .repository import (
     DailySelectionRunSummary,
 )
 from .handoff import DailySelectionHandoff
-from .link_collection import canonical_1688_offer_url, detail_seed
+from .link_collection import canonical_platform_url, detail_seed
 from .sku_repull import SkuRepullRunner, empty_repull_state, incomplete_candidates
 
 
@@ -123,6 +123,34 @@ def _canonical_collection_ref(value: str) -> str:
     return urlunsplit((parsed.scheme, parsed.netloc, parsed.path, "", ""))
 
 
+def _platform_config(config: Mapping[str, Any], platform: str) -> Mapping[str, Any]:
+    """Derive a provider config for a platform from the resolved base config."""
+    if platform == "1688":
+        return dict(config)
+    resolved = dict(config)
+    base_url = str(resolved.get("base_url", "")).rstrip("/")
+    if base_url.casefold().endswith("/1688"):
+        resolved["base_url"] = f"{base_url[:-5]}/taobao"
+    elif not base_url.casefold().endswith("/taobao"):
+        resolved["base_url"] = "https://api-gw.onebound.cn/taobao"
+    return resolved
+
+
+def _detect_platform_from_url(value: object) -> str:
+    """Infer the collection platform from a public product URL's host."""
+    if not isinstance(value, str) or not value.strip():
+        return "1688"
+    host = (urlsplit(value.strip()).hostname or "").casefold()
+    if (
+        host == "taobao.com"
+        or host.endswith(".taobao.com")
+        or host == "tmall.com"
+        or host.endswith(".tmall.com")
+    ):
+        return "taobao"
+    return "1688"
+
+
 class DailySelectionService:
     """The sole orchestration entry point used by FastAPI routes."""
 
@@ -197,6 +225,7 @@ class DailySelectionService:
         provider_config = self._provider_config_resolver(actor)
         if not isinstance(provider_config, Mapping):
             raise TypeError("provider config resolver must return a mapping")
+        provider_config = _platform_config(provider_config, criteria.collection_platform)
         provider = self._build_provider(provider_config)
         _report_progress(progress_callback, "preparing", 4, 1, 1, "采集服务已就绪")
         collected = DailySelectionCollector(
@@ -213,15 +242,16 @@ class DailySelectionService:
         filtered = filter_and_score_candidates(
             tuple(item.candidate for item in collected.candidates), criteria
         )
-        public_candidates = (
-            *filtered.candidates[: criteria.target_count],
-            *filtered.filtered,
-        )
+        # 采集数量 = 展示候选上限：只保留通过筛选、按分排序的前 N 条；
+        # 被硬过滤（风险/重复/SKU 不符/MOQ 超限）的候选不占用展示位，
+        # 其数量与原因以 filtered_summary 记入批次元数据供前端提示。
+        public_candidates = (*filtered.candidates[: criteria.target_count],)
         _report_progress(progress_callback, "saving", 97, 0, 1, "正在保存采集结果")
         kept_candidates, removed = self._deduplicate(
             actor.workspace_id, public_candidates
         )
         metadata = dict(_collection_metadata(collected))
+        metadata["filtered_summary"] = _filtered_summary(filtered.filtered)
         metadata["deduplicated"] = {
             "count": len(removed),
             "removed_identifiers": sorted(removed),
@@ -237,26 +267,29 @@ class DailySelectionService:
         _report_progress(progress_callback, "saving", 99, 1, 1, "采集结果已保存")
         return run
 
-    def preview_from_1688_link(
+    def preview_from_link(
         self, *, actor: DailySelectionActor, request: Mapping[str, Any]
     ) -> DailySelectionRun:
-        """Use a 1688 product detail as the seed for image-first similar search."""
+        """Use a product detail URL as the seed for image-first similar search."""
         request_data = dict(request)
         source_url = request_data.pop("source_url", request_data.pop("product_url", None))
-        canonical_url, offer_id = canonical_1688_offer_url(source_url)
+        platform = str(request_data.pop("collection_platform", "") or "").strip() or _detect_platform_from_url(source_url)
+        canonical_url, offer_id = canonical_platform_url(platform, source_url)
         # Link collection derives its actual search seed from item_get.  Ignore
         # any stale front-end mode/image values while retaining filter settings.
         request_data.pop("collection_mode", None)
         request_data.pop("reference_image_url", None)
-        request_data.setdefault("keywords", ("1688 similar products",))
+        request_data.setdefault("keywords", ("similar products",))
+        request_data["collection_platform"] = platform
         criteria = DailySelectionCriteria.model_validate(request_data)
         provider_config = self._provider_config_resolver(actor)
         if not isinstance(provider_config, Mapping):
             raise TypeError("provider config resolver must return a mapping")
+        provider_config = _platform_config(provider_config, platform)
         provider = self._build_provider(provider_config)
         detail = provider.get_item_detail(offer_id)
         if not detail.ok:
-            message = detail.error.message if detail.error is not None else "1688 item detail lookup failed"
+            message = detail.error.message if detail.error is not None else f"{platform} item detail lookup failed"
             raise ValueError(message)
         title, image_url = detail_seed(detail.response)
         seed_criteria = criteria.model_copy(
@@ -275,13 +308,11 @@ class DailySelectionService:
         filtered = filter_and_score_candidates(
             tuple(item.candidate for item in collected.candidates), seed_criteria
         )
-        public_candidates = (
-            *filtered.candidates[: seed_criteria.target_count],
-            *filtered.filtered,
-        )
+        public_candidates = (*filtered.candidates[: seed_criteria.target_count],)
         metadata = dict(_collection_metadata(collected))
+        metadata["filtered_summary"] = _filtered_summary(filtered.filtered)
         metadata["source_link"] = {
-            "platform": "1688",
+            "platform": platform,
             "source_url": canonical_url,
             "offer_id": offer_id,
             "seed_title": title,
@@ -303,6 +334,12 @@ class DailySelectionService:
             criteria=seed_criteria,
             metadata=metadata,
         )
+
+    def preview_from_1688_link(
+        self, *, actor: DailySelectionActor, request: Mapping[str, Any]
+    ) -> DailySelectionRun:
+        """Backward-compatible entry point for 1688 link collection."""
+        return self.preview_from_link(actor=actor, request=request)
 
     def _deduplicate(
         self,
@@ -574,6 +611,16 @@ def _collection_metadata(collected: Any) -> Mapping[str, Any]:
         "expansion_rule_version": collected.expansion_rule_version,
         "derived_image_terms": list(collected.derived_image_terms),
     }
+
+
+def _filtered_summary(filtered: Sequence[Any]) -> Mapping[str, Any]:
+    """Count hard-filtered candidates by reason for a concise UI notice."""
+    reasons: dict[str, int] = {}
+    for candidate in filtered:
+        for reason in getattr(candidate, "selection_reasons", ()) or ():
+            key = str(reason)
+            reasons[key] = reasons.get(key, 0) + 1
+    return {"count": len(filtered), "reasons": reasons}
 
 
 def _report_collection_progress(

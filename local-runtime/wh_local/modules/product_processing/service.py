@@ -1586,6 +1586,7 @@ USER-REQUESTED PANEL PLANNING ADDITIONS (user extra requirements only; they MUST
         workspace_id: str,
         candidate: Mapping[str, Any],
         shop_fence: Mapping[str, Any] | None = None,
+        collection_channel: str = "shop_collection",
     ) -> Mapping[str, Any]:
         """Idempotently place one normalized shop candidate into the draft pool."""
         if not isinstance(candidate, Mapping):
@@ -1610,6 +1611,7 @@ USER-REQUESTED PANEL PLANNING ADDITIONS (user extra requirements only; they MUST
             {
                 "candidate_id": candidate_id,
                 "source_type": "onebound_api",
+                "collection_channel": self._text(collection_channel) or "shop_collection",
                 "selection_run_id": batch,
                 "source_ref": self._text(
                     raw.get("source_ref") or raw.get("source_url") or candidate_id
@@ -1837,6 +1839,37 @@ USER-REQUESTED PANEL PLANNING ADDITIONS (user extra requirements only; they MUST
     def delete_drafts(self, draft_ids: list[int] | None, workspace_id: str = "local") -> dict[str, Any]:
         ids = self.repository.delete_drafts(draft_ids, workspace_id)
         return {"deleted_count": len(ids), "ids": ids, "status": "deleted"}
+
+    def list_draft_batches(
+        self, *, limit: int, offset: int, workspace_id: str = "local"
+    ) -> dict[str, Any]:
+        """草稿池批次列表（最新在前）。查询前先惰性清理过期批次（24h 自动删除）。"""
+        self.purge_expired_draft_batches(workspace_id=workspace_id)
+        batches, has_more = self.repository.list_draft_batches(
+            limit, offset, workspace_id=workspace_id
+        )
+        return {
+            "batches": batches,
+            "pagination": {
+                "limit": limit,
+                "offset": offset,
+                "returned": len(batches),
+                "has_more": has_more,
+            },
+        }
+
+    def delete_draft_batch(self, *, batch_id: str, workspace_id: str = "local") -> dict[str, Any]:
+        """软删一个采集批次的全部草稿（batch_id 为空表示"历史未分组"批次）。"""
+        count = self.repository.delete_draft_batch(batch_id=batch_id, workspace_id=workspace_id)
+        return {"deleted_count": count, "batch_id": batch_id, "status": "deleted"}
+
+    def purge_expired_draft_batches(
+        self, *, retention_hours: int = 24, workspace_id: str = "local"
+    ) -> int:
+        """软删超过保留时长（默认 24h）的采集批次草稿。"""
+        return self.repository.purge_expired_draft_batches(
+            retention_hours=retention_hours, workspace_id=workspace_id
+        )
 
     def restore_drafts(self, draft_ids: list[int], workspace_id: str = "local") -> dict[str, Any]:
         ids = self.repository.restore_drafts(draft_ids, workspace_id)
@@ -2240,6 +2273,7 @@ USER-REQUESTED PANEL PLANNING ADDITIONS (user extra requirements only; they MUST
         ).strip()
         return {
             "source_type": "onebound_api",
+            "collection_channel": "daily_selection",
             "candidate_id": str(candidate.get("candidate_id") or "").strip() or None,
             "offer_id": str(candidate.get("offer_id") or "").strip() or None,
             "source_platform": str(candidate.get("source_platform") or "1688").strip(),

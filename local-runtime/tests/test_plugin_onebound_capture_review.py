@@ -27,8 +27,8 @@ class _Drafts:
     def draft_by_candidate(self, candidate_id: str, workspace_id: str):
         return self.by_candidate.get(candidate_id)
 
-    def intake_shop_candidate(self, *, batch_id: str, workspace_id: str, candidate: dict):
-        self.intakes.append({"batch_id": batch_id, "workspace_id": workspace_id, "candidate": candidate})
+    def intake_shop_candidate(self, *, batch_id: str, workspace_id: str, candidate: dict, **kwargs: object):
+        self.intakes.append({"batch_id": batch_id, "workspace_id": workspace_id, "candidate": candidate, **kwargs})
         draft = {"id": len(self.intakes), "status": "draft", "candidate_id": candidate["candidate_id"]}
         self.by_candidate[candidate["candidate_id"]] = draft
         return {"action": "created", "draft": draft}

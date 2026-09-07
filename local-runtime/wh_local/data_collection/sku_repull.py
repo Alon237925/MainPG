@@ -101,6 +101,7 @@ class SkuRepullJob:
     workspace_id: str
     round: int
     total: int
+    platform: str = "1688"
     done: int = 0
     succeeded: int = 0
     failed: int = 0
@@ -171,6 +172,9 @@ class SkuRepullRunner:
                 workspace_id=actor.workspace_id,
                 round=previous_round + 1,
                 total=len(targets),
+                platform=str(run.criteria.get("collection_platform") or "1688")
+                if isinstance(getattr(run, "criteria", None), Mapping)
+                else "1688",
                 message=f"第 {previous_round + 1} 轮补齐进行中",
                 updated_at=_now(),
             )
@@ -219,17 +223,19 @@ class SkuRepullRunner:
 
     def _execute(self, actor: Any, job: SkuRepullJob, targets: list[Any]) -> None:
         try:
-            config = self._provider_config_resolver(actor)
+            from .service import _platform_config
+
+            config = _platform_config(self._provider_config_resolver(actor), job.platform)
             provider = self._provider_factory(config)
         except Exception:
             job.status = "failed"
-            job.message = "1688 采集服务未配置，无法补齐 SKU"
+            job.message = "采集服务未配置，无法补齐 SKU"
             job.updated_at = _now()
             self._persist(actor, job)
             return
         from .normalizer import enrich_candidate_with_detail
 
-        # 补齐是纯 IO（逐条拉取 1688 详情），线程池并发可显著缩短轮次时长。
+        # 补齐是纯 IO（逐条拉取平台详情），线程池并发可显著缩短轮次时长。
         with ThreadPoolExecutor(
             max_workers=_repull_worker_count(), thread_name_prefix="sku-repull"
         ) as executor:

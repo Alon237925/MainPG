@@ -176,7 +176,7 @@
 .pod-history-drawer-body .pod-history > header { padding: 0 0 10px; border-bottom: 1px solid var(--pod-border); background: transparent; }
 .pod-history-drawer-body .pod-history-list { flex: 1; max-height: none; padding: 6px 0 0; overflow: auto; }
 
-.pod-gallery { grid-area: gallery; min-width: 0; min-height: 680px; padding: 16px; }
+.pod-gallery { min-width: 0; min-height: 0; padding: 16px; }
 .pod-gallery-header { display: flex; align-items: start; justify-content: space-between; gap: 16px; }
 .pod-gallery-header > div:first-child { min-width: 0; }
 .pod-gallery-header > div:first-child > span { color: var(--pod-primary); font-size: .61rem; font-weight: 900; letter-spacing: .09em; }
@@ -356,7 +356,7 @@
 .pod-history-trigger { display: flex; width: 100%; align-items: center; justify-content: center; gap: 10px; min-height: 44px; border: 0; border-radius: 16px; color: #fff; background: #e95a46; font-weight: 900; box-shadow: 0 8px 18px rgba(205, 72, 54, .18); }
 .pod-history-trigger span { font-size: .58rem; font-weight: 700; opacity: .84; }
 .pod-history-trigger.is-open { background: #c94b3b; }
-.pod-results-column { grid-area: gallery; display: grid; min-width: 0; gap: 12px; }
+.pod-results-column { grid-area: gallery; display: grid; min-width: 0; gap: 12px; align-items: start; align-content: start; }
 .pod-current-template-summary { padding: 14px 16px; border: 1px solid var(--pod-border); border-radius: 18px; background: var(--pod-surface); box-shadow: 0 8px 24px var(--pod-shadow); }
 .pod-current-template-summary > header { display: flex; align-items: center; justify-content: space-between; gap: 12px; margin-bottom: 10px; }
 .pod-current-template-summary > header span { color: var(--pod-primary); font-size: .58rem; font-weight: 900; letter-spacing: .1em; }
@@ -375,7 +375,7 @@
 .pod-gallery-header h2 { font-size: 1rem; }
 .pod-gallery-progress { margin: 10px 0 12px; }
 .pod-style-rows { display: grid; gap: 12px; }
-.pod-style-row { content-visibility: auto; contain-intrinsic-size: 250px; padding: 12px; border: 1px solid var(--pod-border); border-radius: 18px; background: var(--pod-surface-soft); }
+.pod-style-row { padding: 12px; border: 1px solid var(--pod-border); border-radius: 18px; background: var(--pod-surface-soft); }
 .pod-style-row > header { display: flex; align-items: center; gap: 9px; margin-bottom: 10px; }
 .pod-style-row-main { display: grid; min-width: 0; width: 0; flex: 1 1 auto; gap: 2px; }
 .pod-style-title-button { display: block; min-width: 0; overflow: hidden; padding: 0; border: 0; color: var(--pod-text); background: transparent; font-size: .76rem; font-weight: 800; text-align: left; text-overflow: ellipsis; white-space: nowrap; }

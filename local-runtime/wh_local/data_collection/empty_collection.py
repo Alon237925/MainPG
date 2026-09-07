@@ -186,8 +186,11 @@ class EmptyCollectionRetryRunner:
         return dict(previous) if isinstance(previous, Mapping) else empty_collection_retry_state()
 
     def _execute(self, actor: Any, job: EmptyCollectionRetryJob, run: Any) -> None:
+        platform = str(run.criteria.get("collection_platform") or "1688")
         try:
-            config = self._provider_config_resolver(actor)
+            from .service import _platform_config
+
+            config = _platform_config(self._provider_config_resolver(actor), platform)
             provider = self._provider_factory(config)
         except Exception:
             with job.progress_lock:
@@ -217,10 +220,7 @@ class EmptyCollectionRetryRunner:
                 filtered = filter_and_score_candidates(
                     tuple(item.candidate for item in collected.candidates), criteria
                 )
-                candidates = (
-                    *filtered.candidates[: criteria.target_count],
-                    *filtered.filtered,
-                )
+                candidates = (*filtered.candidates[: criteria.target_count],)
             except Exception:
                 candidates = ()
             if candidates:

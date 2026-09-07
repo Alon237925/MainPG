@@ -327,21 +327,21 @@ def register_daily_selection_routes(
                 status_code=503,
                 detail={
                     "code": "PROVIDER_NOT_CONFIGURED",
-                    "message": "1688 采集服务尚未配置",
+                    "message": "采集服务尚未配置",
                 },
             ) from error
 
     @router.post(
-        "/desktop/daily-selection/preview-from-1688-link",
+        "/desktop/daily-selection/preview-from-link",
         response_model=DailySelectionRun,
     )
-    def preview_from_1688_link(
+    def preview_from_link(
         background_tasks: BackgroundTasks,
         request: dict[str, Any] = Body(...),
         actor: DailySelectionActor = Depends(actor_dependency),
     ) -> DailySelectionRun:
         try:
-            run = service.preview_from_1688_link(actor=actor, request=request)
+            run = service.preview_from_link(actor=actor, request=request)
             # 采集预览不写入草稿池：候选需用户在每日选品页确认入池后才会进入。
             background_tasks.add_task(service.auto_start_sku_repull, actor=actor, run_id=run.run_id)
             return run
@@ -352,9 +352,21 @@ def register_daily_selection_routes(
                 status_code=503,
                 detail={
                     "code": "PROVIDER_NOT_CONFIGURED",
-                    "message": "1688 采集服务尚未配置",
+                    "message": "采集服务尚未配置",
                 },
             ) from error
+
+    @router.post(
+        "/desktop/daily-selection/preview-from-1688-link",
+        response_model=DailySelectionRun,
+        include_in_schema=False,
+    )
+    def preview_from_1688_link(
+        background_tasks: BackgroundTasks,
+        request: dict[str, Any] = Body(...),
+        actor: DailySelectionActor = Depends(actor_dependency),
+    ) -> DailySelectionRun:
+        return preview_from_link(background_tasks, request, actor)
 
     @router.post("/desktop/data-collection/plugin-sessions")
     def create_plugin_session(

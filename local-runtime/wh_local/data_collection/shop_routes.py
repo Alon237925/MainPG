@@ -5,7 +5,7 @@ from __future__ import annotations
 from collections.abc import Callable, Mapping
 from dataclasses import dataclass
 from pathlib import Path
-from typing import Any
+from typing import Any, Literal
 
 from fastapi import APIRouter, Depends, HTTPException, Query, status
 from pydantic import BaseModel, ConfigDict, Field, ValidationError, field_validator
@@ -25,6 +25,7 @@ class CreateShopBatchRequest(BaseModel):
     model_config = ConfigDict(extra="forbid")
 
     source_input: str = Field(min_length=1, max_length=4096)
+    platform: Literal["1688", "taobao"] = "1688"
 
     @field_validator("source_input", mode="before")
     @classmethod
@@ -65,7 +66,7 @@ def create_shop_collection_router(dependencies: ShopCollectionRouteDependencies)
     @router.post("", response_model=ShopBatch, status_code=status.HTTP_202_ACCEPTED)
     def create_batch(request: CreateShopBatchRequest, actor: DailySelectionActor = Depends(actor_dependency)) -> ShopBatch:
         try:
-            return service.create_batch(actor=actor, source_input=request.source_input)
+            return service.create_batch(actor=actor, source_input=request.source_input, platform=request.platform)
         except ShopCollectionInputError as error:
             raise HTTPException(status_code=422, detail=str(error)) from error
         except ActiveShopBatchExists as error:
@@ -73,7 +74,7 @@ def create_shop_collection_router(dependencies: ShopCollectionRouteDependencies)
         except ShopCollectionProviderUnavailable as error:
             raise HTTPException(
                 status_code=503,
-                detail={"code": "PROVIDER_NOT_CONFIGURED", "message": "1688 采集服务暂不可用"},
+                detail={"code": "PROVIDER_NOT_CONFIGURED", "message": "采集服务暂不可用"},
             ) from error
 
     @router.get("", response_model=ShopBatchPage)

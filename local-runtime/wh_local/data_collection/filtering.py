@@ -4,7 +4,7 @@ from __future__ import annotations
 
 from collections.abc import Sequence
 from dataclasses import dataclass
-from urllib.parse import urlsplit, urlunsplit
+from urllib.parse import parse_qsl, urlencode, urlsplit, urlunsplit
 import re
 
 from .contracts import DailySelectionCandidate
@@ -155,7 +155,13 @@ def _real_offer_identity(candidate: DailySelectionCandidate) -> tuple[str, str] 
 
 
 def canonical_source_url(value: str) -> str:
-    """Return the stable source-link identity used only for ID-less offers."""
+    """Return the stable source-link identity used only for ID-less offers.
+
+    Taobao/Tmall carry the item ID in the query string (``?id=...``), so a
+    bare path normalisation would collapse every shop's items into one URL.
+    The identity-bearing query parameters are kept while tracking noise
+    (``spm``, ``skuId``, ``mi_id`` ...) is dropped.
+    """
     parsed = urlsplit(value.strip())
     scheme = parsed.scheme.casefold()
     hostname = (parsed.hostname or "").casefold()
@@ -165,7 +171,17 @@ def canonical_source_url(value: str) -> str:
         netloc = f"{parsed.username}@{netloc}"
     if port is not None and not ((scheme == "https" and port == 443) or (scheme == "http" and port == 80)):
         netloc = f"{netloc}:{port}"
-    return urlunsplit((scheme, netloc, parsed.path.rstrip("/") or "/", "", ""))
+    return urlunsplit((scheme, netloc, parsed.path.rstrip("/") or "/", _identity_query(parsed.query), ""))
+
+
+_IDENTITY_QUERY_KEYS = frozenset({"id", "item_id", "itemId", "num_iid", "offerId", "offer_id"})
+
+
+def _identity_query(query: str) -> str:
+    if not query:
+        return ""
+    parts = [(key, value) for key, value in parse_qsl(query) if key in _IDENTITY_QUERY_KEYS]
+    return urlencode(parts) if parts else ""
 
 
 def _canonical_url_or_none(value: str) -> str | None:

@@ -4,6 +4,7 @@ import { SkuBatchManager } from '../components/SkuBatchManager';
 import { ppRequest, type ApiContext } from '../api/client';
 import { productProcessingApiContext } from '../api/context';
 import { addDraftComboSource } from '../api/comboApi';
+import type { DraftCollectionBatch } from '../api/productProcessingApi';
 import { variantPresentation } from '../data/skuPresentation';
 import type {
   DraftSummary,
@@ -34,6 +35,27 @@ type Props = {
 
 function api(): ApiContext {
   return productProcessingApiContext();
+}
+
+function batchChannelLabel(batch: DraftCollectionBatch): string {
+  if (batch.collection_channel === 'shop_collection') return '整店采集';
+  if (batch.collection_channel === 'plugin_capture') return '插件采集';
+  if (batch.collection_channel === 'daily_selection') return '每日选品';
+  // 历史数据没有 collection_channel：按批次 ID 前缀启发式推断。
+  if (batch.batch_id.startsWith('shop-')) return '整店采集';
+  if (batch.batch_id.length > 20) return '每日选品';
+  return '采集批次';
+}
+
+function batchDisplayName(batch: DraftCollectionBatch): string {
+  if (batch.collection_channel) return batch.channel_name || batch.batch_id || '采集批次';
+  return batch.channel_name || batch.batch_id || '历史未分组';
+}
+
+function formatBatchTime(value: string): string {
+  const date = new Date(value);
+  if (Number.isNaN(date.getTime())) return value || '—';
+  return date.toLocaleString('zh-CN', { hour12: false });
 }
 
 function draftDirty(draft: DraftSummary, edits: Record<number, DraftEdit>): boolean {
@@ -90,6 +112,12 @@ export function ProductProcessingVerifyPage({ onStartProcessing, isActive = true
   const [hideSingleSpec, setHideSingleSpec] = useState(false);
   const [isStickyToolbar, setIsStickyToolbar] = useState(false);
   const [deletedBatch, setDeletedBatch] = useState<DeletedDraftBatch | null>(null);
+  // 采集批次管理：批次列表（按来源分组）、选中删除、当前筛选批次
+  const [draftBatches, setDraftBatches] = useState<DraftCollectionBatch[]>([]);
+  const [selectedBatchIds, setSelectedBatchIds] = useState<Set<string>>(new Set());
+  const [activeBatchId, setActiveBatchId] = useState<string | null>(null);
+  const [batchesOpen, setBatchesOpen] = useState(true);
+  const [batchBusy, setBatchBusy] = useState(false);
   const draftListRef = useRef<HTMLDivElement>(null);
   const stickyToolbarRef = useRef<HTMLDivElement>(null);
   const stickySpacerRef = useRef<HTMLDivElement>(null);
@@ -247,8 +275,58 @@ export function ProductProcessingVerifyPage({ onStartProcessing, isActive = true
   };
 
   const refresh = async () => {
-    const draftData = await ppRequest<{ drafts: DraftSummary[] }>(ctx, `${API_BASE}/drafts?view=summary&limit=500`);
+    const batchQuery = activeBatchId ? `&selection_run_id=${encodeURIComponent(activeBatchId)}` : '';
+    const draftData = await ppRequest<{ drafts: DraftSummary[] }>(ctx, `${API_BASE}/drafts?view=summary&limit=500${batchQuery}`);
     setDrafts(draftData.drafts || []);
+  };
+
+  const refreshBatches = async () => {
+    try {
+      const data = await ppRequest<{ batches: DraftCollectionBatch[] }>(ctx, `${API_BASE}/draft-batches`);
+      setDraftBatches(data.batches || []);
+      if (activeBatchId && !(data.batches || []).some((batch) => batch.batch_id === activeBatchId)) {
+        setActiveBatchId(null);
+      }
+    } catch (err) {
+      // 批次面板失败不影响草稿池主流程
+      console.warn('draft batches refresh failed', err);
+    }
+  };
+
+  const toggleBatch = (batchId: string) => {
+    setSelectedBatchIds((prev) => {
+      const next = new Set(prev);
+      if (next.has(batchId)) next.delete(batchId);
+      else next.add(batchId);
+      return next;
+    });
+  };
+
+  const selectAllBatches = () => {
+    setSelectedBatchIds(new Set(draftBatches.map((batch) => batch.batch_id)));
+  };
+
+  const deleteSelectedBatches = async () => {
+    if (selectedBatchIds.size === 0) return;
+    setBatchBusy(true);
+    setError('');
+    const batchIds = [...selectedBatchIds];
+    try {
+      let deleted = 0;
+      for (const batchId of batchIds) {
+        const result = await ppRequest<{ deleted_count: number }>(ctx, `${API_BASE}/draft-batches/${encodeURIComponent(batchId)}/delete`, { method: 'POST' });
+        deleted += result.deleted_count || 0;
+      }
+      setSelectedBatchIds(new Set());
+      if (activeBatchId && batchIds.includes(activeBatchId)) setActiveBatchId(null);
+      setMessage(`已删除 ${batchIds.length} 个批次、共 ${deleted} 条草稿`);
+      await refreshBatches();
+      await refresh();
+    } catch (err) {
+      setError(err instanceof Error ? err.message : '删除批次失败');
+    } finally {
+      setBatchBusy(false);
+    }
   };
 
   useEffect(() => {
@@ -261,8 +339,15 @@ export function ProductProcessingVerifyPage({ onStartProcessing, isActive = true
 
   useEffect(() => {
     refresh().catch(fail);
+    refreshBatches();
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, []);
+
+  // 切换批次筛选后重拉草稿列表（批次面板点击行）
+  useEffect(() => {
+    refresh().catch(fail);
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [activeBatchId]);
 
   // 容器级自动刷新：插件采集/每日选品确认入池/处理完成后，草稿池 revision 变化即静默重拉列表
   // （revision 指纹不变时不做无意义的全量刷新；仅页面可见时轮询，切走标签页自动暂停）
@@ -270,7 +355,7 @@ export function ProductProcessingVerifyPage({ onStartProcessing, isActive = true
   useChangePoller({
     url: `${API_BASE}/drafts/revision`,
     headers: { "X-Workspace-ID": ctx.workspaceId },
-    onChange: () => { refresh().catch(() => undefined); },
+    onChange: () => { refresh().catch(() => undefined); refreshBatches(); },
   });
 
   const toggleDraft = (id: number) => {
@@ -578,6 +663,7 @@ export function ProductProcessingVerifyPage({ onStartProcessing, isActive = true
         <div className="verify-section-head">
           <h2><i className="iconfont icon-database" aria-hidden="true" />草稿池</h2>
           <div className="verify-actions">
+            <button className={batchesOpen ? 'is-active' : ''} onClick={() => { setBatchesOpen((value) => !value); if (!batchesOpen) refreshBatches(); }} disabled={batchBusy}><i className="iconfont icon-appstore" aria-hidden="true" />采集批次{draftBatches.length ? `（${draftBatches.length}）` : ''}</button>
             <button onClick={selectAll}><i className="iconfont icon-select" aria-hidden="true" />全选本页</button>
             <button onClick={clearSelection}><i className="iconfont icon-close-circle" aria-hidden="true" />取消选择</button>
             <button onClick={openSkuBatch} disabled={!selectedIds.size}><i className="iconfont icon-barcode" aria-hidden="true" />批量管理 SKU</button>
@@ -663,6 +749,58 @@ export function ProductProcessingVerifyPage({ onStartProcessing, isActive = true
           </div>
         </div>
         </div>
+
+          {batchesOpen && (
+            <>
+              <div className="verify-batch-mask" onClick={() => setBatchesOpen(false)} />
+              <div className="verify-batch-popover" role="dialog" aria-label="采集批次">
+                <div className="verify-batch-popover-head">
+                  <div><strong>采集批次</strong><span>{draftBatches.length} 个 · 按来源标注，超过 24 小时的批次自动清理</span></div>
+                  <div className="verify-batch-actions">
+                    <button type="button" onClick={selectAllBatches} disabled={batchBusy || !draftBatches.length}>全选批次</button>
+                    <button type="button" className="is-danger" onClick={() => void deleteSelectedBatches()} disabled={batchBusy || selectedBatchIds.size === 0}>
+                      {batchBusy ? '删除中…' : `删除选中批次（${selectedBatchIds.size}）`}
+                    </button>
+                    {activeBatchId !== null && (
+                      <button type="button" onClick={() => { setActiveBatchId(null); setPage(1); }}>查看全部草稿</button>
+                    )}
+                    <button type="button" onClick={() => setBatchesOpen(false)}>收起</button>
+                  </div>
+                </div>
+                <div className="verify-batch-list">
+                  {draftBatches.length === 0 && <p className="verify-batch-empty">暂无采集批次（每日选品/整店采集/插件采集入池后自动创建）。</p>}
+                  {draftBatches.map((batch) => (
+                    <div key={batch.batch_id || '__unassigned__'} className={`verify-batch-row ${activeBatchId === (batch.batch_id || '__unassigned__') ? 'is-active' : ''}`}>
+                      <label className="verify-batch-check" title="选择此批次后可删除">
+                        <input
+                          type="checkbox"
+                          checked={selectedBatchIds.has(batch.batch_id || '__unassigned__')}
+                          onChange={() => toggleBatch(batch.batch_id || '__unassigned__')}
+                        />
+                      </label>
+                      <button type="button" className="verify-batch-main" onClick={() => { setActiveBatchId((current) => (current === (batch.batch_id || '__unassigned__') ? null : (batch.batch_id || '__unassigned__'))); setPage(1); }}>
+                        <span className="verify-batch-tags">
+                          <em className={`is-channel-${batch.collection_channel || 'legacy'}`}>{batchChannelLabel(batch)}</em>
+                          <em>{batch.platform === 'taobao' ? '淘宝 / 天猫' : batch.platform === '1688' ? '1688' : '来源待识别'}</em>
+                        </span>
+                        <span className="verify-batch-name">{batchDisplayName(batch)}</span>
+                        <span className="verify-batch-meta"><strong>{batch.count}</strong> 条 · {formatBatchTime(batch.first_created_at)}</span>
+                      </button>
+                    </div>
+                  ))}
+                </div>
+                {activeBatchId !== null && (
+                  <p className="verify-batch-active-note">
+                    当前只显示「{activeBatchId === '__unassigned__'
+                      ? '历史未分组'
+                      : draftBatches.find((batch) => batch.batch_id === activeBatchId)?.channel_name
+                        || draftBatches.find((batch) => batch.batch_id === activeBatchId)?.batch_id
+                        || '该批次'}」批次的草稿，共 {totalDrafts} 条。
+                  </p>
+                )}
+              </div>
+            </>
+          )}
         </div>
 
         {viewMode === 'selected' && (

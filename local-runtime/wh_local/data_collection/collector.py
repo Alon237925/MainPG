@@ -235,10 +235,12 @@ class DailySelectionCollector:
                         errors.append(response.error)
 
         unique = _rank_candidates(_deduplicate(candidates))
-        # 详情拉取量控制：设置 SKU/起订量筛选时需要全量候选的详情数据才能判定。
-        # 未设置这些筛选时同样在预算内尽量全量拉取详情——detail_count 只作为
-        # 最低覆盖保证，避免候选的 SKU/发源地/属性等字段大面积“未知”。
-        # 超出 API 预算时由后续逐条 _reserve 自然停止。
+        # 详情拉取量控制：展示候选按「采集数量」收敛，未启用 SKU/起订量筛选时
+        # 只拉排名前 target_count 个候选的详情即可——与 1688 上游返回条数≈采集
+        # 数量的行为对齐，避免为多余候选（如淘宝接口忽略 page_size 返回的
+        # 固定 48 条）浪费 API 与时长。启用 SKU 硬筛选时需要全量候选的详情数据
+        # 才能判定，仍按 detail_count 尽量全量；超出 API 预算时由逐条 _reserve
+        # 自然停止。
         has_sku_filter = (
             criteria.min_moq is not None
             or criteria.min_sku_count is not None
@@ -250,6 +252,8 @@ class DailySelectionCollector:
         )
         detail_targets = list(enumerate(unique))
         if not has_sku_filter:
+            detail_targets = detail_targets[: criteria.target_count]
+        else:
             detail_targets = detail_targets[: max(criteria.detail_count, len(unique))]
         if _cancel_requested():
             cancelled = True

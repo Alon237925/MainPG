@@ -116,6 +116,47 @@ export function resolveCreativePrompt(fields: PodBusinessFieldsDraft, currentBat
   return currentBatchEdit.trim() || buildPromptV1(fields);
 }
 
+export function isPristineCreativeEdit(text: string | null | undefined): boolean {
+  const trimmed = (text ?? "").trim();
+  if (!trimmed.startsWith("[POD DIRECT LISTING PROMPT v1]")) return false;
+  // Structurally still the auto-generated v1 snapshot (just copied/stored from
+  // the built-in prompt), not a hand-written creative direction. Such a snapshot
+  // must follow business-field edits instead of freezing stale field values.
+  return ["产品名称：", "产品品类：", "目标市场：", "设计主题：", "风格关键词：", "硬性规则："].every(
+    (label) => trimmed.includes(label),
+  );
+}
+
+export function businessFieldsSignature(fields: PodBusinessFieldsDraft): string {
+  return JSON.stringify([
+    fields.product_name,
+    fields.product_category,
+    fields.target_market,
+    fields.target_audience,
+    fields.core_selling_points,
+    fields.design_theme,
+    fields.style_keywords,
+    fields.color_preferences,
+    fields.excluded_elements,
+  ].map((value) => value.trim()));
+}
+
+export type CreativePromptSyncStatus = "builtin" | "custom" | "custom-stale";
+
+// 判断「本批次创意编辑」与上方业务信息是否同步：
+// - builtin：未自定义，文本即为 buildPromptV1(businessFields) 的实时输出；
+// - custom：已自定义，且自定义时的业务信息快照与当前一致；
+// - custom-stale：已自定义，但业务信息在自定义之后发生变更，文本已不反映最新业务信息。
+export function creativePromptSyncStatus(
+  customEdit: string | null,
+  snapshot: string | null,
+  fields: PodBusinessFieldsDraft,
+): CreativePromptSyncStatus {
+  if (customEdit === null || !customEdit.trim()) return "builtin";
+  if (snapshot === null || snapshot === businessFieldsSignature(fields)) return "custom";
+  return "custom-stale";
+}
+
 function splitBusinessField(value: string): string[] {
   return value.split(/[、，,;；\n]+/).map((part) => part.trim()).filter(Boolean);
 }

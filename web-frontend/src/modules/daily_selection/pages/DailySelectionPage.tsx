@@ -441,13 +441,21 @@ export function DailySelectionPage({ view = "directions", initialDirectionId, on
             // 空采集：后台已按同一条件自动重采，同步一次状态并让轮询接管展示
             void syncCollectionRetry(run.run_id);
           } else {
-            const deduplicated = (run.metadata as { deduplicated?: { count?: number } })
-              ?.deduplicated;
+            const metadata = run.metadata as {
+              deduplicated?: { count?: number };
+              filtered_summary?: { count?: number };
+            };
+            const deduplicated = metadata?.deduplicated;
             const dedupeText =
               deduplicated && deduplicated.count
                 ? `，已剔除 ${deduplicated.count} 条已存在/已处理商品`
                 : "";
-            setNotice(`批次 ${run.run_id.slice(0, 8)} 已返回 ${run.candidate_count} 个候选${dedupeText}`);
+            const filtered = metadata?.filtered_summary;
+            const filteredText =
+              filtered && filtered.count
+                ? `，已过滤 ${filtered.count} 条（风险/重复/SKU 不符，不占用采集数量）`
+                : "";
+            setNotice(`批次 ${run.run_id.slice(0, 8)} 已返回 ${run.candidate_count} 个候选${dedupeText}${filteredText}`);
           }
           return;
         }
@@ -863,7 +871,7 @@ export function DailySelectionPage({ view = "directions", initialDirectionId, on
     if (parsedMaxSkuStock !== undefined) criteria.max_sku_stock = parsedMaxSkuStock;
 
     criteria.collection_mode = mode;
-    criteria.collection_platform = "1688";
+    criteria.collection_platform = platform === "taobao" ? "taobao" : "1688";
     if (mode === "image") criteria.reference_image_url = referenceImageUrl.trim();
     return criteria;
   }
@@ -889,9 +897,8 @@ export function DailySelectionPage({ view = "directions", initialDirectionId, on
       setError("请填写可公开访问的参考图 URL");
       return;
     }
-    if (platform !== "1688") {
-      const channelName = platform === "taobao" ? "淘宝" : "1688 + 淘宝组合";
-      setNotice(`${channelName}采集界面已就绪，当前后端尚未接入该渠道，本次没有发送采集请求。`);
+    if (platform === "1688+taobao") {
+      setNotice("1688 与淘宝组合采集暂未支持，请分别选择 1688 或淘宝单平台采集。");
       return;
     }
 
@@ -1275,17 +1282,17 @@ export function DailySelectionPage({ view = "directions", initialDirectionId, on
             </button>
           </div>
 
-          {platform && platform !== "1688" && (
+          {platform === "1688+taobao" && (
             <div className="channel-placeholder-note">
               <span>前端预留</span>
-              {platform === "taobao" ? "淘宝采集" : "1688 与淘宝组合采集"}暂不调用后端，后续接口接入后可直接补充请求逻辑。
+              1688 与淘宝组合采集暂不调用后端，后续接口接入后可直接补充请求逻辑。
             </div>
           )}
 
           <div className="collection-actions">
             <span>{!platform || platform === "1688"
               ? "1688 会尽量拉取全部候选的详情（SKU/发源地/属性），失败或下架商品除外。"
-              : "淘宝渠道当前仅展示前端交互，不会发送采集请求或产生 API 费用。"}</span>
+              : "淘宝会尽量拉取全部候选的详情，失败或下架商品除外。"}</span>
             <div className="collection-submit-area">
               <button className="collect-button" type="submit" disabled={busy || collecting}>{collecting ? `采集中 ${collectionProgress}%` : "开始采集"}</button>
               {collecting && (
@@ -1444,7 +1451,7 @@ export function DailySelectionPage({ view = "directions", initialDirectionId, on
                   <div className="candidate-body">
                     <a href={candidate.source_url} target="_blank" rel="noreferrer" title={candidate.source_title}>{candidate.source_title}</a>
                     <div className="candidate-tags">
-                      <span>{candidate.source_platform ?? "1688"}</span>
+                      <span>{candidate.source_platform === "taobao" ? "淘宝" : candidate.source_platform ?? "1688"}</span>
                       {candidate.query_keyword && <span title={`中心词：${candidate.query_keyword}`}>中心词 {candidate.query_keyword}</span>}
                       {candidate.selection_result_label && <span>{candidate.selection_result_label}</span>}
                       {candidate.status !== "candidate" && <span className="is-status">{statusText}</span>}
