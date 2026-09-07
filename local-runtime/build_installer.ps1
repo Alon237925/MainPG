@@ -137,10 +137,13 @@ if ($forbiddenFiles) {
 }
 
 # Media publishing: precheck finalization exports final images as public COS
-# URLs. Bundle the controlled cos.local.json next to the exe so installed users
-# can publish final images without manual setup; collection credentials
-# (onebound.local.json) are bundled the same way. Keep release credentials
-# outside Git by setting MAINPG_COS_CONFIG_PATH and MAINPG_ONEBOUND_CONFIG_PATH.
+# URLs. Bundle the controlled cos.local.json (as cos.enc) next to the exe so
+# installed users can publish final images without manual setup; collection
+# credentials (onebound.enc) are bundled the same way. The plaintext files are
+# never shipped — they are AES-GCM encrypted into *.enc so a customer cannot
+# simply copy the .json and reuse the secret. Keep release credentials outside
+# Git by setting MAINPG_COS_CONFIG_PATH and MAINPG_ONEBOUND_CONFIG_PATH (which
+# must point at the plaintext source; this script encrypts it on the fly).
 # The forbidden-names check above only guards the pre-copy dist state so stale
 # credentials from previous builds never leak in silently; .env / databases
 # stay forbidden entirely.
@@ -150,8 +153,9 @@ $cosSource = if ($env:MAINPG_COS_CONFIG_PATH) {
     Join-Path $PSScriptRoot "wh_local\modules\product_processing\cos.local.json"
 }
 if (Test-Path -LiteralPath $cosSource) {
-    Copy-Item -LiteralPath $cosSource -Destination $dist -ErrorAction Stop
-    Write-Host "[build] bundled cos.local.json (media publishing)"
+    & $python -m wh_local.secrets encrypt $cosSource (Join-Path $dist "cos.enc") cos
+    if ($LASTEXITCODE -ne 0) { throw "encrypting cos credentials failed" }
+    Write-Host "[build] bundled cos.enc (media publishing, encrypted)"
 } else {
     Write-Host "[build] WARNING: cos.local.json missing - preview export cannot publish images"
 }
@@ -165,8 +169,9 @@ $oneboundSource = if ($env:MAINPG_ONEBOUND_CONFIG_PATH) {
     Join-Path $PSScriptRoot "wh_local\onebound.local.json"
 }
 if (Test-Path -LiteralPath $oneboundSource) {
-    Copy-Item -LiteralPath $oneboundSource -Destination $dist -ErrorAction Stop
-    Write-Host "[build] bundled onebound.local.json (collection credentials)"
+    & $python -m wh_local.secrets encrypt $oneboundSource (Join-Path $dist "onebound.enc") onebound
+    if ($LASTEXITCODE -ne 0) { throw "encrypting onebound credentials failed" }
+    Write-Host "[build] bundled onebound.enc (collection credentials, encrypted)"
 } else {
     Write-Host "[build] WARNING: onebound.local.json missing - installed users cannot collect 1688 data"
 }

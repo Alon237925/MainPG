@@ -26,6 +26,7 @@ from wh_local.data_collection.contracts import (
 )
 from wh_local.data_collection.public_image_fetch import FetchedPublicImage, fetch_public_image
 from wh_local.config import default_config
+from wh_local.secrets import load_credential_config
 from wh_local.customer.contracts import (
     CustomerAuthRejected,
     CustomerAuthUnavailable,
@@ -90,7 +91,7 @@ from .domain.prompts import (
     format_prompt,
 )
 from .domain.visual_planner import listing_prompt_context
-from .domain.workbooks import read_product_workbook
+from .domain.workbooks import is_variant_value_noise, read_product_workbook
 from .infrastructure.assets import ProductProcessingAssets
 from .infrastructure.ocr_gate import (
     detect_chinese_text,
@@ -237,6 +238,11 @@ _TASK_HEARTBEAT_SECONDS = 10.0
 # 切走/浏览器标签被回收）自动把任务置为暂停，避免用户已不在看却继续烧 AI 成本。
 _TASK_AUTO_PAUSE_TIMEOUT_SECONDS = 90.0
 _TASK_AUTO_PAUSE_SWEEP_SECONDS = 15.0
+# 收尾卡死兜底阈值：全部条目已终态（非 pending/running）但任务仍停在 running，且
+# worker 已退场（崩溃）或长时间无任何条目进展（卡在本地导出/落库）。正常收尾由
+# finish_task 在数秒内把任务置为终态；超过该时间仍未完成即判定卡死，从数据库重建
+# 终态，让前端自动跳到结果页，避免用户永远停在 100% 只能手动取消任务。
+_STUCK_FINALIZE_WEDGE_SECONDS = 600.0
 _DROP_SHOP_CANDIDATE_VALUE = object()
 _SHOP_SENSITIVE_FIELD_NAMES = frozenset(
     {
@@ -343,6 +349,21 @@ def _cos_local_config_paths() -> list[Path]:
         meipass = getattr(sys, "_MEIPASS", None)
         if meipass:
             candidates.append(Path(meipass) / "cos.local.json")
+    return candidates
+
+
+def _cos_enc_config_paths() -> list[Path]:
+    """cos.enc 候选位置，与 ``_cos_local_config_paths`` 布局一致。
+
+    安装包分发给用户的明文可能被直接拷贝复用，故构建时把凭据加密为 cos.enc
+    放进可执行文件同目录；运行时优先读取它，缺失或解密失败再回退明文。
+    """
+    candidates = [Path(__file__).resolve().parent / "cos.enc"]
+    if getattr(sys, "frozen", False):
+        candidates.append(Path(sys.executable).resolve().parent / "cos.enc")
+        meipass = getattr(sys, "_MEIPASS", None)
+        if meipass:
+            candidates.append(Path(meipass) / "cos.enc")
     return candidates
 
 
@@ -569,17 +590,82 @@ def _image_generation_count(value: Any, *, default: int = 4) -> int:
 
 
 def _max_concurrent_tasks() -> int:
-    """进程内最多同时执行的产品处理任务数（默认 1=任务串行排队）。
+    """进程内最多同时执行的产品处理任务数（默认 8=多任务并行）。
 
-    多任务并发（历史恢复任务 + 新提交任务）会在短时间窗口内向 AI 中转商
-    叠加打出大量请求，被供应商判定为攻击。任务串行不丢功能，只是排队。
+    可经 WH_PRODUCT_MAX_CONCURRENT_TASKS 覆盖（上限 8）。文本/识图请求总量
+    由服务器网关门 _SERVER_AI_REQUEST_GATE=2 兜底限流，不会因任务并行叠加打爆
+    中转；图片侧为每任务实例内的信号量（默认 4），多任务并发时图片总在途可能
+    达 任务数 x4，需结合无印/中转承载合理设置。
     """
     raw = os.environ.get("WH_PRODUCT_MAX_CONCURRENT_TASKS", "")
     try:
         value = int(raw)
     except (TypeError, ValueError):
-        value = 1
+        value = 8
     return max(1, min(value, 8))
+
+
+class ProductProcessingDiagnosticOutboxDispatcher:
+    """把「产品处理诊断日志」从本地 SQLite outbox 可靠地上传到服务器。
+
+    每次任务抵达终态（含取消/暂停后保留成功项/崩溃恢复/整批失败）时，先把失败
+    明细连同当次会话 token 写入本地 outbox，再由本分发器在后台 daemon 线程里
+    逐条领取并上传。上传失败按退避重试，尽最大努力保证服务器能按用户账号留存
+    失败日志，便于排查耗时/全失败等线上问题。
+    """
+
+    def __init__(
+        self,
+        *,
+        repository: Any,
+        flush: Callable[[dict[str, Any]], None],
+        retry_delay: float = 3.0,
+    ) -> None:
+        self._repository = repository
+        self._flush = flush
+        self._retry_delay = retry_delay
+        self._wake = threading.Event()
+        self._started = False
+
+    def start(self) -> None:
+        if self._started or not hasattr(self._repository, "claim_pp_diagnostic_outbox"):
+            return
+        self._started = True
+        threading.Thread(target=self._run, name="pp-diagnostic-outbox", daemon=True).start()
+
+    def notify(self, *_args: Any) -> None:
+        self._wake.set()
+
+    def drain_once(self) -> bool:
+        record = self._repository.claim_pp_diagnostic_outbox()
+        if record is None:
+            return False
+        report_key = str(record["report_key"])
+        claim_token = str(record["claim_token"])
+        try:
+            self._flush(record)
+        except Exception as error:
+            self._repository.retry_pp_diagnostic_outbox(
+                report_key=report_key,
+                claim_token=claim_token,
+                error=str(error),
+                delay_seconds=self._retry_delay,
+            )
+        else:
+            self._repository.complete_pp_diagnostic_outbox(
+                report_key=report_key, claim_token=claim_token
+            )
+        return True
+
+    def _run(self) -> None:
+        while True:
+            try:
+                while self.drain_once():
+                    pass
+            except Exception:
+                pass
+            self._wake.wait(timeout=max(0.05, self._retry_delay))
+            self._wake.clear()
 
 
 class ProductProcessingService:
@@ -604,6 +690,7 @@ class ProductProcessingService:
         self._task_remote_tokens: dict[int, str] = {}
         self._server_usage_ids: dict[tuple[int, int], dict[str, str]] = {}
         self._settling_usage_keys: set[tuple[int, int, str]] = set()
+        self._diagnostic_dispatcher: ProductProcessingDiagnosticOutboxDispatcher | None = None
         self._media_materialization_lock = threading.Lock()
         self._media_materialization_workers: dict[str, threading.Thread] = {}
         # 前端任务页轮询心跳：(workspace_id, task_id) -> time.monotonic() 最近一次
@@ -2602,6 +2689,7 @@ USER-REQUESTED PANEL PLANNING ADDITIONS (user extra requirements only; they MUST
                         self._task_safe_error_reason(task_id, exc),
                         workspace_id,
                     )
+                    self._enqueue_failure_diagnostics(task_id, workspace_id)
                     self._cleanup_terminal_billing_state(task_id)
                 except Exception:
                     pass
@@ -2647,6 +2735,10 @@ USER-REQUESTED PANEL PLANNING ADDITIONS (user extra requirements only; they MUST
         """Recover safe queued work and make process-lost calls explicitly retryable."""
         interrupted = self.repository.recover_interrupted_tasks()
         queued = self.repository.queued_tasks()
+        # 后台诊断分发器：消费本地 outbox 并把终态失败明细上传服务器。
+        self._ensure_diagnostic_dispatcher().notify()
+        for task in interrupted:
+            self._enqueue_failure_diagnostics(int(task["id"]), str(task["workspace_id"]))
         billing_auth_required = [
             task
             for task in queued
@@ -2801,6 +2893,11 @@ USER-REQUESTED PANEL PLANNING ADDITIONS (user extra requirements only; they MUST
             except Exception:
                 # 清扫是尽力而为的后台维护，任何异常都不允许终止循环。
                 pass
+            try:
+                self._finalize_wedged_tasks_once()
+            except Exception:
+                # 收尾卡死兜底同样是尽力而为的后台维护，异常不终止循环。
+                pass
 
     def _sweep_stale_heartbeats_once(self) -> None:
         """单次清扫：心跳超时的 running/queued 任务自动置为暂停。
@@ -2841,6 +2938,55 @@ USER-REQUESTED PANEL PLANNING ADDITIONS (user extra requirements only; they MUST
                 # 已进入终态的任务不再需要跟踪心跳。
                 with self._task_last_seen_lock:
                     self._task_last_seen.pop((workspace_id, task_id), None)
+
+    def _finalize_wedged_tasks_once(self) -> None:
+        """收尾卡死兜底：全部条目已终态但任务仍停在 running 的超时任务，直接从
+        数据库重建终态，让前端自动跳到结果页。
+
+        正常情况下 finish_task 在数秒内把任务置为终态；若 worker 线程在收尾阶段
+        （本地导出/落库）崩溃退场或异常挂起，且 _task_has_unfinished_items 为 False
+        使心跳清扫器刻意跳过，任务会永远停在 100%、预检/导出按钮被禁用，用户只能
+        手动取消任务。这里在超过 _STUCK_FINALIZE_WEDGE_SECONDS 仍未完成时兜底，
+        从数据库既有条目终态重建 item_results 并调用 finish_task 置终态。
+        """
+        from datetime import datetime, timedelta, timezone  # noqa: PLC0415
+
+        threshold = datetime.now(timezone.utc) - timedelta(seconds=_STUCK_FINALIZE_WEDGE_SECONDS)
+        for task in self.repository.active_tasks():
+            if str(task.get("status") or "") != "running":
+                continue
+            if self._task_has_unfinished_items(task):
+                continue
+            updated = self._iso_datetime(task.get("updated_at"))
+            if updated is None or updated > threshold:
+                continue
+            item_results = [
+                {
+                    "item_id": item.get("id") or item.get("item_id"),
+                    "status": str(item.get("status") or "failed"),
+                    "reason": str(item.get("reason") or ""),
+                    "skc": item.get("skc") or "",
+                    "spu": item.get("spu") or "",
+                    "title": item.get("title") or "",
+                    "image_url": item.get("image_url") or "",
+                    "result": item.get("result") or {},
+                }
+                for item in (task.get("items") or [])
+                if (item.get("id") or item.get("item_id")) is not None
+            ]
+            try:
+                self.repository.finish_task(
+                    int(task["id"]),
+                    item_results,
+                    output_file=str(task.get("output_file") or ""),
+                    error_report_file=str(task.get("error_report_file") or ""),
+                    video_manifest_file=str(task.get("video_manifest_file") or ""),
+                    workspace_id=str(task.get("workspace_id") or "local"),
+                )
+            except Exception:
+                # 兜底失败（并发收尾已置终态 / 行被删除）不影响后续任务，避免个别
+                # 异常让后台守护循环整体退场。
+                pass
 
     def active_task_count(self, workspace_id: str | None = None) -> int:
         """返回仍在处理中的任务数（queued / running），供前端关闭提醒判断。"""
@@ -2890,6 +3036,9 @@ USER-REQUESTED PANEL PLANNING ADDITIONS (user extra requirements only; they MUST
                 self._settle_cancelled_freezes(task_id, workspace_id, token)
             except Exception:
                 pass
+        # 取消是终态（含「已终止·保留成功项」）：把失败明细写入本地 outbox，
+        # 供后台分发器上传服务器，避免取消的任务在服务器失败日志中缺失。
+        self._enqueue_failure_diagnostics(task_id, workspace_id)
         return {**self._task_response(task), "message": "产品处理任务已取消，未处理链接已释放，未完成链接按冻结积分 50% 结算"}
 
     def finalize_paused_successes(
@@ -4547,18 +4696,19 @@ USER-REQUESTED PANEL PLANNING ADDITIONS (user extra requirements only; they MUST
         # 远程 token 用于计费结算，而清理步骤会把该 token 从内存中移除。
         if not preflight_only:
             self._maybe_launch_auto_repull(task_id, workspace_id, failures)
-            # 静默上报终态失败明细到服务器（诊断用）；补跑轮仍在进行时不报，等最后终态。
-            self._upload_failure_diagnostics(task_id, workspace_id)
+            # 把终态失败明细写入本地 outbox（后台分发器再上传服务器）；
+            # 补跑轮仍在进行时不入队，等最后终态。
+            self._enqueue_failure_diagnostics(task_id, workspace_id)
         self._cleanup_terminal_billing_state(task_id)
         return completed_task
 
-    def _upload_failure_diagnostics(self, task_id: int, workspace_id: str) -> None:
-        """静默上报任务终态失败明细到服务器（诊断用，用户无感知）。
+    def _enqueue_failure_diagnostics(self, task_id: int, workspace_id: str) -> None:
+        """把任务终态失败明细写入本地 outbox（由后台分发器上传服务器）。
 
-        规则：
-        - 仅在上报轮次结束后的最终状态（补跑轮仍在 running 时跳过，等最后一轮）；
-        - 无失败项 / 非计费任务 / 缺远程 token 时直接跳过；
-        - 上传在独立守护线程内进行，任何异常都不影响任务主流程。
+        与旧的 best-effort 直传不同：这里先落本地 SQLite outbox 保证不丢，再由
+        ProductProcessingDiagnosticOutboxDispatcher 逐条领取上传。覆盖正常收尾、
+        取消（含「已终止·保留成功项」）、崩溃恢复、整批失败等所有终态，便于
+        服务器按用户账号留存失败日志，排查耗时/全失败等线上问题。
         """
         try:
             task = self._require_task(task_id, workspace_id)
@@ -4610,15 +4760,33 @@ USER-REQUESTED PANEL PLANNING ADDITIONS (user extra requirements only; they MUST
                     self._failure_diagnostic_item(item) for item in failed_items
                 ],
             }
-            threading.Thread(
-                target=self._report_failure_log,
-                name=f"pp-failure-log-{task_id}",
-                daemon=True,
-                args=(token, payload),
-            ).start()
+            self.repository.enqueue_pp_diagnostic_outbox(
+                report_key=f"pp-task-{int(task_id)}-final",
+                account_id=account_id,
+                remote_token=token,
+                payload=payload,
+            )
+            self._ensure_diagnostic_dispatcher().notify()
         except Exception:
             # 诊断上报绝不允许影响任务主流程。
             pass
+
+    def _ensure_diagnostic_dispatcher(self) -> ProductProcessingDiagnosticOutboxDispatcher:
+        dispatcher = self._diagnostic_dispatcher
+        if dispatcher is None:
+            dispatcher = ProductProcessingDiagnosticOutboxDispatcher(
+                repository=self.repository,
+                flush=self._flush_pp_diagnostic_record,
+            )
+            self._diagnostic_dispatcher = dispatcher
+        dispatcher.start()
+        return dispatcher
+
+    def _flush_pp_diagnostic_record(self, record: dict[str, Any]) -> None:
+        """后台分发器回调：把一条 outbox 记录实际上传到服务器失败日志接口。"""
+        client = _batch_billing_client()
+        payload = json.loads(str(record.get("payload_json") or "{}"))
+        client.submit_pp_failure_log(str(record.get("remote_token") or ""), payload)
 
     @staticmethod
     def _failure_diagnostic_item(item: Mapping[str, Any]) -> dict[str, Any]:
@@ -4661,14 +4829,6 @@ USER-REQUESTED PANEL PLANNING ADDITIONS (user extra requirements only; they MUST
                 if isinstance(path, (str, int))
             ][:30],
         }
-
-    def _report_failure_log(self, token: str, payload: dict[str, Any]) -> None:
-        """在守护线程里执行实际上传，尽力而为，任何失败都静默吞掉。"""
-        try:
-            client = _batch_billing_client()
-            client.submit_pp_failure_log(token, payload)
-        except Exception:
-            pass
 
     def _maybe_launch_auto_repull(
         self,
@@ -5715,73 +5875,51 @@ USER-REQUESTED PANEL PLANNING ADDITIONS (user extra requirements only; they MUST
                 attempt_state.doubao_vision = None
                 attempt_state.doubao_vision_cache_hit = False
                 attempt_state.workspace_id = workspace_id
+                vision_fallback_status: str | None = None
+                vision_fallback_attempts: int = 0
                 try:
                     analysis = self._recognize_doubao_subject(
                         vision_reference_urls, source_title
                     )
                 except DoubaoVisionError as exc:
                     record_stage("doubao_subject", stage_started)
-                    configuration_error = exc.error_kind == "configuration"
-                    identity_error = exc.error_kind in {"invalid_input", "invalid_response"}
-                    return {
-                        **item,
-                        "title": title,
-                        "image_url": image_url,
-                        "status": (
-                            "attention_required"
-                            if configuration_error or identity_error
-                            else "failed"
+                    # 尽量放行：视觉主体识别异常（服务未就绪 / 结果不符合结构化合同 /
+                    # provider http / 配置缺失）一律不再硬拦截整条商品，改用源标题兜底
+                    # 作为可售主体，继续走文案与生图，最后按正常结果入库。这能避免用户
+                    # 侧因识别副作用被反复「待确认/失败」，把生图问题误判成软件故障。
+                    vision_fallback_status = exc.error_kind
+                    vision_fallback_attempts = max(0, int(exc.attempt_count))
+                    analysis = SubjectAnalysis(
+                        sellable_subject=self._text(source_title).strip() or "商品",
+                        subject_explanation=(
+                            "best-effort subject inferred from the original title "
+                            f"because the vision provider was unavailable ({exc.error_kind})"
                         ),
-                        "reason": "AI 识别服务暂不可用，请稍后重试",
-                        "result": {
-                            "error_type": "vision_service_unavailable",
-                            "failure_class": (
-                                "configuration_blocked"
-                                if configuration_error
-                                else (
-                                    "identity_review_required"
-                                    if identity_error
-                                    else "technical_retryable"
-                                )
-                            ),
-                            "operator_hint": (
-                                "AI 识别服务暂不可用，请稍后重试"
-                                if configuration_error
-                                else (
-                                    "AI 识别结果异常，请重新提交或更换商品后重试"
-                                    if identity_error
-                                    else "AI 识别服务暂不可用，请稍后重试"
-                                )
-                            ),
-                            "debug_hint": (
-                                "服务器主体识别服务未就绪；请检查服务器文本/识图路由、密钥与余额后重试"
-                                if configuration_error
-                                else (
-                                    "服务器主体识别结果不符合结构化合同；已阻止后续文案和生图"
-                                    if identity_error
-                                    else "服务器主体识别暂时不可用；未调用后续文本或生图，请稍后重试"
-                                )
-                            ),
-                            "retryable": True,
-                            "vision_identity": {},
-                            "provider_attempts": {
-                                "doubao_vision": max(0, int(exc.attempt_count))
-                            },
-                            "provider_status_classes": {
-                                "doubao_vision": exc.error_kind
-                            },
-                            "stage_timings_ms": timing_snapshot(),
-                        },
-                    }
+                        visible_attributes=(),
+                        excluded_elements=(),
+                        confidence="low",
+                        uncertainty_reason=(
+                            f"vision provider unavailable ({exc.error_kind}); "
+                            "subject inferred from the original title"
+                        ),
+                    )
+                    ai_notes.append(f"subject_identity:vision-fallback:{exc.error_kind}")
+                    ai_notes.append("subject_identity:source-title-fallback")
                 measured_attempts = getattr(attempt_state, "doubao_vision", None)
                 provider_attempts["doubao_vision"] = (
-                    1 if measured_attempts is None else max(0, int(measured_attempts))
+                    (vision_fallback_attempts or 1)
+                    if vision_fallback_status is not None
+                    else (
+                        1 if measured_attempts is None else max(0, int(measured_attempts))
+                    )
                 )
                 vision_cache_hit = bool(
                     getattr(attempt_state, "doubao_vision_cache_hit", False)
                 )
                 provider_status_classes["doubao_vision"] = (
-                    "cache_hit" if vision_cache_hit else "success"
+                    "cache_hit"
+                    if vision_cache_hit
+                    else (str(vision_fallback_status or "") or "success")
                 )
                 if vision_cache_hit:
                     ai_notes.append("subject_identity:cache-hit")
@@ -6428,44 +6566,36 @@ USER-REQUESTED PANEL PLANNING ADDITIONS (user extra requirements only; they MUST
             provider_status_classes["four_grid"] = grid_output.provider_status_class
             stage_timings_ms.update(grid_output.stage_timings_ms)
             if len(grid_image_paths) != 4:
-                # Success means four real carousel images. Never turn a split or
-                # generation failure into a misleading completed result, even when
-                # an older task payload contains force-import compatibility flags.
-                mode_label = "精品4K" if premium_mode else "普通智能生图"
+                # 尽量放行：轮播图未凑满 4 张（含生成超时 / 本地质量门未过 / 槽位重绘失败）
+                # 不再硬拦截整条商品。用已有轮播图 / 提供方原图 / 源图兜底，保留可用结果
+                # 继续合成详情图并入库，避免用户侧因生图副作用被反复「待确认」而误判故障。
                 image_failure_detail = self._latest_ai_failure_detail(ai_notes)
-                return {
-                    **item,
-                    "title": optimized_title,
-                    "image_url": image_url,
-                    "status": "attention_required",
-                    "reason": "商品图片待补充",
-                    "result": {
-                        "error_type": "image_grid_incomplete",
-                        "failure_class": "technical_retryable",
-                        "partial_result": True,
-                        "pending_stage": "carousel_images",
-                        "operator_hint": "图片未达质量标准，可重试生成；或直接入库后人工替换图片",
-                        "debug_hint": (
-                            f"{mode_label}未生成4张可用轮播图；生成图未通过本地质量门；"
-                            "可查看保留的提供方原图后重试，或点击“我已知晓，仍要入库”放行本次质量告警"
-                            + (f"；底层原因：{image_failure_detail}" if image_failure_detail else "")
-                        ),
-                        "retryable": True,
-                        "rejected_image_paths": list(grid_output.rejected_image_paths),
-                        "optimized_title": optimized_title,
-                        "description": description,
-                        "variant_value_translations": variant_value_translations,
-                        "variant_translation_review_values": variant_translation_review_values,
-                        "variant_translation_sources": variant_translation_sources,
-                        "product_dimensions": product_dimensions,
-                        "vision_identity": vision_identity,
-                        "text_generation": text_generation,
-                        "ai_notes": ai_notes,
-                        "provider_attempts": provider_attempts,
-                        "provider_status_classes": provider_status_classes,
-                        "stage_timings_ms": timing_snapshot(),
-                    },
-                }
+                if not grid_image_paths:
+                    fallback_carousel = list(
+                        dict.fromkeys(
+                            str(path)
+                            for path in provider_original_image_paths
+                            if str(path or "").strip()
+                        )
+                    )[:4]
+                    if not fallback_carousel:
+                        fallback_carousel = list(
+                            dict.fromkeys(
+                                str(url) for url in source_image_urls if str(url or "").strip()
+                            )
+                        )[:4]
+                    grid_image_paths = fallback_carousel
+                    provider_status_classes["four_grid"] = (
+                        "source_fallback"
+                        if grid_image_paths
+                        else str(provider_status_classes.get("four_grid") or "empty")
+                    )
+                ai_notes.append("grid:partial:allowed")
+                ai_notes.append(
+                    f"grid:missing:{max(0, 4 - len(grid_image_paths))}"
+                )
+                if image_failure_detail:
+                    ai_notes.append(f"grid:fallback:{image_failure_detail}")
         if need_detail and not images_receipt_hit:
             # 检查点：任务被暂停/取消时不再合成或发起详情图生成。
             self._raise_if_task_stopped(task_id, workspace_id)
@@ -8521,17 +8651,20 @@ USER-REQUESTED PANEL PLANNING ADDITIONS (user extra requirements only; they MUST
                 continue
             for entry in entries:
                 if isinstance(entry, dict):
-                    add(
-                        variants,
-                        variant_seen,
-                        entry.get("name") or entry.get("attribute_name") or entry.get("attribute_name_en"),
-                        entry.get("value") or entry.get("value_name") or entry.get("value_name_en"),
-                    )
+                    name = entry.get("name") or entry.get("attribute_name") or entry.get("attribute_name_en")
+                    value = entry.get("value") or entry.get("value_name") or entry.get("value_name_en")
                 else:
                     try:
-                        add(variants, variant_seen, entry[0], entry[1])
+                        name, value = entry[0], entry[1]
                     except (TypeError, IndexError, KeyError):
                         continue
+                # Temu 采集会把页面级元数据（品牌/评分/运费/支付/整段描述）混入变种属性；
+                # 翻译前先剔除噪音，避免提交给 AI 翻译或进入翻译恢复流程。
+                if name is None or value is None:
+                    continue
+                if is_variant_value_noise(name, value):
+                    continue
+                add(variants, variant_seen, name, value)
         return {"source_attributes": source, "variant_attributes": variants}
 
     @staticmethod
@@ -9097,27 +9230,24 @@ USER-REQUESTED PANEL PLANNING ADDITIONS (user extra requirements only; they MUST
                 "premium_image_model": provider.get("premium_image_model") or PREMIUM_IMAGE_MODEL,
                 "premium_image_size": provider.get("premium_image_size") or PREMIUM_IMAGE_SIZE,
             }
-        # COS 图床：gitignored 本地配置 cos.local.json 优先，环境变量 WH_COS_* 可覆盖。
-        # 对齐原型出图保存逻辑——生成图上传 COS 转外链后写进导入表，店小秘可直接读取。
-        # 已配置安装可从程序目录读取 gitignored 本地配置；公开安装包不携带密钥，
-        # 新安装需由系统设置或环境变量提供 COS 凭据。
+        # COS 图床：安装包内置的 cos.enc / cos.local.json（加密 blob 优先，回退明文），
+        # 环境变量 WH_COS_* 可覆盖。对齐原型出图保存逻辑——生成图上传 COS 转外链后写进
+        # 导入表，店小秘可直接读取。公开安装包不再携带明文密钥。
         cos_config: dict[str, Any] = {}
         local_cos_prefix = ""
-        for local_cos in _cos_local_config_paths():
-            try:
-                if local_cos.is_file():
-                    loaded = json.loads(local_cos.read_text(encoding="utf-8"))
-                    if isinstance(loaded, dict):
-                        cos_config = {
-                            "bucket": str(loaded.get("bucket") or "").strip(),
-                            "region": str(loaded.get("region") or "").strip(),
-                            "secret_id": str(loaded.get("secret_id") or "").strip(),
-                            "secret_key": str(loaded.get("secret_key") or "").strip(),
-                        }
-                        local_cos_prefix = str(loaded.get("cos_prefix") or "").strip("/")
-                        break
-            except (OSError, ValueError):
-                cos_config = {}
+        loaded_cos = load_credential_config(
+            json_candidates=_cos_local_config_paths(),
+            enc_candidates=_cos_enc_config_paths(),
+            name="cos",
+        )
+        if isinstance(loaded_cos, dict):
+            cos_config = {
+                "bucket": str(loaded_cos.get("bucket") or "").strip(),
+                "region": str(loaded_cos.get("region") or "").strip(),
+                "secret_id": str(loaded_cos.get("secret_id") or "").strip(),
+                "secret_key": str(loaded_cos.get("secret_key") or "").strip(),
+            }
+            local_cos_prefix = str(loaded_cos.get("cos_prefix") or "").strip("/")
         bucket = os.environ.get("WH_COS_BUCKET", "").strip() or cos_config.get("bucket", "")
         region = os.environ.get("WH_COS_REGION", "").strip() or cos_config.get("region", "")
         secret_id = os.environ.get("WH_COS_SECRET_ID", "").strip() or cos_config.get("secret_id", "")

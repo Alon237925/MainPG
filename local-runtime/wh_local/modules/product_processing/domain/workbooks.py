@@ -29,14 +29,18 @@ _PACKAGE_EXPORT_DEFAULT = ("软包装软物", "气泡袋")
 _VARIANT_AXIS_NAMES = {
     "规格": "Style",
     "规格分类": "Style",
+    "规格型号": "Model",
     "款式": "Style",
+    "样式": "Style",
     "颜色": "Color",
     "颜色分类": "Color",
+    "颜色名称": "Color",
     "尺寸": "Size",
     "尺码": "Size",
     "型号": "Model",
     "材质": "Material",
     "材料": "Material",
+    "图案": "Pattern",
     "套装": "Pack",
     "数量": "Quantity",
     "容量": "Capacity",
@@ -46,6 +50,114 @@ _VARIANT_AXIS_NAMES = {
     "宽度": "Width",
     "形状": "Shape",
 }
+
+# ===== 变种属性清洗/校验层（导出店小秘前） =====
+# Temu 采集会把页面级元数据（品牌/评分/运费/支付方式/导航/整段商品描述）误当成变种属性
+# 名或值。此清洗层在生成店小秘模板行前剔除这些噪音，避免导入后出现「奇奇怪怪」的变种行。
+# 仅剔除明显噪音；未识别的一律保留（宁缺勿滥）。
+
+# 噪音属性名：绝不作为店小秘变种规格轴（平台系统字段、导购元数据、纯数字 ID）。
+_NOISE_NAME_RE = re.compile(
+    r"^(?:(?-i:is[A-Z])\w*|brand|sold.?by|afterpay|klarna|import|arrows|from|pre.?discount|"
+    r"品[类牌]|链接|平台|来源|图片|推荐|评分|评价|已售|库存|客服|运费|免运费)$",
+    re.IGNORECASE,
+)
+_NOISE_NUMERIC_NAME_RE = re.compile(r"^\d+$")
+
+# 噪音属性值：命中即整对剔除（这些是页面元数据，不是真实变种选项）。
+_NOISE_VALUE_RE = re.compile(
+    r"no\s+import\s+fees?|"  # No import fees
+    r"\bbrand\b\s*[:：]?|"  # Brand: JODIMACH / Brand
+    r"out\s+of\s+\d+(?:\.\d+)?\s*stars?|"  # 4.8 out of 5 stars
+    r"\d+(?:\.\d+)?\s+stars?\s+out\s+of\s*\d+|\d+(?:\.\d+)?\s*star\s+rating|"  # 5.0 stars out of 5 / 5.0 Star Rating
+    r"afterpay|klarna|"  # Afterpay 211 / Klarna
+    r"arrows|"  # common arrows / common_arrows
+    r"sold\s+by\b|"  # Sold by
+    r"^from$|"  # From（元数据）
+    r"pre[- ]?discount|"  # Pre-Discount Price
+    r"no\s+additional\s+variants",  # No Additional Variants
+    re.IGNORECASE,
+)
+
+# 纯重量值（如 100 grams / 50克）：若出现在非重量/容量轴上，属采集错位（如 Color → 100 grams）。
+_WEIGHT_VALUE_RE = re.compile(r"^\d+(?:\.\d+)?\s*(?:g|grams?|克|kg|千克)$", re.IGNORECASE)
+# 可承载纯重量值的轴（容量/数量/套装/重量）；其余视觉/型号/尺寸轴出现纯重量均视为噪音。
+_WEIGHT_TOLERANT_AXES = {"Capacity", "Quantity", "Pack", "Packaging", "Weight"}
+
+# 商品描述/优惠说明：以「数量+单位」开头明显是商品描述，或含多子句的营销/福利文本。
+_START_COUNT_UNIT_RE = re.compile(
+    r"^\s*\d+(?:\.\d+)?\s*(?:pc|pcs|piece|pieces|inch|in|cm|mm|只|支|个|件)\b", re.IGNORECASE
+)
+
+
+def _variant_axis_name(name_text: str) -> str:
+    return _VARIANT_AXIS_NAMES.get(name_text, name_text)
+
+
+def _is_variant_value_noise(name: str, value: str) -> bool:
+    """判定某一个（规格轴名, 属性值）是否为采集噪音，命中即应剔除整对。"""
+    if _NOISE_VALUE_RE.search(value):
+        return True
+    if _NOISE_NAME_RE.match(name) or _NOISE_NUMERIC_NAME_RE.match(name):
+        return True
+    axis = _variant_axis_name(name)
+    if _WEIGHT_VALUE_RE.match(value) and axis not in _WEIGHT_TOLERANT_AXES:
+        return True
+    if _is_description_like(value):
+        return True
+    return False
+
+
+def _is_description_like(value: str) -> bool:
+    if len(value) > 90:
+        return True
+    if _START_COUNT_UNIT_RE.match(value) and len(value) > 40:
+        return True
+    # 含多个逗号且较长的文本，多为商品描述/福利说明（产品级属性列表、营销文案等）
+    if len(value) > 40 and value.count(",") >= 2:
+        return True
+    return False
+
+
+def clean_variant_attributes(attributes: Any) -> list[tuple[str, str]]:
+    """把来源变种属性清洗为店小秘可用的 (规格轴名, 属性值) 列表（保持原顺序）。
+
+    兼容 dict / list[dict] / list[tuple] 三种来源形态；剔除噪音名称/值，规格轴名本地化。
+    """
+    if isinstance(attributes, dict):
+        items = list(attributes.items())
+    elif isinstance(attributes, list):
+        items = []
+        for entry in attributes:
+            if isinstance(entry, dict):
+                items.append((entry.get("name"), entry.get("value")))
+            elif isinstance(entry, (list, tuple)) and len(entry) >= 2:
+                items.append((entry[0], entry[1]))
+    else:
+        return []
+    cleaned: list[tuple[str, str]] = []
+    for name, value in items:
+        name_text = str(name or "").strip()
+        value_text = str(value or "").strip()
+        if not name_text or not value_text:
+            continue
+        if _is_variant_value_noise(name_text, value_text):
+            continue
+        cleaned.append((_variant_axis_name(name_text), value_text))
+    return cleaned
+
+
+def is_variant_value_noise(name: Any, value: Any) -> bool:
+    """公开判定：一个（规格轴名, 属性值）对是否为采集噪音。
+
+    供导出前清洗（clean_variant_attributes）与翻译前收集（service 层）共同复用，
+    确保「不提交 AI 翻译 + 不写入导出行」两处对噪音的判断保持一致。
+    """
+    name_text = str(name or "").strip()
+    value_text = str(value or "").strip()
+    if not name_text or not value_text:
+        return False
+    return _is_variant_value_noise(name_text, value_text)
 
 
 HEADER_ALIASES: dict[str, tuple[str, ...]] = {
@@ -226,48 +338,24 @@ def _dxm_single_export_row(row: dict[str, Any], variant: dict[str, Any] | None) 
     if not isinstance(value_translations, dict):
         value_translations = {}
 
-    # 变种属性：SKU 自己的 attributes 优先，其次取商品级前两条「名称+值」属性
+    # 变种属性：SKU 自己的 attributes 优先，其次取商品级前两条「名称+值」属性。
+    # 两者都先过清洗/校验层，剔除 Temu 采集混入的页面元数据噪音（品牌/评分/运费/支付/描述等）。
     if variant is not None:
-        attributes = variant.get("attributes") or {}
-        if not isinstance(attributes, dict):
-            attributes = {}
         display_name = str(variant.get("display_name") or "").strip()
         variant_values = []
-        for key, value in attributes.items():
-            name_text = str(key or "").strip()
-            value_text = str(value or "").strip()
-            if not name_text or not value_text:
-                continue
+        for name_text, value_text in clean_variant_attributes(variant.get("attributes")):
             # 规格轴名称本地映射 + 属性值翻译（操作员编辑的 display_name 优先）
             export_value = display_name if display_name else value_translations.get(value_text, value_text)
-            variant_values.append((_VARIANT_AXIS_NAMES.get(name_text, name_text), export_value))
+            variant_values.append((name_text, export_value))
         variant_sku = str(variant.get("sku_id") or "").strip() or sku
     else:
         variant_values = []
         variant_sku = sku
 
     if not variant_values:
-        # 商品级属性兜底：兼容 list[dict] / dict / list[tuple]，仅取名称+值均完整、非来源类的属性
-        attribute_items: list[tuple[Any, Any]] = []
-        if isinstance(source_attributes, dict):
-            attribute_items = list(source_attributes.items())
-        elif isinstance(source_attributes, list):
-            for item in source_attributes:
-                if isinstance(item, dict):
-                    attribute_items.append((item.get("name"), item.get("value")))
-                else:
-                    try:
-                        attribute_items.append((item[0], item[1]))
-                    except (TypeError, IndexError, KeyError):
-                        continue
-        for name, value in attribute_items:
-            name_text = str(name or "").strip()
-            value_text = str(value or "").strip()
-            if not name_text or not value_text or name_text.casefold() in {"来源", "平台", "链接", "图片"}:
-                continue
-            variant_values.append(
-                (_VARIANT_AXIS_NAMES.get(name_text, name_text), value_translations.get(value_text, value_text))
-            )
+        # 商品级属性兜底：清洗后仅取前两条
+        for name_text, value_text in clean_variant_attributes(source_attributes):
+            variant_values.append((name_text, value_translations.get(value_text, value_text)))
             if len(variant_values) >= 2:
                 break
 

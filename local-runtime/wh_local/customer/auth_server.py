@@ -50,6 +50,7 @@ from ..billing import (
 )
 from ..config import default_config
 from .. import cache as _cache
+from ..secrets import load_credential_config
 from ..db import init_db, transaction
 from ..modules.product_processing.domain.policy import is_safe_external_url
 from ..pod_billing import (
@@ -75,7 +76,7 @@ from .alipay_gateway import (
 )
 
 
-REMOTE_SESSION_TTL = timedelta(hours=12)
+REMOTE_SESSION_TTL = timedelta(days=7)
 BILLING_POINT_RATIO = 100
 BILLING_TOPUP_PRODUCTS = {
     "points_49": {"amount_cents": 4900, "label": "49 元积分包"},
@@ -3235,19 +3236,21 @@ def _server_onebound_config() -> dict[str, str]:
             ),
         }
     # 配置文件兜底：与本地工作台相同位置，但只在服务器部署时存在。
-    candidates = [
+    # 优先读加密的 onebound.enc，回退明文 onebound.local.json，与本地工作台一致。
+    json_candidates = [
         Path(__file__).with_name("onebound.local.json"),
         Path("/opt/wh-workbench/MainPG/local-runtime/wh_local/onebound.local.json"),
     ]
-    for candidate in candidates:
-        if not candidate.is_file():
-            continue
-        try:
-            data = json.loads(candidate.read_text(encoding="utf-8"))
-        except (OSError, json.JSONDecodeError):
-            continue
-        if not isinstance(data, dict):
-            continue
+    enc_candidates = [
+        Path(__file__).with_name("onebound.enc"),
+        Path("/opt/wh-workbench/MainPG/local-runtime/wh_local/onebound.enc"),
+    ]
+    data = load_credential_config(
+        json_candidates=json_candidates,
+        enc_candidates=enc_candidates,
+        name="onebound",
+    )
+    if isinstance(data, dict):
         api_key = str(data.get("api_key") or "").strip()
         api_secret = str(data.get("api_secret") or "").strip()
         if api_key and api_secret:

@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import hashlib
 import hmac
+import logging
 import os
 import threading
 import time
@@ -35,6 +36,8 @@ from .infrastructure.preview_image_repository import (
 from .infrastructure.repository import ProductProcessingRepository
 from .media_asset_service import MediaAssetService
 
+logger = logging.getLogger(__name__)
+
 
 class PreviewImageService:
     """Stable local image manifests plus deferred, idempotent COS publication."""
@@ -49,6 +52,8 @@ class PreviewImageService:
         public_image_fetcher: Callable[[str], FetchedPublicImage] | None = None,
         max_publish_workers: int = 4,
         media_assets: MediaAssetService | None = None,
+        finalize_deadline_seconds: int = 1200,
+        finalize_export_timeout_seconds: int = 900,
     ):
         if not 1 <= int(max_publish_workers) <= 6:
             raise ValueError("preview publish workers must be between 1 and 6")
@@ -64,6 +69,15 @@ class PreviewImageService:
             public_image_fetcher = fetch_public_image
         self.public_image_fetcher = public_image_fetcher
         self.max_publish_workers = int(max_publish_workers)
+        # 兜底看门狗：finalize 一旦被卡住（发布循环后收尾挂起、或被吞掉的异常），
+        # 心跳仍会无限续约导致任务永远停在 publishing、前端无限轮询 100%。
+        # 总时长上限 finalize_deadline_seconds 到期后由心跳线程强制把任务置为
+        # publish_failed；发布完成后进入「导出→生成表格→写终态」阶段会额外收紧到
+        # finalize_export_timeout_seconds。注意收尾是确定性的重活（发布都成功后
+        # 不应因导出慢而误判失败），故该预算是「死锁兜底上限」而非「正常完成时限」，
+        # 默认 900s 足够覆盖大任务串行导出，仅在真正无进展时兜底。
+        self.finalize_deadline_seconds = int(finalize_deadline_seconds)
+        self.finalize_export_timeout_seconds = int(finalize_export_timeout_seconds)
         self._finalize_worker_lock = threading.Lock()
         self._finalize_workers: dict[tuple[str, str], threading.Thread] = {}
 
@@ -868,13 +882,59 @@ class PreviewImageService:
         token = str(claimed.pop("claim_token", ""))
         stop = threading.Event()
         candidate_workbook: Path | None = None
+        started_at = time.monotonic()
+        # 看门狗总预算：从任务开始到进入终态（completed / publish_failed / stale）。
+        deadline = started_at + self.finalize_deadline_seconds
+        timeout_heartbeat = False
+        logger.info(
+            "preview finalize run=%s: claimed task_id=%s status=%s (budget %ds / export %ds)",
+            run_id,
+            claimed.get("task_id"),
+            claimed.get("status"),
+            self.finalize_deadline_seconds,
+            self.finalize_export_timeout_seconds,
+        )
 
         def heartbeat() -> None:
+            nonlocal timeout_heartbeat
             while not stop.wait(30):
                 try:
+                    if time.monotonic() > deadline:
+                        # 超过当前阶段（发布 / 发布后收尾）的时长上限仍未终态：
+                        # 说明主线程被卡住（收尾挂起 / DB 锁 / 被吞掉的异常）。
+                        # 主动置 publish_failed，避免前端无限轮询“发布中 100%”。
+                        logger.warning(
+                            "preview finalize run=%s worker wedged past deadline (%.1fs), forcing publish_failed",
+                            run_id,
+                            time.monotonic() - started_at,
+                        )
+                        try:
+                            self.repository.mark_finalize_failed(
+                                run_id,
+                                workspace_id,
+                                token,
+                                [{
+                                    "code": "preview_finalize_timeout",
+                                    "message": "preview finalization exceeded the time budget and was marked as failed",
+                                }],
+                            )
+                            timeout_heartbeat = True
+                        except Exception as exc:
+                            logger.exception(
+                                "preview finalize run=%s watchdog could not mark publish_failed: %s",
+                                run_id,
+                                exc,
+                            )
+                        return
                     self.repository.renew_finalize_claim(run_id, workspace_id, token)
-                except Exception:
-                    return
+                except Exception as exc:
+                    # renew 失败可能是瞬时 DB 锁 / 网络抖动，不退出线程，
+                    # 继续循环，保证 deadline 到点后仍能由心跳把任务置为 fail。
+                    logger.warning(
+                        "preview finalize run=%s heartbeat renew failed; will keep watching: %s",
+                        run_id,
+                        exc,
+                    )
 
         pulse = threading.Thread(target=heartbeat, name=f"pp-preview-heartbeat-{run_id}", daemon=True)
         pulse.start()
@@ -899,6 +959,12 @@ class PreviewImageService:
                     raise ValueError("finalization image has no content hash")
                 by_hash.setdefault(digest, asset)
 
+            logger.info(
+                "preview finalize run=%s: publishing %d unique image hash(es) for task_id=%s",
+                run_id,
+                len(by_hash),
+                claimed["task_id"],
+            )
             errors: list[dict[str, Any]] = []
             published: dict[str, str] = {}
             with ThreadPoolExecutor(max_workers=min(self.max_publish_workers, max(1, len(by_hash)))) as pool:
@@ -926,10 +992,22 @@ class PreviewImageService:
                         failed_count=len(errors),
                         errors=errors,
                     )
+            logger.info(
+                "preview finalize run=%s: published %d/%d images in %.1fs (errors=%d)",
+                run_id,
+                len(published),
+                len(by_hash),
+                time.monotonic() - started_at,
+                len(errors),
+            )
             if errors:
                 return self._public_run(
                     self.repository.mark_finalize_failed(run_id, workspace_id, token, errors)
                 )
+
+            # 发布完成，进入「导出→生成表格→写终态」阶段：收紧看门狗预算，
+            # 避免发布都成功后收尾仍长期卡住、前端停在“发布中 100%”。
+            deadline = time.monotonic() + self.finalize_export_timeout_seconds
 
             if not self._snapshot_current(
                 int(claimed["task_id"]), snapshot, workspace_id
@@ -945,11 +1023,22 @@ class PreviewImageService:
             exports = [value for row in rows for value in _dxm_export_rows(row)]
             if not exports:
                 raise ValueError("task has no exportable rows")
+            logger.info(
+                "preview finalize run=%s: exported %d product row(s) / %d spreadsheet row(s)",
+                run_id,
+                len(rows),
+                len(exports),
+            )
             run_root = self.assets.output_root / f"task_{int(claimed['task_id'])}" / "finalizations" / run_id
             run_root.mkdir(parents=True, exist_ok=True)
             temporary = run_root / f".{token}.xlsx.tmp"
             final = run_root / f"dxm_import_task_{int(claimed['task_id'])}_{token}.xlsx"
             create_result_workbook(rows, temporary)
+            logger.info(
+                "preview finalize run=%s: workbook staged at %s",
+                run_id,
+                temporary,
+            )
             if not self._snapshot_current(
                 int(claimed["task_id"]), snapshot, workspace_id
             ):
@@ -972,6 +1061,14 @@ class PreviewImageService:
                 final.unlink(missing_ok=True)
             else:
                 candidate_workbook = None
+            logger.info(
+                "preview finalize run=%s: reached terminal status=%s (%d products / %d rows) in %.1fs",
+                run_id,
+                completed.get("status"),
+                len(rows),
+                len(exports),
+                time.monotonic() - started_at,
+            )
             return self._public_run(completed)
         except PreviewPublicationConflict:
             if candidate_workbook is not None:
@@ -984,6 +1081,12 @@ class PreviewImageService:
                 "code": "preview_finalize_failed",
                 "message": self._bounded_error(exc),
             }
+            logger.exception(
+                "preview finalize run=%s: failed after %.1fs: %s",
+                run_id,
+                time.monotonic() - started_at,
+                exc,
+            )
             try:
                 failed = self.repository.mark_finalize_failed(
                     run_id,
@@ -1216,6 +1319,15 @@ class PreviewImageService:
             for item in task.get("items") or []
             if item.get("product_draft_id") is not None
         }
+        # 一次性批量加载导出所需草稿，避免逐条 get_draft 的 N+1 串行查询
+        # 在并发任务下被 SQLite 锁拖慢数分钟（发布成功却卡在收尾的主因之一）。
+        draft_ids = [int(entry.get("product_draft_id") or 0) for entry in snapshot]
+        drafts_by_id = {
+            int(draft["id"]): draft
+            for draft in self.product_repository.get_drafts(
+                draft_ids, workspace_id=workspace_id
+            )
+        }
         rows: list[dict[str, Any]] = []
         for entry in snapshot:
             draft_id = int(entry["product_draft_id"])
@@ -1224,7 +1336,9 @@ class PreviewImageService:
             main = asset_urls.get(manifest.main_asset_id, "")
             if not main:
                 # 未生成/未选择主图时回退来源主图（同强制入库回退来源图），保证可直接导出。
-                main = self._source_main_fallback(draft_id, result, workspace_id)
+                main = self._source_main_fallback(
+                    draft_id, result, workspace_id, drafts_by_id
+                )
             carousel = [asset_urls.get(asset_id, "") for asset_id in manifest.carousel_asset_ids]
             details = [asset_urls.get(asset_id, "") for asset_id in manifest.detail_asset_ids]
             require_final_public_image_urls([main, *carousel, *details])
@@ -1246,6 +1360,7 @@ class PreviewImageService:
         draft_id: int,
         result: Mapping[str, Any],
         workspace_id: str,
+        drafts_by_id: Mapping[int, Mapping[str, Any]] | None = None,
     ) -> str:
         """Return the first public source image as a final main-image fallback.
 
@@ -1258,10 +1373,14 @@ class PreviewImageService:
             if str(value or "").strip()
         ]
         if not candidates:
-            try:
-                draft = self.product_repository.get_draft(draft_id, workspace_id)
-            except Exception:
-                draft = None
+            draft = None
+            if drafts_by_id is not None:
+                draft = drafts_by_id.get(int(draft_id or 0))
+            else:
+                try:
+                    draft = self.product_repository.get_draft(draft_id, workspace_id)
+                except Exception:
+                    draft = None
             if isinstance(draft, Mapping):
                 candidates.append(str(draft.get("image_url") or "").strip())
                 raw = draft.get("raw_payload")
@@ -1290,11 +1409,17 @@ class PreviewImageService:
             for item in task.get("items") or []
             if item.get("product_draft_id") is not None
         }
-        for entry in snapshot:
-            draft = self.product_repository.get_draft(
-                int(entry.get("product_draft_id") or 0),
-                workspace_id=workspace_id,
+        # 一次性批量加载校验所需草稿，避免逐条 get_draft 的 N+1 串行查询
+        # 在并发任务下被 SQLite 锁拖慢数分钟（发布成功却卡在收尾的主因之一）。
+        draft_ids = [int(entry.get("product_draft_id") or 0) for entry in snapshot]
+        drafts_by_id = {
+            int(draft["id"]): draft
+            for draft in self.product_repository.get_drafts(
+                draft_ids, workspace_id=workspace_id
             )
+        }
+        for entry in snapshot:
+            draft = drafts_by_id.get(int(entry.get("product_draft_id") or 0))
             if draft is None or int(draft.get("preview_revision") or 0) != int(
                 entry.get("preview_revision") or -1
             ):

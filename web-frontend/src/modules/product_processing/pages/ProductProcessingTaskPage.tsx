@@ -180,6 +180,12 @@ export function ProductProcessingTaskPage({ initialTaskId, initialDraftIds, init
     }
     return max;
   }, [batch]);
+  // 尾部提示：只剩 1-2 条仍在处理、且非自动重试轮时，说明正在生成较慢的主图。
+  // 单张 2K 主图计费请求最长约 11 分钟（后端 660s 上限），提示操作员避免误判为卡死。
+  const imageTailHint = batchProcessing
+    && !autoRepullRunning
+    && runningCount > 0
+    && runningCount <= 2;
   // 只要任务到达终态（含整单失败/取消/完成待复核），进度都应计算为 100%，
   // 否则前端会永远被 Math.min(99,…) 卡在 99%。自动补跑轮仍在运行时除外。
   const taskDone = batch
@@ -506,6 +512,11 @@ export function ProductProcessingTaskPage({ initialTaskId, initialDraftIds, init
                         <span className="verify-live-detail">
                           进行中 <b>{runningCount}</b> 条
                           {maxOngoingSeconds > 0 && <> · 最长已持续 {formatDuration(maxOngoingSeconds)}</>}
+                          {imageTailHint && (
+                            <span className="verify-tail-hint">
+                              {' '}· 正在生成最后的主图，单张最长约 11 分钟，请耐心等待
+                            </span>
+                          )}
                         </span>
                       )}
                     </div>

@@ -7,9 +7,11 @@ import sys
 from dataclasses import dataclass
 from pathlib import Path
 
+from wh_local.secrets import load_credential_config
+
 
 # Release automation updates this single value when producing a desktop build.
-APP_VERSION = "1.3.9-beta.1"
+APP_VERSION = "1.3.9-beta.4"
 # Replace this host only when the official MainPG release origin moves. Keep the
 # manifest and installer allowlist bound to the same release-owned host.
 UPDATE_RELEASE_HOST = "workbench.haocoming.top"
@@ -143,23 +145,24 @@ def _resolved_app_version(install_dir: Path) -> str:
 
 
 def _local_onebound_config() -> dict[str, str | bool]:
-    """Read project-local credentials from the Git-ignored configuration file."""
-    for path in _local_onebound_config_paths():
-        if not path.is_file():
-            continue
-        try:
-            values = json.loads(path.read_text(encoding="utf-8"))
-        except (OSError, json.JSONDecodeError) as error:
-            raise RuntimeError("invalid local OneBound configuration") from error
-        if not isinstance(values, dict):
-            raise RuntimeError("local OneBound configuration must be an object")
-        return {
-            key: value
-            for key, value in values.items()
-            if key in {"api_key", "api_secret", "base_url", "enabled"}
-            and isinstance(value, (str, bool))
-        }
-    return {}
+    """Read project-local credentials from the Git-ignored configuration file.
+
+    Bundled installs ship ``onebound.enc`` (encrypted) next to the executable;
+    we prefer it and fall back to plaintext ``onebound.local.json`` so dev
+    checkouts and older installs keep working."""
+    values = load_credential_config(
+        json_candidates=_local_onebound_config_paths(),
+        enc_candidates=_local_onebound_enc_paths(),
+        name="onebound",
+    )
+    if not isinstance(values, dict):
+        return {}
+    return {
+        key: value
+        for key, value in values.items()
+        if key in {"api_key", "api_secret", "base_url", "enabled"}
+        and isinstance(value, (str, bool))
+    }
 
 
 def _local_onebound_config_paths() -> list[Path]:
@@ -174,4 +177,18 @@ def _local_onebound_config_paths() -> list[Path]:
         meipass = getattr(sys, "_MEIPASS", None)
         if meipass:
             candidates.append(Path(meipass) / "onebound.local.json")
+    return candidates
+
+
+def _local_onebound_enc_paths() -> list[Path]:
+    """``onebound.enc`` candidates, mirroring :func:`_local_onebound_config_paths`.
+
+    The installer build encrypts onebound.local.json into onebound.enc so the
+    plaintext API secret is not shipped to customer machines."""
+    candidates = [Path(__file__).with_name("onebound.enc")]
+    if getattr(sys, "frozen", False):
+        candidates.append(Path(sys.executable).resolve().parent / "onebound.enc")
+        meipass = getattr(sys, "_MEIPASS", None)
+        if meipass:
+            candidates.append(Path(meipass) / "onebound.enc")
     return candidates

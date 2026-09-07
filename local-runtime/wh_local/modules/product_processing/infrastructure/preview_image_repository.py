@@ -1163,14 +1163,30 @@ class PreviewImageRepository:
             value["claim_token"] = token
             return value
 
-    def recover_interrupted_finalize_runs(self) -> list[dict[str, Any]]:
-        """Requeue process-lost finalizations and release their local leases."""
+    def recover_interrupted_finalize_runs(
+        self, lease_seconds: int = 180
+    ) -> list[dict[str, Any]]:
+        """Requeue process-lost finalizations and release their local leases.
+
+        Only rows whose claim lease has actually lapsed are reset. A run (or a
+        publication / asset) still inside its lease is left untouched, so a
+        freshly-started second application instance cannot steal an in-flight
+        run from a live worker.
+        """
+        _, cutoff = _lease_times(lease_seconds)
 
         with self.database.sessions.begin() as session:
             now = utc_now()
             session.execute(
                 update(PreviewFinalizeRunRow)
-                .where(PreviewFinalizeRunRow.status == "publishing")
+                .where(
+                    PreviewFinalizeRunRow.status == "publishing",
+                    or_(
+                        PreviewFinalizeRunRow.claimed_at.is_(None),
+                        PreviewFinalizeRunRow.claimed_at == "",
+                        PreviewFinalizeRunRow.claimed_at < cutoff,
+                    ),
+                )
                 .values(
                     status="queued",
                     claim_token="",
@@ -1180,7 +1196,14 @@ class PreviewImageRepository:
             )
             session.execute(
                 update(PreviewImagePublicationRow)
-                .where(PreviewImagePublicationRow.status == "publishing")
+                .where(
+                    PreviewImagePublicationRow.status == "publishing",
+                    or_(
+                        PreviewImagePublicationRow.claimed_at.is_(None),
+                        PreviewImagePublicationRow.claimed_at == "",
+                        PreviewImagePublicationRow.claimed_at < cutoff,
+                    ),
+                )
                 .values(
                     status="publish_failed",
                     claim_token="",
@@ -1197,7 +1220,14 @@ class PreviewImageRepository:
             )
             session.execute(
                 update(PreviewImageAssetRow)
-                .where(PreviewImageAssetRow.availability == "materializing")
+                .where(
+                    PreviewImageAssetRow.availability == "materializing",
+                    or_(
+                        PreviewImageAssetRow.materialize_claimed_at.is_(None),
+                        PreviewImageAssetRow.materialize_claimed_at == "",
+                        PreviewImageAssetRow.materialize_claimed_at < cutoff,
+                    ),
+                )
                 .values(
                     availability="materialize_failed",
                     materialize_claim_token="",

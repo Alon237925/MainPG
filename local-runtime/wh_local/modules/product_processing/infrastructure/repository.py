@@ -27,6 +27,7 @@ from .orm import (
     ProcessingTaskItemRow,
     ProcessingTaskRow,
     ProductProcessingBillingAttemptRow,
+    ProductProcessingDiagnosticOutboxRow,
     ProductDraftRow,
     SourceImageAssetRow,
     utc_now,
@@ -44,6 +45,16 @@ def loads(value: str | None, fallback: Any) -> Any:
         return json.loads(value or "")
     except (TypeError, ValueError):
         return fallback
+
+
+def _iso_after(seconds: float) -> str:
+    """Return an ISO-8601 UTC timestamp offset from now by ``seconds``.
+
+    ``seconds`` may be negative (e.g. ``-300`` for a stale-claim cutoff five
+    minutes in the past); do not clamp, otherwise stale reclaims trigger
+    immediately instead of after the intended delay.
+    """
+    return (datetime.now(timezone.utc) + timedelta(seconds=seconds)).isoformat()
 
 
 def _normalized_history_title(value: object) -> str:
@@ -1113,6 +1124,146 @@ class ProductProcessingRepository:
                 task.updated_at = now
                 recovered.append((task.id, task.workspace_id))
         return [task for task_id, workspace in recovered if (task := self.get_task(task_id, workspace)) is not None]
+
+    def enqueue_pp_diagnostic_outbox(
+        self, *, report_key: str, account_id: str, remote_token: str, payload: dict[str, Any]
+    ) -> None:
+        """Persist product-processing terminal-state diagnostics to the local outbox.
+
+        Idempotent by ``report_key``: re-enqueueing the same terminal state overwrites
+        any earlier attempt (e.g. a failed upload) with the fresh payload and resets the
+        row back to ``pending`` for the dispatcher to retry.
+        """
+        with self.database.sessions.begin() as session:
+            row = session.scalar(
+                select(ProductProcessingDiagnosticOutboxRow).where(
+                    ProductProcessingDiagnosticOutboxRow.report_key == report_key
+                )
+            )
+            now = utc_now()
+            payload_json = dumps(payload)
+            if row is None:
+                session.add(
+                    ProductProcessingDiagnosticOutboxRow(
+                        report_key=report_key,
+                        account_id=account_id,
+                        remote_token=remote_token,
+                        payload_json=payload_json,
+                        status="pending",
+                        attempts=0,
+                        available_at=now,
+                        claim_token="",
+                        claimed_at="",
+                        last_error="",
+                        created_at=now,
+                        updated_at=now,
+                    )
+                )
+            else:
+                row.account_id = account_id
+                row.remote_token = remote_token
+                row.payload_json = payload_json
+                row.status = "pending"
+                row.attempts = 0
+                row.available_at = now
+                row.claim_token = ""
+                row.claimed_at = ""
+                row.last_error = ""
+                row.updated_at = now
+
+    def claim_pp_diagnostic_outbox(self) -> dict[str, Any] | None:
+        """Atomically claim the oldest pending diagnostic row for upload.
+
+        Reclaims rows that were left ``processing`` by a crash mid-upload (stale
+        claim > 5 minutes) back to ``pending`` first, so they are not lost forever.
+        """
+        token = uuid4().hex
+        now = utc_now()
+        stale_cutoff = _iso_after(-300)
+        with self.database.sessions.begin() as session:
+            session.execute(
+                update(ProductProcessingDiagnosticOutboxRow)
+                .where(
+                    ProductProcessingDiagnosticOutboxRow.status == "processing",
+                    ProductProcessingDiagnosticOutboxRow.claimed_at < stale_cutoff,
+                )
+                .values(
+                    status="pending",
+                    claim_token="",
+                    claimed_at="",
+                    available_at=now,
+                    updated_at=now,
+                )
+            )
+            row = session.scalar(
+                select(ProductProcessingDiagnosticOutboxRow)
+                .where(
+                    ProductProcessingDiagnosticOutboxRow.status == "pending",
+                    ProductProcessingDiagnosticOutboxRow.available_at <= now,
+                )
+                .order_by(
+                    ProductProcessingDiagnosticOutboxRow.created_at,
+                    ProductProcessingDiagnosticOutboxRow.id,
+                )
+                .limit(1)
+            )
+            if row is None:
+                return None
+            row.status = "processing"
+            row.attempts = (row.attempts or 0) + 1
+            row.claim_token = token
+            row.claimed_at = now
+            row.updated_at = now
+            session.flush()
+            return {
+                "report_key": row.report_key,
+                "account_id": row.account_id,
+                "remote_token": row.remote_token,
+                "payload_json": row.payload_json,
+                "claim_token": token,
+                "attempts": row.attempts,
+            }
+
+    def complete_pp_diagnostic_outbox(self, *, report_key: str, claim_token: str) -> bool:
+        with self.database.sessions.begin() as session:
+            changed = session.execute(
+                update(ProductProcessingDiagnosticOutboxRow)
+                .where(
+                    ProductProcessingDiagnosticOutboxRow.report_key == report_key,
+                    ProductProcessingDiagnosticOutboxRow.claim_token == claim_token,
+                    ProductProcessingDiagnosticOutboxRow.status == "processing",
+                )
+                .values(
+                    status="completed",
+                    claim_token="",
+                    claimed_at="",
+                    last_error="",
+                    updated_at=utc_now(),
+                )
+            )
+            return changed.rowcount == 1
+
+    def retry_pp_diagnostic_outbox(
+        self, *, report_key: str, claim_token: str, error: str, delay_seconds: float
+    ) -> bool:
+        with self.database.sessions.begin() as session:
+            changed = session.execute(
+                update(ProductProcessingDiagnosticOutboxRow)
+                .where(
+                    ProductProcessingDiagnosticOutboxRow.report_key == report_key,
+                    ProductProcessingDiagnosticOutboxRow.claim_token == claim_token,
+                    ProductProcessingDiagnosticOutboxRow.status == "processing",
+                )
+                .values(
+                    status="pending",
+                    claim_token="",
+                    claimed_at="",
+                    available_at=_iso_after(delay_seconds),
+                    last_error=str(error)[:500],
+                    updated_at=utc_now(),
+                )
+            )
+            return changed.rowcount == 1
 
     def claim_task_execution(self, task_id: int, workspace_id: str = "local") -> bool:
         with self.database.sessions.begin() as session:

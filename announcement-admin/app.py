@@ -12,6 +12,7 @@ from __future__ import annotations
 
 import hashlib
 import hmac
+import json
 import os
 import secrets
 import sqlite3
@@ -72,6 +73,26 @@ def init_db(db_path: str) -> None:
                 active INTEGER NOT NULL DEFAULT 1,
                 created_at TEXT NOT NULL,
                 updated_at TEXT NOT NULL
+            );
+
+            CREATE TABLE IF NOT EXISTS launcher_golden (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                version TEXT NOT NULL,
+                payload TEXT NOT NULL,
+                active INTEGER NOT NULL DEFAULT 0,
+                created_at TEXT NOT NULL,
+                updated_at TEXT NOT NULL
+            );
+
+            CREATE TABLE IF NOT EXISTS launcher_reports (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                client_id TEXT NOT NULL DEFAULT '',
+                app_version TEXT NOT NULL DEFAULT '',
+                os TEXT NOT NULL DEFAULT '',
+                overall TEXT NOT NULL DEFAULT '',
+                stats_json TEXT NOT NULL DEFAULT '',
+                checks_json TEXT NOT NULL DEFAULT '',
+                created_at TEXT NOT NULL
             );
             """
         )
@@ -343,6 +364,115 @@ def create_app() -> FastAPI:
             return {"announcement": serialize(row)}
         finally:
             con.close()
+
+    # ---- 启动器 golden 基准（供 MainPG-Launcher 下载/上传/上报，免登录部分公开） ----
+    @app.get("/api/launcher/golden")
+    def get_launcher_golden() -> dict[str, Any]:
+        """返回当前生效的 golden 基准。客户端首次体检用它做配置对齐。"""
+        con = _connect(db_path)
+        try:
+            row = con.execute(
+                "SELECT * FROM launcher_golden WHERE active = 1 ORDER BY id DESC LIMIT 1"
+            ).fetchone()
+        finally:
+            con.close()
+        if row is None:
+            raise HTTPException(status_code=404, detail="尚未发布 golden 基准")
+        payload = json.loads(row["payload"])
+        return {"version": row["version"], **payload}
+
+    @app.post("/api/launcher/golden")
+    def upload_launcher_golden(payload: dict[str, Any]) -> dict[str, Any]:
+        """上传新基准草稿（运营用），默认未生效，需后台手动发布。body 即 golden 实体。"""
+        if not isinstance(payload, dict) or not isinstance(payload.get("runtime"), dict):
+            raise HTTPException(status_code=400, detail="golden 结构无效，缺少 runtime")
+        version = str(payload.get("version") or time.strftime("%Y%m%d")).strip()
+        now = now_iso()
+        con = _connect(db_path)
+        try:
+            cur = con.execute(
+                """
+                INSERT INTO launcher_golden (version, payload, active, created_at, updated_at)
+                VALUES (?, ?, 0, ?, ?)
+                """,
+                (version, json.dumps(payload, ensure_ascii=False, sort_keys=True), now, now),
+            )
+            con.commit()
+            return {
+                "ok": True,
+                "id": cur.lastrowid,
+                "version": version,
+                "active": False,
+                "message": "已接收基准草稿，请在后台发布后生效",
+            }
+        finally:
+            con.close()
+
+    @app.post("/api/launcher/report")
+    def submit_launcher_report(payload: dict[str, Any]) -> dict[str, Any]:
+        """接收客户端体检上报（匿名，防泄漏仅存脱敏字段）。"""
+        if not isinstance(payload, dict):
+            raise HTTPException(status_code=400, detail="上报结构无效")
+        now = now_iso()
+        con = _connect(db_path)
+        try:
+            con.execute(
+                """
+                INSERT INTO launcher_reports (
+                    client_id, app_version, os, overall, stats_json, checks_json, created_at
+                ) VALUES (?, ?, ?, ?, ?, ?, ?)
+                """,
+                (
+                    str(payload.get("client_id") or ""),
+                    str(payload.get("app_version") or payload.get("golden_version") or ""),
+                    str(payload.get("os") or ""),
+                    str(payload.get("overall") or ""),
+                    json.dumps(payload.get("stats") or {}, ensure_ascii=False),
+                    json.dumps(payload.get("checks") or [], ensure_ascii=False),
+                    now,
+                ),
+            )
+            con.commit()
+        finally:
+            con.close()
+        return {"ok": True}
+
+    @app.get("/api/launcher/golden/versions", dependencies=[Depends(require_admin)])
+    def list_launcher_golden_versions() -> dict[str, Any]:
+        con = _connect(db_path)
+        try:
+            rows = con.execute(
+                """
+                SELECT id, version, active, created_at, updated_at
+                FROM launcher_golden ORDER BY id DESC
+                """
+            ).fetchall()
+            return {"versions": [dict(row) for row in rows]}
+        finally:
+            con.close()
+
+    @app.post("/api/launcher/golden/{golden_id}/publish", dependencies=[Depends(require_admin)])
+    def publish_launcher_golden(golden_id: int) -> dict[str, Any]:
+        """把指定基准设为生效，同时取消其它生效版本。"""
+        con = _connect(db_path)
+        try:
+            row = con.execute(
+                "SELECT id, version FROM launcher_golden WHERE id = ?", (golden_id,)
+            ).fetchone()
+            if row is None:
+                raise HTTPException(status_code=404, detail="基准不存在")
+            now = now_iso()
+            con.execute(
+                "UPDATE launcher_golden SET active = 0, updated_at = ? WHERE active = 1", (now,)
+            )
+            con.execute(
+                "UPDATE launcher_golden SET active = 1, updated_at = ? WHERE id = ?",
+                (now, golden_id),
+            )
+            con.commit()
+        finally:
+            con.close()
+        return {"ok": True, "id": golden_id, "version": row["version"], "active": True}
 
     # ---- 管理页面 ----
     static_dir = APP_DIR / "static"

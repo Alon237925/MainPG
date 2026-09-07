@@ -292,3 +292,35 @@ class AiStageCacheRow(Base):
     created_at: Mapped[str] = mapped_column(String(64), default=utc_now)
     last_used_at: Mapped[str] = mapped_column(String(64), default=utc_now, onupdate=utc_now)
     hit_count: Mapped[int] = mapped_column(Integer, default=0)
+
+
+class ProductProcessingDiagnosticOutboxRow(Base):
+    """本地持久化的产品处理失败诊断 outbox（写本地 → 后台上传服务器）。
+
+    任务抵达终态（completed/failed/partial_failure/cancelled，含崩溃恢复）时先把
+    失败明细落库；后台 daemon 分发器再按 report_key 逐条领取并调用服务器失败日志
+    接口上传。上传失败按退避重试；本地始终保留 payload 供排查，避免 best-effort
+    直传在断网/重启时丢失。report_key 按任务唯一，重复入队幂等覆盖。
+    """
+
+    __tablename__ = "product_processing_diagnostic_outbox"
+    __table_args__ = (
+        UniqueConstraint("report_key", name="uq_pp_diagnostic_report_key"),
+    )
+
+    id: Mapped[int] = mapped_column(Integer, primary_key=True, autoincrement=True)
+    report_key: Mapped[str] = mapped_column(String(255), index=True)
+    account_id: Mapped[str] = mapped_column(String(255), default="", index=True)
+    # 上传需携带当次会话 token；完成后立即清空，避免本地长期保留。
+    remote_token: Mapped[str] = mapped_column(Text, default="")
+    payload_json: Mapped[str] = mapped_column(Text, default="{}")
+    status: Mapped[str] = mapped_column(
+        String(16), default="pending", index=True
+    )  # pending / processing / completed
+    attempts: Mapped[int] = mapped_column(Integer, default=0)
+    available_at: Mapped[str] = mapped_column(String(64), default=utc_now)
+    claim_token: Mapped[str] = mapped_column(String(64), default="")
+    claimed_at: Mapped[str] = mapped_column(String(64), default="")
+    last_error: Mapped[str] = mapped_column(Text, default="")
+    created_at: Mapped[str] = mapped_column(String(64), default=utc_now)
+    updated_at: Mapped[str] = mapped_column(String(64), default=utc_now, onupdate=utc_now)

@@ -8,7 +8,7 @@ from typing import Protocol
 from .contracts import CustomerAuthResult, LocalSession
 
 
-SESSION_TTL = timedelta(hours=12)
+SESSION_TTL = timedelta(days=7)
 
 
 class CustomerSessionStore(Protocol):
