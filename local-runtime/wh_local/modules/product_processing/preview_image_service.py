@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import contextlib
 import hashlib
 import hmac
 import logging
@@ -7,10 +8,19 @@ import os
 import threading
 import time
 from collections.abc import Callable, Mapping, Sequence
-from concurrent.futures import ThreadPoolExecutor, as_completed
+from concurrent.futures import FIRST_COMPLETED, ThreadPoolExecutor, wait
 from pathlib import Path
 from typing import Any
 from urllib.parse import urlencode, urlsplit
+
+try:
+    import fcntl
+except ImportError:  # pragma: no cover - windows
+    fcntl = None  # type: ignore[assignment]
+try:
+    import msvcrt
+except ImportError:  # pragma: no cover - posix
+    msvcrt = None  # type: ignore[assignment]
 
 from wh_local.data_collection.public_image_fetch import FetchedPublicImage
 
@@ -27,6 +37,7 @@ from .domain.workbooks import (
     require_final_public_image_urls,
 )
 from .infrastructure.assets import ProductProcessingAssets
+from .infrastructure.database import default_storage_root
 from .infrastructure.preview_image_files import validate_preview_image
 from .infrastructure.preview_image_repository import (
     PreviewImageRepository,
@@ -37,6 +48,72 @@ from .infrastructure.repository import ProductProcessingRepository
 from .media_asset_service import MediaAssetService
 
 logger = logging.getLogger(__name__)
+
+
+@contextlib.contextmanager
+def _instance_recover_lock(directory: Path, *, timeout: float = 5.0):
+    """Cross-process mutex so only one instance performs finalize recovery.
+
+    ``default_storage_root()`` is derived from ``__file__`` rather than the
+    working directory, so multiple MainPG instances launched from different
+    locations share the same SQLite file. If they all ran
+    ``recover_interrupted_finalize_runs`` at startup, each could reset a still
+    genuinely-running finalization back to ``queued`` and re-claim it, stealing
+    the run from a live worker. This lock serialises recovery to one instance.
+
+    Yields ``True`` when the lock was acquired and ``False`` when another
+    instance holds it (after a short wait); the caller skips recovery on
+    ``False``.
+    """
+    lock_path = directory / ".preview_finalize_recover.lock"
+    lock_path.parent.mkdir(parents=True, exist_ok=True)
+    fd = os.open(str(lock_path), os.O_CREAT | os.O_RDWR)
+    try:
+        acquired = False
+        deadline = time.monotonic() + timeout
+        if fcntl is not None:
+            while not acquired:
+                try:
+                    fcntl.flock(fd, fcntl.LOCK_EX | fcntl.LOCK_NB)
+                    acquired = True
+                except OSError:
+                    if time.monotonic() >= deadline:
+                        break
+                    time.sleep(0.1)
+            try:
+                yield acquired
+            finally:
+                if acquired:
+                    fcntl.flock(fd, fcntl.LOCK_UN)
+        else:
+            # Windows byte-range lock.
+            # Ensure the file has at least one byte so the [0,1) region can be
+            # locked. If a peer already holds a byte-range lock on this region,
+            # the write below raises PermissionError (the byte is locked). That
+            # merely proves another instance holds the lock, so we swallow it and
+            # fall through to the retry loop, which will report "not acquired".
+            try:
+                os.lseek(fd, 0, os.SEEK_SET)
+                os.write(fd, b"\0")
+            except OSError:
+                pass
+            while not acquired:
+                try:
+                    os.lseek(fd, 0, os.SEEK_SET)
+                    msvcrt.locking(fd, msvcrt.LK_NBLCK, 1)
+                    acquired = True
+                except OSError:
+                    if time.monotonic() >= deadline:
+                        break
+                    time.sleep(0.1)
+            try:
+                yield acquired
+            finally:
+                if acquired:
+                    os.lseek(fd, 0, os.SEEK_SET)
+                    msvcrt.locking(fd, msvcrt.LK_UNLCK, 1)
+    finally:
+        os.close(fd)
 
 
 class PreviewImageService:
@@ -868,11 +945,17 @@ class PreviewImageService:
         with self._finalize_worker_lock:
             if any(worker.is_alive() for worker in self._finalize_workers.values()):
                 return {"queued": 0, "launched": 0}
-        queued = self.repository.recover_interrupted_finalize_runs()
-        launched = sum(
-            self._launch(str(run["id"]), str(run["workspace_id"]))
-            for run in queued
-        )
+        # 跨进程互斥：同一 SQLite 可能被多个运行实例共用，只有拿到文件锁的实例
+        # 才执行 recover，避免多个实例同时把仍在真实运行的任务 reset 回 queued
+        # 造成 claim 抢占。拿不到锁（其它实例在恢复）则直接跳过。
+        with _instance_recover_lock(default_storage_root()) as acquired:
+            if not acquired:
+                return {"queued": 0, "launched": 0}
+            queued = self.repository.recover_interrupted_finalize_runs()
+            launched = sum(
+                self._launch(str(run["id"]), str(run["workspace_id"]))
+                for run in queued
+            )
         return {"queued": len(queued), "launched": launched}
 
     def run_finalize(self, run_id: str, *, workspace_id: str) -> dict[str, Any]:
@@ -881,6 +964,9 @@ class PreviewImageService:
             return self._public_run(claimed)
         token = str(claimed.pop("claim_token", ""))
         stop = threading.Event()
+        # 当心跳检测到 claim token 已被其它实例/恢复流程改写时置位，用于让主线程
+        # 在发布循环与收尾的各检查点主动终止，避免「无限续约失败 + 主线程静默卡死」。
+        claim_lost = threading.Event()
         candidate_workbook: Path | None = None
         started_at = time.monotonic()
         # 看门狗总预算：从任务开始到进入终态（completed / publish_failed / stale）。
@@ -926,7 +1012,18 @@ class PreviewImageService:
                                 exc,
                             )
                         return
-                    self.repository.renew_finalize_claim(run_id, workspace_id, token)
+                    try:
+                        self.repository.renew_finalize_claim(run_id, workspace_id, token)
+                    except PreviewPublicationConflict:
+                        # 租约已被其它实例（或同一 DB 的 recovery 流程）重新 claim，
+                        # 本 worker 的 token 已失效。置位 claim_lost 让主线程在各检查点
+                        # 主动终止并清理，而不是继续无限续约失败、主线程静默卡死。
+                        logger.warning(
+                            "preview finalize run=%s claim token lost (claim changed); signalling worker to stop",
+                            run_id,
+                        )
+                        claim_lost.set()
+                        return
                 except Exception as exc:
                     # renew 失败可能是瞬时 DB 锁 / 网络抖动，不退出线程，
                     # 继续循环，保证 deadline 到点后仍能由心跳把任务置为 fail。
@@ -967,31 +1064,68 @@ class PreviewImageService:
             )
             errors: list[dict[str, Any]] = []
             published: dict[str, str] = {}
-            with ThreadPoolExecutor(max_workers=min(self.max_publish_workers, max(1, len(by_hash)))) as pool:
+            pool = ThreadPoolExecutor(max_workers=min(self.max_publish_workers, max(1, len(by_hash))))
+            aborted = False
+            try:
                 futures = {
                     pool.submit(self._publish_hash, digest, asset, workspace_id): digest
                     for digest, asset in by_hash.items()
                 }
-                for future in as_completed(futures):
-                    digest = futures[future]
+                pending = set(futures)
+                # 用带超时的 wait 轮询代替无界 as_completed：发布阶段某张图卡住
+                # （DNS/网络/COS 抖动）时仍能周期性检查 claim_lost，一旦 token 被
+                # 其它实例/恢复流程改写，就主动终止本 worker，而不会无限阻塞。
+                while pending:
+                    if claim_lost.is_set():
+                        aborted = True
+                        break
+                    done, pending = wait(pending, timeout=1.0, return_when=FIRST_COMPLETED)
+                    if not done:
+                        continue
+                    for future in done:
+                        digest = futures[future]
+                        try:
+                            published[digest] = future.result()
+                        except Exception as exc:
+                            errors.append(
+                                {
+                                    "content_hash": digest,
+                                    "code": "preview_publish_failed",
+                                    "message": self._bounded_error(exc),
+                                }
+                            )
+                        try:
+                            self.repository.update_finalize_progress(
+                                run_id,
+                                workspace_id,
+                                token,
+                                published_count=len(published),
+                                failed_count=len(errors),
+                                errors=errors,
+                            )
+                        except PreviewPublicationConflict:
+                            # token 已被改写：进度写入失败，立即终止不再续约。
+                            aborted = True
+                            break
+                    if aborted:
+                        break
+            finally:
+                if aborted:
+                    # 主动终止时不要 join，否则会被卡住的 hash 阻塞而无法退出。
                     try:
-                        published[digest] = future.result()
-                    except Exception as exc:
-                        errors.append(
-                            {
-                                "content_hash": digest,
-                                "code": "preview_publish_failed",
-                                "message": self._bounded_error(exc),
-                            }
-                        )
-                    self.repository.update_finalize_progress(
-                        run_id,
-                        workspace_id,
-                        token,
-                        published_count=len(published),
-                        failed_count=len(errors),
-                        errors=errors,
-                    )
+                        pool.shutdown(wait=False, cancel_futures=True)
+                    except TypeError:  # Python < 3.9 无 cancel_futures
+                        pool.shutdown(wait=False)
+                else:
+                    pool.shutdown(wait=True)
+            if aborted:
+                logger.warning(
+                    "preview finalize run=%s claim lost during publish; worker aborting",
+                    run_id,
+                )
+                return self._public_run(
+                    self.repository.get_finalize_run(run_id, workspace_id) or {}
+                )
             logger.info(
                 "preview finalize run=%s: published %d/%d images in %.1fs (errors=%d)",
                 run_id,
@@ -1008,6 +1142,17 @@ class PreviewImageService:
             # 发布完成，进入「导出→生成表格→写终态」阶段：收紧看门狗预算，
             # 避免发布都成功后收尾仍长期卡住、前端停在“发布中 100%”。
             deadline = time.monotonic() + self.finalize_export_timeout_seconds
+
+            # 收尾阶段 token 校验：发布虽已完成，但心跳可能刚发现 token 已被其它
+            # 实例/恢复流程改写。此时不应写终态（新 owner 会接管），主动退出。
+            if claim_lost.is_set():
+                logger.warning(
+                    "preview finalize run=%s claim lost entering export phase; worker aborting",
+                    run_id,
+                )
+                return self._public_run(
+                    self.repository.get_finalize_run(run_id, workspace_id) or {}
+                )
 
             if not self._snapshot_current(
                 int(claimed["task_id"]), snapshot, workspace_id

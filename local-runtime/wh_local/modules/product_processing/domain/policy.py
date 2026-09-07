@@ -10,6 +10,8 @@ from __future__ import annotations
 
 import ipaddress
 import socket
+import threading
+import time
 from dataclasses import dataclass
 from typing import Any, Callable, Iterable
 from urllib.parse import urlsplit
@@ -137,6 +139,67 @@ def strict_external_url_issue(*, source_url: str, image_url: str) -> PolicyIssue
     return None
 
 
+_URL_SAFETY_TTL_SECONDS = 300.0
+_URL_SAFETY_CACHE: dict[tuple[Any, Any, Any], tuple[float, tuple[str, ...] | None]] = {}
+_URL_SAFETY_LOCK = threading.Lock()
+
+
+def _resolver_cache_key(resolver: Callable[..., list[Any]] | None) -> Any:
+    try:
+        hash(resolver)
+    except TypeError:
+        return id(resolver)
+    return resolver
+
+
+def _resolve_host_addresses(
+    hostname: str,
+    port: int,
+    *,
+    resolver: Callable[..., list[Any]] | None,
+) -> tuple[str, ...] | None:
+    """Return public, global addresses for a hostname, or None when unsafe.
+
+    The finalize/export path validates hundreds of full image URLs that share a
+    handful of CDN hostnames; every uncached lookup can hit the network
+    (socket.getaddrinfo, plus a DoH query when a TUN fake-ip proxy returns a
+    non-global answer).  Memoizing at the hostname level collapses those repeated
+    round-trips into one per (hostname, port).
+    """
+    try:
+        address = ipaddress.ip_address(hostname)
+    except ValueError:
+        pass
+    else:
+        return (str(address),) if _is_global_address(address) else None
+
+    lookup = resolver or socket.getaddrinfo
+    try:
+        answers = lookup(hostname, port, type=socket.SOCK_STREAM)
+    except (OSError, ValueError):
+        return None
+    addresses = tuple(
+        dict.fromkeys(
+            str(answer[4][0]).strip()
+            for answer in answers
+            if len(answer) >= 5 and answer[4] and str(answer[4][0]).strip()
+        )
+    )
+    if not addresses:
+        return None
+    try:
+        parsed_addresses = tuple(ipaddress.ip_address(item) for item in addresses)
+    except ValueError:
+        return None
+    if not all(_is_global_address(item) for item in parsed_addresses):
+        if resolver is not None:
+            return None
+        # 系统 DNS 可能被本地代理（TUN fake-ip）劫持，返回 198.18.0.0/15
+        # 等保留段地址；这类域名本身是合法公网 CDN，改用固定公网 DNS 兜底。
+        return _resolve_public_via_doh(hostname, port)
+    return addresses
+
+
 def resolve_safe_external_url(
     value: str,
     *,
@@ -155,44 +218,28 @@ def resolve_safe_external_url(
         port = parsed.port or (443 if parsed.scheme == "https" else 80)
     except ValueError:
         return None
-    try:
-        address = ipaddress.ip_address(hostname)
-    except ValueError:
-        lookup = resolver or socket.getaddrinfo
-        try:
-            answers = lookup(hostname, port, type=socket.SOCK_STREAM)
-        except (OSError, ValueError):
-            return None
-        addresses = tuple(
-            dict.fromkeys(
-                str(answer[4][0]).strip()
-                for answer in answers
-                if len(answer) >= 5 and answer[4] and str(answer[4][0]).strip()
-            )
-        )
-        if not addresses:
-            return None
-        try:
-            parsed_addresses = tuple(ipaddress.ip_address(item) for item in addresses)
-        except ValueError:
-            return None
-        if not all(_is_global_address(item) for item in parsed_addresses):
-            if resolver is not None:
+    key = (hostname, port, _resolver_cache_key(resolver))
+    now = time.monotonic()
+    with _URL_SAFETY_LOCK:
+        cached = _URL_SAFETY_CACHE.get(key)
+        if cached is not None and cached[0] > now:
+            if not cached[1]:
                 return None
-            # 系统 DNS 可能被本地代理（TUN fake-ip）劫持，返回 198.18.0.0/15
-            # 等保留段地址；这类域名本身是合法公网 CDN，改用固定公网 DNS 兜底。
-            return _resolve_public_via_doh(value, hostname, port)
-        return ResolvedExternalURL(str(value), hostname, port, addresses)
-    if not _is_global_address(address):
+            return ResolvedExternalURL(str(value), hostname, port, cached[1])
+    addresses = _resolve_host_addresses(hostname, port, resolver=resolver)
+    with _URL_SAFETY_LOCK:
+        # Double-check: another thread may have resolved while we were busy.
+        existing = _URL_SAFETY_CACHE.get(key)
+        if existing is None or existing[0] <= now:
+            if len(_URL_SAFETY_CACHE) > 5000:
+                _URL_SAFETY_CACHE.clear()
+            _URL_SAFETY_CACHE[key] = (now + _URL_SAFETY_TTL_SECONDS, addresses)
+    if not addresses:
         return None
-    return ResolvedExternalURL(str(value), hostname, port, (str(address),))
+    return ResolvedExternalURL(str(value), hostname, port, addresses)
 
 
-def _resolve_public_via_doh(
-    value: str,
-    hostname: str,
-    port: int,
-) -> ResolvedExternalURL | None:
+def _resolve_public_via_doh(hostname: str, port: int) -> tuple[str, ...] | None:
     """Resolve a host through the pinned public-DNS path used by image fetches.
 
     Only reached when the caller used the default system resolver and every
@@ -212,7 +259,7 @@ def _resolve_public_via_doh(
         return None
     if not all(_is_global_address(item) for item in parsed_addresses):
         return None
-    return ResolvedExternalURL(value, hostname, port, addresses)
+    return addresses
 
 
 def is_safe_external_url(

@@ -52,6 +52,26 @@ export function isSessionExpired(response: Response, detail: string): boolean {
 }
 
 /**
+ * 全局 fetch 拦截器：任意接口返回 401（登录会话失效/远程会话缺失）即统一派发
+ * auth:session-expired，由 App 回到登录页。
+ *
+ * 用于兜住未走 httpJson/httpBlob 的裸 fetch 调用（如 product_processing、
+ * profit_activity、DailySelectionPage、useChangePoller 等模块自带的 fetch），
+ * 避免这些路径在会话过期时只显示"操作失败，请稍后重试"、让用户手动退出重登。
+ */
+const FETCH_INTERCEPTOR_KEY = "__wh_session_fetch_interceptor__";
+const interceptorWindow = window as unknown as Record<string, unknown>;
+if (!interceptorWindow[FETCH_INTERCEPTOR_KEY]) {
+  interceptorWindow[FETCH_INTERCEPTOR_KEY] = true;
+  const originalFetch = window.fetch.bind(window);
+  window.fetch = async (input: RequestInfo | URL, init?: RequestInit): Promise<Response> => {
+    const response = await originalFetch(input, init);
+    if (response.status === 401) notifySessionExpired();
+    return response;
+  };
+}
+
+/**
  * 把服务端/网络错误转换为用户可读的中文提示（不再外露英文）。
  * - 已知业务错误映射为具体中文 + 解决建议；
  * - 纯英文的未知错误兜底为通用中文提示；

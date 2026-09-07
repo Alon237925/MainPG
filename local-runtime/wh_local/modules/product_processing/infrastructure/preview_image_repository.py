@@ -1120,7 +1120,15 @@ class PreviewImageRepository:
         self,
         run_id: str,
         workspace_id: str,
-        lease_seconds: int = 180,
+        # 租约默认对齐 finalize_deadline_seconds(1200s) 前的发布/收尾预算(900s)。
+        # 此前 180s 过短：任务发布阶段在 ThreadPoolExecutor 并发发布图片时，
+        # claimed_at 只在每次 future 完成后由 update_finalize_progress 刷新，
+        # 一旦某张图发布卡住（DNS/网络/COS 抖动）长时间无进度，claimed_at 就
+        # 无法刷新。此时若另一个共享同一 SQLite 的应用实例在 lifespan 里执行
+        # recover_interrupted_finalize_runs，会把仍在真实运行的任务误判为
+        # 「断线」而 reset→queued→重新 claim，旧 worker 心跳随即失败静默退出。
+        # 延长租约可显著降低这种跨实例误判抢跑概率。
+        lease_seconds: int = 900,
     ) -> dict[str, Any]:
         now, cutoff = _lease_times(lease_seconds)
         token = uuid4().hex
@@ -1164,7 +1172,7 @@ class PreviewImageRepository:
             return value
 
     def recover_interrupted_finalize_runs(
-        self, lease_seconds: int = 180
+        self, lease_seconds: int = 900
     ) -> list[dict[str, Any]]:
         """Requeue process-lost finalizations and release their local leases.
 
@@ -1172,6 +1180,11 @@ class PreviewImageRepository:
         publication / asset) still inside its lease is left untouched, so a
         freshly-started second application instance cannot steal an in-flight
         run from a live worker.
+
+        The lease default mimics claim_finalize_run: it must be long enough to
+        cover a slow publish phase where claimed_at cannot refresh while a
+        hash blocks inside the worker pool, otherwise a second shared-DB
+        instance would repeatedly steal a genuinely running finalization.
         """
         _, cutoff = _lease_times(lease_seconds)
 
