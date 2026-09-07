@@ -12,6 +12,7 @@ import base64
 import http.client
 import ipaddress
 import json
+import re
 import socket
 import threading
 from dataclasses import dataclass, field
@@ -52,6 +53,19 @@ _ITEM_GET_SEMAPHORE = threading.BoundedSemaphore(3)
 
 def _elapsed_ms(started_at: float) -> int:
     return max(0, round((time.monotonic() - started_at) * 1000))
+
+
+_NUMERIC_IDENTIFIER = re.compile(r"^[0-9]+$")
+
+
+def _numeric_identifier(value: object) -> str | None:
+    """Return a trimmed numeric identifier, or None for anything ambiguous."""
+    if isinstance(value, bool) or value is None:
+        return None
+    candidate = str(value).strip()
+    if _NUMERIC_IDENTIFIER.fullmatch(candidate):
+        return candidate
+    return None
 
 
 @dataclass(frozen=True)
@@ -248,19 +262,31 @@ class ProviderCallResult:
         return self.audits[-1]
 
 
-class OneBound1688Provider:
-    """OneBound's 1688-only keyword, image, and item-detail operations."""
+class OneBoundProvider:
+    """OneBound's platform-scoped keyword, image, and item-detail operations.
 
-    _provider_name = "onebound-1688"
+    OneBound serves the same operation surface (``item_search``, ``upload_img``,
+    ``item_search_img``, ``item_get``, ``item_search_shop``) per platform; only
+    the request root and the response field naming change.  ``platform`` selects
+    the platform segment while the transport, audit, and retry logic stay shared.
+    """
+
+    _default_platform = "1688"
 
     def __init__(
         self,
         config: Mapping[str, Any],
         *,
+        platform: str | None = None,
         transport: HttpTransport | None = None,
         resolver: HostResolver | None = None,
         image_fetcher: PublicImageFetcher | None = None,
     ) -> None:
+        resolved_platform = (platform or self._platform_from_base_url(config)).casefold()
+        if resolved_platform not in {"1688", "taobao"}:
+            raise ValueError("platform must be one of 1688 or taobao")
+        self._platform = resolved_platform
+        self._provider_name = f"onebound-{resolved_platform}"
         self._api_key = self._required_text(config, "api_key")
         self._api_secret = self._required_text(config, "api_secret")
         self._base_url = self._required_url(
@@ -292,7 +318,7 @@ class OneBound1688Provider:
         """Return diagnostic configuration without credentials or credential hints."""
         return {
             "provider": self._provider_name,
-            "platform": "1688",
+            "platform": self._platform,
             "base_url": self._base_url,
             "timeout_seconds": self._timeout_seconds,
             "enabled": self._enabled,
@@ -404,18 +430,52 @@ class OneBound1688Provider:
                 request_metadata={"offer_id_present": True},
             )
 
-    def search_shop(self, seller_nick: str, page: int) -> ProviderCallResult:
-        """Fetch one bounded page of a seller's offers using OneBound's shop endpoint."""
-        try:
-            shop_sid = validate_shop_sid(seller_nick)
-        except ValueError:
-            return self._local_error("item_search_shop", "invalid_request", "seller_nick is required")
+    def search_shop(self, identifier: str, page: int, *, seller_id: str | None = None) -> ProviderCallResult:
+        """Fetch one bounded page of a seller's offers using OneBound's shop endpoint.
+
+        1688 identifies the shop by ``seller_nick``; Taobao/Tmall requires both
+        ``shop_id`` and ``seller_id`` (the seller user id). The worker resolves
+        these identifiers from the seed item or ``seller_info`` before listing.
+        """
         if isinstance(page, bool) or not isinstance(page, int) or not 1 <= page <= 100:
             return self._local_error("item_search_shop", "invalid_request", "page must be between 1 and 100")
+        if self._platform == "taobao":
+            shop_id = _numeric_identifier(identifier)
+            seller = _numeric_identifier(seller_id)
+            if shop_id is None or seller is None:
+                return self._local_error(
+                    "item_search_shop_pro", "invalid_request", "shop_id and seller_id are required"
+                )
+            # 万邦淘宝账号开通的是高级版（pro）店铺全量接口；普通版 item_search_shop
+            # 会返回 4005 无权访问。
+            return self._api_call(
+                "item_search_shop_pro",
+                {"shop_id": shop_id, "seller_id": seller, "page": page},
+                request_metadata={"shop_id_present": True, "seller_id_present": True, "page": page},
+                retry_outcomes=_SEARCH_RETRY_OUTCOMES,
+            )
+        try:
+            shop_sid = validate_shop_sid(identifier)
+        except ValueError:
+            return self._local_error("item_search_shop", "invalid_request", "seller_nick is required")
         return self._api_call(
             "item_search_shop",
             {"seller_nick": shop_sid, "page": page},
             request_metadata={"seller_nick_present": True, "page": page},
+            retry_outcomes=_SEARCH_RETRY_OUTCOMES,
+        )
+
+    def get_seller_info(self, shop_id: str) -> ProviderCallResult:
+        """Resolve a Taobao/Tmall shop's seller id and nick from its shop id."""
+        if self._platform != "taobao":
+            return self._local_error("seller_info", "invalid_request", "seller_info is only available for taobao")
+        normalized = _numeric_identifier(shop_id)
+        if normalized is None:
+            return self._local_error("seller_info", "invalid_request", "shop_id is required")
+        return self._api_call(
+            "seller_info",
+            {"shop_id": normalized},
+            request_metadata={"shop_id_present": True},
             retry_outcomes=_SEARCH_RETRY_OUTCOMES,
         )
 
@@ -644,7 +704,7 @@ class OneBound1688Provider:
     @staticmethod
     def _image_id_from_upload_response(payload: Mapping[str, Any]) -> Any:
         items = payload.get("items")
-        image_id = OneBound1688Provider._nested_image_id(items)
+        image_id = OneBoundProvider._nested_image_id(items)
         if image_id is not None:
             return image_id
         data = payload.get("data")
@@ -658,12 +718,12 @@ class OneBound1688Provider:
                 if isinstance(candidate, str) and candidate.strip():
                     return candidate
             for child in value.values():
-                image_id = OneBound1688Provider._nested_image_id(child)
+                image_id = OneBoundProvider._nested_image_id(child)
                 if image_id is not None:
                     return image_id
         elif isinstance(value, (list, tuple)):
             for child in value:
-                image_id = OneBound1688Provider._nested_image_id(child)
+                image_id = OneBoundProvider._nested_image_id(child)
                 if image_id is not None:
                     return image_id
         return None
@@ -738,6 +798,14 @@ class OneBound1688Provider:
         return str(addresses[0])
 
     @staticmethod
+    def _platform_from_base_url(config: Mapping[str, Any]) -> str:
+        """Infer the platform from a OneBound base URL's platform segment."""
+        base_url = str(config.get("base_url", "")).rstrip("/").casefold()
+        if base_url.endswith("/taobao"):
+            return "taobao"
+        return "1688"
+
+    @staticmethod
     def _required_text(config: Mapping[str, Any], name: str) -> str:
         value = config.get(name)
         if not isinstance(value, str) or not value.strip():
@@ -780,3 +848,8 @@ class OneBound1688Provider:
         if isinstance(value, bool) or not isinstance(value, int) or value < 1:
             raise ValueError(f"{name} must be a positive integer")
         return value
+
+
+# Backwards-compatible alias: the 1688 provider is the platform provider with
+# the default platform segment, so existing callers keep working unchanged.
+OneBound1688Provider = OneBoundProvider

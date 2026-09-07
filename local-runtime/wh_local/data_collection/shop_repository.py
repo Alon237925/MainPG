@@ -105,6 +105,27 @@ class ShopCollectionRepository:
                     (marker,),
                 )
 
+            marker = "data_collection:007_shop_collection_platform"
+            if conn.execute(
+                "SELECT 1 FROM schema_migrations WHERE migration_id = ?", (marker,)
+            ).fetchone() is None:
+                columns = {
+                    str(row["name"])
+                    for row in conn.execute("PRAGMA table_info(shop_collection_batches)").fetchall()
+                }
+                if "platform" not in columns:
+                    conn.execute(
+                        "ALTER TABLE shop_collection_batches ADD COLUMN platform TEXT NOT NULL DEFAULT '1688'"
+                    )
+                if "seller_id" not in columns:
+                    conn.execute(
+                        "ALTER TABLE shop_collection_batches ADD COLUMN seller_id TEXT NOT NULL DEFAULT ''"
+                    )
+                conn.execute(
+                    "INSERT OR IGNORE INTO schema_migrations (migration_id, module) VALUES (?, 'data_collection')",
+                    (marker,),
+                )
+
     def record_api_call_reservation(
         self,
         *,
@@ -113,7 +134,7 @@ class ShopCollectionRepository:
         operation: str,
         reservation_granted: bool,
     ) -> None:
-        if operation not in {"item_search_shop", "item_get"}:
+        if operation not in {"item_search_shop", "item_search_shop_pro", "item_get"}:
             raise ValueError("unsupported shop API operation")
         with connect(self.database_path) as conn:
             conn.execute(
@@ -126,14 +147,17 @@ class ShopCollectionRepository:
     def create_batch(
         self, *, batch_id: str, workspace_id: str, actor_id: str, shop_sid: str,
         shop_url: str = "", shop_name: str = "", seed_offer_id: str = "", max_pages: int = 100,
+        platform: str = "1688", seller_id: str = "",
     ) -> ShopBatch:
+        if platform not in {"1688", "taobao"}:
+            raise ValueError("platform must be one of 1688 or taobao")
         try:
             with connect(self.database_path) as conn:
                 conn.execute(
                     """INSERT INTO shop_collection_batches
-                    (batch_id, workspace_id, actor_id, shop_sid, shop_url, shop_name, seed_offer_id, max_pages)
-                    VALUES (?, ?, ?, ?, ?, ?, ?, ?)""",
-                    (batch_id, workspace_id, actor_id, shop_sid, shop_url, shop_name, seed_offer_id, max_pages),
+                    (batch_id, workspace_id, actor_id, platform, shop_sid, seller_id, shop_url, shop_name, seed_offer_id, max_pages)
+                    VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)""",
+                    (batch_id, workspace_id, actor_id, platform, shop_sid, seller_id, shop_url, shop_name, seed_offer_id, max_pages),
                 )
         except sqlite3.IntegrityError as error:
             if "idx_shop_collection_active_shop" in str(error) or "shop_collection_batches.workspace_id, shop_collection_batches.shop_sid" in str(error):
@@ -141,13 +165,15 @@ class ShopCollectionRepository:
             raise
         return self.get_batch(workspace_id=workspace_id, batch_id=batch_id)
 
-    def resolve_shop_identity(self, *, batch_id: str, shop_sid: str, shop_name: str = "") -> ShopBatch:
+    def resolve_shop_identity(
+        self, *, batch_id: str, shop_sid: str, shop_name: str = "", seller_id: str = ""
+    ) -> ShopBatch:
         try:
             with connect(self.database_path) as conn:
                 cursor = conn.execute(
-                    """UPDATE shop_collection_batches SET shop_sid = ?, shop_name = ?, updated_at = datetime('now')
-                    WHERE batch_id = ?""",
-                    (shop_sid, shop_name, batch_id),
+                    """UPDATE shop_collection_batches SET shop_sid = ?, shop_name = ?, seller_id = ?,
+                    updated_at = datetime('now') WHERE batch_id = ?""",
+                    (shop_sid, shop_name, seller_id, batch_id),
                 )
                 if not cursor.rowcount:
                     raise ShopBatchNotFound("shop collection batch not found")

@@ -18,8 +18,10 @@ export type ShopCollectionBatch = {
   batch_id: string;
   workspace_id: string;
   actor_id: string;
+  platform?: "1688" | "taobao";
   status: ShopBatchStatus;
   shop_sid: string;
+  seller_id?: string;
   shop_name: string;
   seed_offer_id?: string;
   shop_url?: string;

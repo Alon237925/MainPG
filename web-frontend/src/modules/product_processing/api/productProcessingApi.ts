@@ -37,6 +37,27 @@ export async function listProductDrafts(sourceType?: DraftSourceType): Promise<P
   return (await apiRequest<{ drafts: ProductDraft[] }>(`/product-processing/drafts${query}`)).drafts;
 }
 
+export type DraftCollectionBatch = {
+  batch_id: string;
+  source_type: string;
+  collection_channel: string;
+  platform: string;
+  channel_name?: string;
+  count: number;
+  first_created_at: string;
+  latest_updated_at: string;
+};
+
+export async function listDraftBatches(limit = 100, offset = 0): Promise<{ batches: DraftCollectionBatch[]; pagination: { has_more: boolean } }> {
+  return apiRequest(`/product-processing/draft-batches?limit=${limit}&offset=${offset}`);
+}
+
+export async function deleteDraftBatch(batchId: string): Promise<{ deleted_count: number }> {
+  return apiRequest(`/product-processing/draft-batches/${encodeURIComponent(batchId)}/delete`, {
+    method: "POST",
+  });
+}
+
 export function retryProductDraftSourceImages(draftId: number): Promise<{ sync: { status: string } }> {
   return apiRequest(`/product-processing/drafts/${encodeURIComponent(String(draftId))}/source-images/retry`, {
     method: "POST",

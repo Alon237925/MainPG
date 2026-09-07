@@ -1,4 +1,4 @@
-"""Pure parsers for 1688 links and OneBound shop-search pages."""
+"""Pure parsers for 1688 / Taobao links and OneBound shop-search pages."""
 
 from __future__ import annotations
 
@@ -208,3 +208,73 @@ def _offer_id_from_item(item: Mapping[str, Any]) -> str | None:
             except ValueError:
                 continue
     return None
+
+
+def _is_taobao_host(hostname: str) -> bool:
+    return (
+        hostname == "taobao.com"
+        or hostname.endswith(".taobao.com")
+        or hostname == "tmall.com"
+        or hostname.endswith(".tmall.com")
+    )
+
+
+def extract_taobao_item_id(value: str) -> str:
+    """Extract a numeric Taobao/Tmall item id from a plain ID or a public URL."""
+    if not isinstance(value, str):
+        raise ValueError("taobao item input must be a string")
+    candidate = value.strip()
+    if _OFFER_ID.fullmatch(candidate):
+        return candidate
+    parsed = urlparse(candidate)
+    hostname = (parsed.hostname or "").rstrip(".").casefold()
+    if parsed.scheme not in {"http", "https"} or not _is_taobao_host(hostname):
+        raise ValueError("taobao item input must be a numeric ID or a taobao URL")
+    for key in ("id", "item_id", "itemId", "num_iid", "offer_id"):
+        values = parse_qs(parsed.query).get(key)
+        if values and _OFFER_ID.fullmatch(values[0]):
+            return values[0]
+    raise ValueError("taobao item URL did not include an item ID")
+
+
+def extract_taobao_shop_id(value: str) -> str:
+    """Extract the numeric shop id from a Taobao/Tmall shop input.
+
+    Only URLs that carry an explicit ``shop_id`` (query or ``shop{id}.taobao.com``
+    subdomain) can be resolved without an API call. Shop home pages keyed by the
+    seller nick (e.g. ``volare.tmall.com``) cannot; the caller should ask for a
+    product link from that shop instead.
+    """
+    if not isinstance(value, str):
+        raise ValueError("taobao shop input must be a string")
+    candidate = value.strip()
+    if _OFFER_ID.fullmatch(candidate):
+        return candidate
+    parsed = urlparse(candidate)
+    hostname = (parsed.hostname or "").rstrip(".").casefold()
+    if parsed.scheme not in {"http", "https"} or not _is_taobao_host(hostname):
+        raise ValueError("taobao shop input must be a public taobao URL")
+    query = {
+        key.casefold(): item
+        for key, values in parse_qs(parsed.query).items()
+        for item in values[:1]
+    }
+    for key in ("shop_id", "shopid"):
+        value_in_query = query.get(key)
+        if isinstance(value_in_query, str) and _OFFER_ID.fullmatch(value_in_query.strip()):
+            return value_in_query.strip()
+    if hostname.startswith("shop") and hostname.endswith(".taobao.com"):
+        label = hostname.removesuffix(".taobao.com").removeprefix("shop")
+        if _OFFER_ID.fullmatch(label):
+            return label
+    raise ValueError(
+        "taobao shop URL did not include a numeric shop id; paste a product link from the shop instead"
+    )
+
+
+def detect_shop_platform(value: object) -> str:
+    """Infer the shop-collection platform from a public input URL host."""
+    if not isinstance(value, str) or not value.strip():
+        return "1688"
+    hostname = (urlparse(value.strip()).hostname or "").rstrip(".").casefold()
+    return "taobao" if _is_taobao_host(hostname) else "1688"

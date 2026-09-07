@@ -199,6 +199,25 @@ def create_product_processing_router(
             workspace_id=_workspace(workspace_id),
         )
 
+    @router.get("/draft-batches")
+    def list_draft_batches(
+        limit: int = Query(default=50, ge=1, le=200),
+        offset: int = Query(default=0, ge=0),
+        workspace_id: str = Header(default="local", alias="X-Workspace-ID"),
+    ) -> dict[str, Any]:
+        return service.list_draft_batches(
+            limit=limit, offset=offset, workspace_id=_workspace(workspace_id)
+        )
+
+    @router.post("/draft-batches/{batch_id}/delete")
+    def delete_draft_batch(
+        batch_id: str,
+        workspace_id: str = Header(default="local", alias="X-Workspace-ID"),
+    ) -> dict[str, Any]:
+        return service.delete_draft_batch(
+            batch_id=batch_id, workspace_id=_workspace(workspace_id)
+        )
+
     @router.get("/drafts/revision")
     def drafts_revision(
         workspace_id: str = Header(default="local", alias="X-Workspace-ID"),

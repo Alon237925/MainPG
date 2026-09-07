@@ -12,10 +12,10 @@ export function listShopCollectionBatches(limit = 30, offset = 0): Promise<ShopC
   return apiRequest(`${SHOP_BATCHES_PATH}?${query}`);
 }
 
-export function createShopCollectionBatch(sourceInput: string): Promise<ShopCollectionBatch> {
+export function createShopCollectionBatch(sourceInput: string, platform: "1688" | "taobao" = "1688"): Promise<ShopCollectionBatch> {
   return apiRequest(SHOP_BATCHES_PATH, {
     method: "POST",
-    body: JSON.stringify({ source_input: sourceInput }),
+    body: JSON.stringify({ source_input: sourceInput, platform }),
   });
 }
 

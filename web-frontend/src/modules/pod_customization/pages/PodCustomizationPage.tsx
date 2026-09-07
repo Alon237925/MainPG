@@ -12,6 +12,7 @@ import {
   buildPromptV1,
   businessFieldsForApi,
   canDeletePodBatch,
+  isPristineCreativeEdit,
   isPodBatchCount,
   isActiveBatchStatus,
   isActivePodItemStatus,
@@ -201,6 +202,17 @@ export function PodCustomizationPage({ isActive = true }: Props) {
   const failedRetryCandidates = activeBatch ? batchRetryCandidates(groupPodStyleRows(activeBatch)) : { image: [], title: [] };
   const builtInPrompt = useMemo(() => buildPromptV1(businessFields), [businessFields]);
   const resolvedPrompt = resolveCreativePrompt(businessFields, currentBatchEdit ?? "");
+  // A frozen custom edit that is just a stored copy of the built-in v1 snapshot
+  // must follow business-field edits (sync), not stay stale. Hand-written
+  // creative directions (not v1-structured) are left untouched.
+  const previousBusinessFieldsRef = useRef(businessFields);
+  useEffect(() => {
+    const changed = previousBusinessFieldsRef.current !== businessFields;
+    previousBusinessFieldsRef.current = businessFields;
+    if (changed && currentBatchEdit !== null && isPristineCreativeEdit(currentBatchEdit)) {
+      setCurrentBatchEdit(null);
+    }
+  }, [businessFields, currentBatchEdit]);
   const activeItemStatuses = activeBatch?.items.map((item) => item.status).join("|") ?? "";
   const activeTitleStatuses = activeBatch?.style_titles?.map((title) => title.status).join("|") ?? "";
   const batchRunning = activeBatch

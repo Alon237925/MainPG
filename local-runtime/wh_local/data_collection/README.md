@@ -18,7 +18,7 @@
 | 来源 | 草稿来源类型 | 入库时机 |
 | --- | --- | --- |
 | Temu / 1688 网页手动采集 | `web_manual_capture` | 插件采集成功后 |
-| 万邦 API（关键词 / 参考图 / 1688 链接图搜） | `onebound_api` | API 采集结果返回后 |
+| 万邦 API（1688 / 淘宝关键词 / 参考图 / 链接图搜） | `onebound_api` | API 采集结果返回后 |
 
 万邦 API 的预览候选会保留在 `daily_selection_runs` / `daily_selection_candidates` 中，用于批次审计、回看和反馈；它们不是另一套等待确认的“候选池”。同一候选在 API 结果返回时已幂等写入 `onebound_api` 草稿，后续确认只关联或消费这份既有草稿，不得再创建重复草稿。
 
@@ -26,7 +26,7 @@
 | --- | --- | --- | --- |
 | Temu 网页手动采集 | `POST /desktop/data-collection/temu-link/collect` | 已登录 Temu 的浏览器插件 | 插件成功回传后写入 `web_manual_capture` 草稿；命令会话和结果仍写入插件队列表 |
 | 1688 网页手动采集 | 浏览器插件当前页采集命令 | 已登录 1688 的浏览器插件 | 插件成功回传后写入 `web_manual_capture` 草稿 |
-| 1688 关键词 / 参考图 / 相似链接 | `POST /desktop/daily-selection/preview` 或 `POST /desktop/daily-selection/preview-from-1688-link` | OneBound：关键词搜索、`upload_img` → `item_search_img`、`item_get` | 结果立即幂等写入 `onebound_api` 草稿；`daily_selection_runs`、`daily_selection_candidates` 仅保存该次采集的审计快照 |
+| 1688 / 淘宝 关键词 / 参考图 / 相似链接 | `POST /desktop/daily-selection/preview` 或 `POST /desktop/daily-selection/preview-from-link` | OneBound：关键词搜索、`upload_img` → `item_search_img`、`item_get` | 结果立即幂等写入 `onebound_api` 草稿；`daily_selection_runs`、`daily_selection_candidates` 仅保存该次采集的审计快照 |
 
 ```mermaid
 flowchart LR
@@ -65,8 +65,8 @@ register_daily_selection_routes(router, dependencies)
 
 | 方法 | 路径 | 用途 |
 | --- | --- | --- |
-| `POST` | `/desktop/daily-selection/preview` | 校验条件，采集、筛选、评分并保存批次快照 |
-| `POST` | `/desktop/daily-selection/preview-from-1688-link` | 输入 `source_url`，先调用 `item_get`，再以主图优先、标题兜底执行 1688 相似商品采集 |
+| `POST` | `/desktop/daily-selection/preview` | 校验条件，采集、筛选、评分并保存批次快照（`collection_platform` 支持 `1688` / `taobao`） |
+| `POST` | `/desktop/daily-selection/preview-from-link` | 输入 `source_url`，按链接平台自动识别后先调用 `item_get`，再以主图优先、标题兜底执行相似商品采集；`/preview-from-1688-link` 为兼容别名 |
 | `GET` | `/desktop/daily-selection/runs?limit=20&offset=0` | 分页列出当前 workspace 的批次摘要（`limit` 最大 100） |
 | `GET` | `/desktop/daily-selection/runs/{run_id}` | 回读完整批次与候选快照 |
 | `POST` | `/desktop/daily-selection/runs/{run_id}/feedback` | 保存反馈并把候选标记为 rejected |

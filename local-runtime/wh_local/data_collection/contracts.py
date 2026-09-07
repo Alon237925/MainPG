@@ -308,7 +308,7 @@ class DailySelectionCandidate(_ContractModel):
 
     candidate_id: str
     offer_id: str
-    source_platform: Literal["1688"]
+    source_platform: Literal["1688", "taobao"]
     source_url: str
     source_title: str
     query_keyword: str | None = None

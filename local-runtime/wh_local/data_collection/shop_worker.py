@@ -114,7 +114,12 @@ class ShopCollectionWorker:
             if self._stop.is_set() or self._apply_control_state(batch, active_lease):
                 return
             actor = DailySelectionActor(actor_id=batch.actor_id, workspace_id=batch.workspace_id)
-            config = self._provider_config_resolver(actor)
+            if batch.platform == "taobao":
+                from .service import _platform_config
+
+                config = _platform_config(self._provider_config_resolver(actor), "taobao")
+            else:
+                config = self._provider_config_resolver(actor)
             provider = self._provider_factory(config)
             if batch.status == "queued":
                 batch = self._transition(active_lease, "resolving", {"queued"})
@@ -159,6 +164,8 @@ class ShopCollectionWorker:
             )
 
     def _resolve_shop(self, provider: Any, batch: Any, lease: ShopBatchLease) -> Any:
+        if batch.platform == "taobao":
+            return self._resolve_taobao_shop(provider, batch, lease)
         if not batch.seed_offer_id:
             return batch
         self._raise_if_paused(batch.batch_id)
@@ -187,6 +194,73 @@ class ShopCollectionWorker:
             shop_name=str(seller.get("shop_name") or seller.get("nick") or ""),
         )
 
+    def _resolve_taobao_shop(self, provider: Any, batch: Any, lease: ShopBatchLease) -> Any:
+        """Resolve a Taobao/Tmall shop identity to shop_id + seller_id.
+
+        ``item_get`` usually returns item-level ``shop_id``/``seller_id``, but
+        misses either on some products. Fallbacks: seller_info.shop_id and the
+        shop home URL (``seller_info.zhuy``), then ``seller_info(shop_id)`` to
+        recover the seller user id when the detail response lacks it.
+        """
+        if batch.seed_offer_id:
+            self._raise_if_paused(batch.batch_id)
+            result = self._call_detail(provider, batch.seed_offer_id)
+            self._raise_if_stopping()
+            self._raise_if_paused(batch.batch_id)
+            if not _result_ok(result):
+                code = _result_error_code(result)
+                raise ValueError(
+                    f"万邦未返回该商品数据（error_code={code}）。该商品可能属于万邦受限类目"
+                    "（药品/农产品/五金/天猫国际/百亿补贴等，文档注明部分商品获取不到），"
+                    "请换一家店的商品链接重试"
+                )
+            identity = _taobao_shop_identity(_result_response(result))
+            shop_id = identity.get("shop_id")
+            if not shop_id:
+                raise ValueError(_taobao_identity_failure_message(_result_response(result)))
+            seller_id = identity.get("seller_id")
+            shop_name = identity.get("shop_name", "")
+            if not seller_id:
+                # item_get 未返回 seller_id：用 shop_id 调 seller_info 补齐。
+                info_result = provider.get_seller_info(shop_id)
+                self._raise_if_stopping()
+                self._raise_if_paused(batch.batch_id)
+                if not _result_ok(info_result):
+                    raise RuntimeError(_result_error_message(info_result))
+                info = _seller_info_identity(_result_response(info_result))
+                seller_id = info.get("seller_id") or ""
+                shop_name = shop_name or info.get("shop_name", "") or info.get("nick", "")
+                if not seller_id:
+                    raise ValueError(
+                        "未能解析该店铺的卖家信息（seller_id），请换一个店铺或商品链接重试"
+                    )
+            with self._seed_lock:
+                self._seed_details[(batch.batch_id, batch.seed_offer_id)] = result
+            self._renew(lease)
+            return self.repository.resolve_shop_identity(
+                batch_id=batch.batch_id,
+                shop_sid=shop_id,
+                shop_name=shop_name,
+                seller_id=seller_id,
+            )
+        self._raise_if_paused(batch.batch_id)
+        result = provider.get_seller_info(batch.shop_sid)
+        self._raise_if_stopping()
+        self._raise_if_paused(batch.batch_id)
+        if not _result_ok(result):
+            raise RuntimeError(_result_error_message(result))
+        identity = _seller_info_identity(_result_response(result))
+        seller_id = identity.get("seller_id")
+        if not seller_id:
+            raise ValueError("未能解析该店铺的卖家信息（seller_id），请换一个店铺或商品链接重试")
+        self._renew(lease)
+        return self.repository.resolve_shop_identity(
+            batch_id=batch.batch_id,
+            shop_sid=batch.shop_sid,
+            shop_name=identity.get("shop_name", "") or identity.get("nick", ""),
+            seller_id=seller_id,
+        )
+
     def _list_shop(self, provider: Any, batch: Any, lease: ShopBatchLease) -> Any:
         if batch.listing_complete:
             return batch
@@ -198,11 +272,14 @@ class ShopCollectionWorker:
             if self._apply_control_state(current, lease):
                 return self.repository.get_batch_internal(batch.batch_id)
             self._raise_if_paused(batch.batch_id)
-            result = provider.search_shop(current.shop_sid, page)
+            if current.platform == "taobao":
+                result = provider.search_shop(current.shop_sid, page, seller_id=current.seller_id)
+            else:
+                result = provider.search_shop(current.shop_sid, page)
             self._raise_if_stopping()
             self._raise_if_paused(batch.batch_id)
             if not _result_ok(result):
-                raise RuntimeError(_result_error_message(result))
+                raise RuntimeError(_shop_listing_error_message(result))
             response = _result_response(result)
             normalized = self._page_normalizer(response, getattr(result, "audit", None))
             values = _page_values(normalized)
@@ -213,6 +290,13 @@ class ShopCollectionWorker:
                 has_next = page < min(total_pages, batch.max_pages, 100)
             if page >= min(batch.max_pages, 100):
                 has_next = False
+            if batch.platform == "taobao" and not values and page == 1:
+                # 第 1 页就为空：万邦未收录该店商品，或接口/权限异常；给出可诊断原因。
+                raise RuntimeError(
+                    "该店铺商品列表为空（第 1 页 0 条）：万邦可能未收录这家店的商品，"
+                    "或商品属于受限类目（平台补贴/官方直营等）。可换一家店重试，"
+                    "或联系万邦确认该店数据支持情况"
+                )
             self._renew(lease)
             self.repository.record_shop_page(
                 batch_id=batch.batch_id,
@@ -324,6 +408,7 @@ class ShopCollectionWorker:
             batch_id=batch.batch_id,
             workspace_id=batch.workspace_id,
             candidate=candidate,
+            collection_channel="shop_collection",
             **(
                 {
                     "shop_fence": {
@@ -495,6 +580,23 @@ def _result_error_message(result: Any) -> str:
     return str(getattr(error, "message", "OneBound request failed") or "OneBound request failed")
 
 
+def _shop_listing_error_message(result: Any) -> str:
+    """Turn an upstream listing failure into an actionable Chinese message."""
+    normalized_code = _result_error_code(result)
+    response = _result_response(result)
+    upstream_code = str(response.get("error_code") or "").strip()
+    raw_error = str(response.get("error") or response.get("reason") or "")
+    if upstream_code == "4005" or "无权访问" in raw_error or "请开通接口" in raw_error:
+        return (
+            "淘宝店铺商品列表接口（taobao.item_search_shop）未开通"
+            f"（error_code={upstream_code or normalized_code}，无权访问/请开通接口）。"
+            "请联系万邦客服（错误信息附带的 QQ/微信）开通该接口后重试"
+        )
+    detail = f"（error_code={upstream_code}）" if upstream_code else ""
+    suffix = str(raw_error)[:120] or "请稍后重试"
+    return f"店铺商品列表获取失败{detail}：{suffix}"
+
+
 def _seller_info(payload: Mapping[str, Any]) -> Mapping[str, Any]:
     item = payload.get("item")
     if not isinstance(item, Mapping):
@@ -502,6 +604,103 @@ def _seller_info(payload: Mapping[str, Any]) -> Mapping[str, Any]:
         item = data if isinstance(data, Mapping) else payload
     seller = item.get("seller_info") if isinstance(item, Mapping) else None
     return seller if isinstance(seller, Mapping) else {}
+
+
+def _taobao_shop_identity(payload: Mapping[str, Any]) -> Mapping[str, str]:
+    """Extract shop_id / seller_id / shop_name from a Taobao item_get response.
+
+    Fields move around depending on the product: item-level ``shop_id``/
+    ``seller_id``, camel-case variants, or only ``seller_info`` (which carries
+    ``shop_id`` and the shop home URL ``zhuy`` like ``https://shop{id}.taobao.com/``).
+    OneBound may wrap the detail as ``{"item": {...}}`` or ``{"items": {"item": ...}}``.
+    """
+    item: Any = None
+    for candidate in (payload.get("item"), payload.get("data")):
+        if isinstance(candidate, Mapping):
+            item = candidate
+            break
+    else:
+        items = payload.get("items")
+        nested = items.get("item") if isinstance(items, Mapping) else None
+        item = nested if isinstance(nested, Mapping) else None
+    if not isinstance(item, Mapping):
+        return {}
+    seller = item.get("seller_info") if isinstance(item.get("seller_info"), Mapping) else {}
+
+    def first(*values: object) -> str:
+        for value in values:
+            if isinstance(value, str) and value.strip():
+                return value.strip()
+            if isinstance(value, (int, float)) and not isinstance(value, bool) and value > 0:
+                return str(int(value))
+        return ""
+
+    shop_id = first(
+        item.get("shop_id"), item.get("shopId"), seller.get("shop_id"), seller.get("shopId")
+    )
+    if not shop_id:
+        shop_id = _shop_id_from_shop_url(seller.get("zhuy") or seller.get("url"))
+    seller_id = first(
+        item.get("seller_id"), item.get("sellerId"), seller.get("seller_id"), seller.get("sellerId")
+    )
+    shop_name = first(seller.get("shop_name"), seller.get("nick"), item.get("nick"))
+    return {"shop_id": shop_id, "seller_id": seller_id, "shop_name": shop_name}
+
+
+def _shop_id_from_shop_url(value: object) -> str:
+    """Extract the numeric shop id from a Taobao shop home URL if one is present."""
+    if not isinstance(value, str) or not value.strip():
+        return ""
+    try:
+        from .shop_parsing import extract_taobao_shop_id
+
+        return extract_taobao_shop_id(value)
+    except ValueError:
+        return ""
+
+
+def _taobao_identity_failure_message(payload: Mapping[str, Any]) -> str:
+    """Self-diagnostic message embedding what the response actually contained."""
+    try:
+        top_keys = ", ".join(str(key) for key in list(payload.keys())[:8])
+        item = payload.get("item")
+        if not isinstance(item, Mapping):
+            items = payload.get("items")
+            item = items.get("item") if isinstance(items, Mapping) else None
+        item_keys = ", ".join(str(key) for key in list(item.keys())[:10]) if isinstance(item, Mapping) else "无"
+        code = str(payload.get("error_code") or "")
+        reason = str(payload.get("reason") or "")
+        error = str(payload.get("error") or "")
+        return (
+            "该商品详情未返回店铺信息（shop_id）。返回字段："
+            f"顶层[{top_keys}] item[{item_keys}] error={error or '无'} code={code} reason={reason or '无'}；"
+            "请换一个店内商品链接重试"
+        )
+    except Exception:
+        return "该商品详情未返回店铺信息（shop_id），请换一个店内商品链接重试"
+
+
+def _seller_info_identity(payload: Mapping[str, Any]) -> Mapping[str, str]:
+    """Extract seller_id / nick from a Taobao ``seller_info`` response."""
+    source = payload.get("items")
+    if not isinstance(source, Mapping):
+        data = payload.get("data")
+        source = data if isinstance(data, Mapping) else payload
+    if not isinstance(source, Mapping):
+        return {}
+
+    def first(*names: str) -> str:
+        for name in names:
+            value = source.get(name)
+            if isinstance(value, str) and value.strip():
+                return value.strip()
+        return ""
+
+    return {
+        "seller_id": first("seller_id"),
+        "shop_id": first("shop_id"),
+        "nick": first("nick", "shop_name"),
+    }
 
 
 def _error_code(error: Exception) -> str:

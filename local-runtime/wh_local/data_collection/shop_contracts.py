@@ -26,7 +26,9 @@ class ShopBatch(BaseModel):
     batch_id: str
     workspace_id: str
     actor_id: str
+    platform: Literal["1688", "taobao"] = "1688"
     shop_sid: str
+    seller_id: str = ""
     seed_offer_id: str = ""
     shop_url: str = ""
     shop_name: str = ""

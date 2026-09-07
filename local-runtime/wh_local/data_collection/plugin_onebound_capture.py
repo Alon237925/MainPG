@@ -21,11 +21,11 @@ from typing import Any
 from fastapi import APIRouter, BackgroundTasks, Body, Depends, HTTPException, Query
 from pydantic import ValidationError
 
-from .link_collection import canonical_1688_offer_url
+from .link_collection import canonical_platform_url
 from .normalizer import normalize_detail_response
 from .plugin_queue import DataCollectionPluginQueue
 from .plugin_onebound_capture_repository import PluginOneBoundCaptureRepository
-from .service import DailySelectionActor
+from .service import DailySelectionActor, _platform_config
 
 
 _TTL_SECONDS = 30 * 60
@@ -73,6 +73,7 @@ class _Batch:
     expires_at_text: str
     items: dict[str, _Item]
     existing_offer_ids: tuple[str, ...]
+    platform: str = "1688"
     provider: Any | None = None
     started: bool = False
     closing: bool = False
@@ -159,9 +160,12 @@ class PluginOneBoundCaptureService:
             raise ValueError("page_url is required")
         if not isinstance(source_urls, list) or not source_urls:
             raise ValueError("source_urls must contain at least one URL")
+        from .shop_parsing import detect_shop_platform
+
+        platform = detect_shop_platform(source_urls[0])
         normalized: dict[str, tuple[str, str]] = {}
         for source_url in source_urls:
-            canonical_url, offer_id = canonical_1688_offer_url(source_url)
+            canonical_url, offer_id = canonical_platform_url(platform, source_url)
             normalized.setdefault(offer_id, (canonical_url, offer_id))
 
         prepared: dict[str, _Item] = {}
@@ -170,7 +174,7 @@ class PluginOneBoundCaptureService:
         for canonical_url, offer_id in tuple(normalized.values())[:_MAX_URLS_PER_BATCH]:
             draft = _onebound_draft_by_candidate(
                 self._dependencies.draft_writer.repository,
-                f"1688:{offer_id}",
+                f"{platform}:{offer_id}",
                 identity["workspace_id"],
             )
             if _is_active_onebound_draft(draft):
@@ -203,6 +207,7 @@ class PluginOneBoundCaptureService:
                 actor_id=identity["actor_id"],
                 workspace_id=identity["workspace_id"],
                 page_url=page_url.strip(),
+                platform=platform,
                 expires_at=expires_at,
                 expires_at_text=expiry_text,
                 items=prepared,
@@ -253,7 +258,9 @@ class PluginOneBoundCaptureService:
                     actor = DailySelectionActor(
                         actor_id=identity["actor_id"], workspace_id=identity["workspace_id"]
                     )
-                    config = self._dependencies.provider_config_resolver(actor)
+                    config = _platform_config(
+                        self._dependencies.provider_config_resolver(actor), batch.platform
+                    )
                     if not isinstance(config, Mapping):
                         raise ValueError("provider configuration is unavailable")
                     provider = self._dependencies.provider_factory(config)
@@ -263,7 +270,7 @@ class PluginOneBoundCaptureService:
                         self._repository.set_status(batch.batch_id, "running")
                 except Exception:
                     batch.provider = None
-                    self._set_fatal(batch, "start_failed", "1688 采集服务启动失败")
+                    self._set_fatal(batch, "start_failed", "采集服务启动失败")
                     raise _BatchFatal(batch.fatal_code, batch.fatal_message) from None
             return {"ok": True, "batch_token": batch.token, "statusText": "批次已启动"}
 
@@ -272,7 +279,7 @@ class PluginOneBoundCaptureService:
 
     def _item_for_identity(self, identity: Mapping[str, str], batch_token: str, source_url: str) -> Mapping[str, Any]:
         batch = self._owned_batch_for_identity(identity, batch_token)
-        canonical_url, offer_id = canonical_1688_offer_url(source_url)
+        canonical_url, offer_id = canonical_platform_url(batch.platform, source_url)
         with batch.condition:
             self._raise_if_unavailable(batch)
             if not batch.started:
@@ -295,13 +302,13 @@ class PluginOneBoundCaptureService:
             # Provider detail errors remain per-item diagnostics.  Do not expose
             # arbitrary upstream text because it can contain request metadata.
             with batch.condition:
-                response = _failure(item, "capture_failed", "1688 商品详情采集失败")
+                response = _failure(item, "capture_failed", "商品详情采集失败")
         finally:
             with batch.condition:
                 if item.status == "running":
                     item.status = "failed"
                     item.error_code = "capture_failed"
-                    item.message = "1688 商品详情采集失败"
+                    item.message = "商品详情采集失败"
                 batch.running_items -= 1
                 batch.condition.notify_all()
             self._persist_item(batch, item)
@@ -348,6 +355,8 @@ class PluginOneBoundCaptureService:
         """Claim one prepared persistent batch for workbench-owned execution."""
         if self._repository is None:
             raise LookupError("persistent capture storage is unavailable")
+        from .shop_parsing import detect_shop_platform
+
         persistent = self._repository.get(workspace_id=workspace_id, batch_id=batch_id)
         if persistent is None:
             raise LookupError("capture batch not found")
@@ -388,6 +397,11 @@ class PluginOneBoundCaptureService:
                     actor_id=actor_id,
                     workspace_id=workspace_id,
                     page_url=str(persistent.get("page_url") or ""),
+                    platform=(
+                        detect_shop_platform(str(persisted_items[0].get("source_url") or ""))
+                        if persisted_items
+                        else "1688"
+                    ),
                     expires_at=now + self._ttl_seconds,
                     expires_at_text=expiry_text,
                     items=pending,
@@ -614,6 +628,7 @@ class PluginOneBoundCaptureService:
                 batch_id=batch_id,
                 workspace_id=workspace_id,
                 candidate=candidate,
+                collection_channel="plugin_capture",
             )
             action = str(intake.get("action") or "created")
             draft = intake.get("draft")
@@ -666,11 +681,13 @@ class PluginOneBoundCaptureService:
             return
         try:
             actor = DailySelectionActor(actor_id=actor_id, workspace_id=workspace_id)
-            config = self._dependencies.provider_config_resolver(actor)
+            first = _candidate_from_json(str(targets[0].get("candidate_json") or "")) if targets else None
+            platform = str((first or {}).get("source_platform") or "1688")
+            config = _platform_config(self._dependencies.provider_config_resolver(actor), platform)
             provider = self._dependencies.provider_factory(config)
         except Exception:
             job.status = "failed"
-            job.message = "1688 采集服务未配置，无法补齐 SKU"
+            job.message = "采集服务未配置，无法补齐 SKU"
             job.updated_at = _now_text()
             self._persist_sku_repull(job)
             return
@@ -693,7 +710,9 @@ class PluginOneBoundCaptureService:
                         model, getattr(result, "response"), evidence=getattr(result, "audit", None)
                     )
                     enriched_data = enriched.model_dump(mode="python")
-                    enriched_data["candidate_id"] = f"1688:{model.offer_id}"
+                    enriched_data["candidate_id"] = (
+                        f"{model.source_platform}:{model.offer_id}"
+                    )
                     self._repository.update_item_candidate(
                         batch_id, str(item.get("offer_id")), candidate=enriched_data, review_status="pending"
                     )
@@ -788,11 +807,13 @@ class PluginOneBoundCaptureService:
         if not bool(getattr(result, "ok", False)):
             raise RuntimeError("provider item detail failed")
         candidate = normalize_detail_response(
-            getattr(result, "response"), evidence=getattr(result, "audit", None)
+            getattr(result, "response"),
+            evidence=getattr(result, "audit", None),
+            platform=batch.platform,
         ).model_dump(mode="python")
         if str(candidate.get("offer_id", "")) != item.offer_id:
             raise ValueError("provider returned a mismatched offer")
-        candidate["candidate_id"] = f"1688:{item.offer_id}"
+        candidate["candidate_id"] = f"{batch.platform}:{item.offer_id}"
         item.source_title = _candidate_source_title(candidate)
         # 采集成功仅登记为候选，不直接写入草稿池；确认入池由用户在插件页手动完成。
         item.status = "succeeded"

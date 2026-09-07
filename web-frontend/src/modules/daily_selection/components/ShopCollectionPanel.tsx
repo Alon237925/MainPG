@@ -18,6 +18,21 @@ type ShopCollectionPanelProps = {
 
 const ITEM_PAGE_SIZE_OPTIONS = [10, 20, 50, 100] as const;
 
+function detectInputPlatform(value: string): "1688" | "taobao" | null {
+  const candidate = value.trim();
+  if (!/^https?:\/\//i.test(candidate)) return null;
+  try {
+    const host = new URL(candidate).hostname.toLowerCase();
+    if (host === "taobao.com" || host.endsWith(".taobao.com") || host === "tmall.com" || host.endsWith(".tmall.com")) {
+      return "taobao";
+    }
+    if (host === "1688.com" || host.endsWith(".1688.com")) return "1688";
+  } catch {
+    return null;
+  }
+  return null;
+}
+
 function formatDate(value: string): string {
   const date = new Date(value);
   return Number.isNaN(date.getTime()) ? value : date.toLocaleString("zh-CN", { hour12: false });
@@ -35,6 +50,7 @@ function itemStatusLabel(item: ShopCollectionItem): string {
 }
 
 export function ShopCollectionPanel({ isActive = true }: ShopCollectionPanelProps) {
+  const [shopPlatform, setShopPlatform] = useState<"1688" | "taobao">("1688");
   const [sourceInput, setSourceInput] = useState("");
   const [batches, setBatches] = useState<ShopCollectionBatch[]>([]);
   const [selectedBatchId, setSelectedBatchId] = useState("");
@@ -101,17 +117,30 @@ export function ShopCollectionPanel({ isActive = true }: ShopCollectionPanelProp
     return () => window.clearInterval(timer);
   }, [batches, isActive, itemsOffset, refreshBatches, refreshItems, selectedBatchId]);
 
+  function handleSourceInputChange(value: string) {
+    setSourceInput(value);
+    const detected = detectInputPlatform(value);
+    if (detected && detected !== shopPlatform) {
+      setShopPlatform(detected);
+      setNotice(
+        detected === "taobao"
+          ? "已按链接识别为淘宝/天猫，将按淘宝整店采集。"
+          : "已按链接识别为 1688，将按 1688 整店采集。",
+      );
+    }
+  }
+
   async function createBatch(event: FormEvent<HTMLFormElement>) {
     event.preventDefault();
     const value = sourceInput.trim();
     if (!value) {
-      setError("请输入 1688 商品链接、商品 ID 或店铺线索");
+      setError(shopPlatform === "taobao" ? "请输入淘宝/天猫商品链接、商品 ID 或店铺线索" : "请输入 1688 商品链接、商品 ID 或店铺线索");
       return;
     }
     setSubmitting(true);
     setError("");
     try {
-      const created = await shopCollectionApi.createBatch(value);
+      const created = await shopCollectionApi.createBatch(value, shopPlatform);
       setSourceInput("");
       setSelectedBatchId(created.batch_id);
       setItemsOffset(0);
@@ -154,9 +183,19 @@ export function ShopCollectionPanel({ isActive = true }: ShopCollectionPanelProp
       </header>
 
       <form className="shop-collection-create" onSubmit={createBatch}>
+        <label className="shop-collection-platform">
+          <span>采集平台</span>
+          <select value={shopPlatform} onChange={(event) => setShopPlatform(event.target.value as "1688" | "taobao")}>
+            <option value="1688">1688</option>
+            <option value="taobao">淘宝 / 天猫</option>
+          </select>
+        </label>
         <label>
-          <span>1688 店铺主页、商品链接或商品 ID</span>
-          <input value={sourceInput} onChange={(event) => setSourceInput(event.target.value)} placeholder="数字店铺 SID 请写成 sid:123456；纯数字默认按商品 ID 识别" />
+          <span>{shopPlatform === "taobao" ? "淘宝/天猫商品链接、商品 ID 或店铺链接" : "1688 店铺主页、商品链接或商品 ID"}</span>
+          <input value={sourceInput} onChange={(event) => handleSourceInputChange(event.target.value)}
+            placeholder={shopPlatform === "taobao"
+              ? "粘贴链接后自动识别平台；推荐用店内任一商品链接（如 item.taobao.com/item.htm?id=…）"
+              : "粘贴链接后自动识别平台；数字店铺 SID 请写成 sid:123456"} />
         </label>
         <button type="submit" disabled={submitting}>{submitting ? "正在创建…" : "开始整店采集"}</button>
       </form>

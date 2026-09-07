@@ -6,7 +6,7 @@ export type CollectionPlatform = "1688" | "taobao" | "1688+taobao";
 export type DailySelectionCriteria = {
   keywords: string[];
   collection_mode?: "keyword" | "image";
-  collection_platform?: "1688";
+  collection_platform?: "1688" | "taobao";
   selection_scope: SelectionScope;
   reference_image_url?: string;
   category: string;
@@ -41,7 +41,7 @@ export type SourceVariantRecord = {
 export type DailySelectionCandidate = {
   candidate_id: string;
   offer_id: string;
-  source_platform: "1688";
+  source_platform: "1688" | "taobao";
   source_url: string;
   source_title: string;
   query_keyword: string | null;

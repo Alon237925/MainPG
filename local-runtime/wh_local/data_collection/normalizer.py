@@ -10,7 +10,7 @@ import re
 from collections.abc import Mapping, Sequence
 from decimal import Decimal, InvalidOperation
 from typing import Any
-from urllib.parse import urlparse, urlunparse
+from urllib.parse import parse_qsl, urlparse, urlunparse
 
 from .contracts import (
     ApiEvidence,
@@ -59,19 +59,34 @@ def sanitize_raw_payload(value: Any) -> Any:
     return value
 
 
+def _platform_from_evidence(evidence: ApiEvidence | None) -> str:
+    """Derive the collection platform from a provider evidence record."""
+    if evidence is not None:
+        provider = getattr(evidence, "provider", "") or ""
+        if provider == "onebound-taobao" or provider.endswith("-taobao"):
+            return "taobao"
+    return "1688"
+
+
+def _provider_name(platform: str) -> str:
+    return f"onebound-{platform}"
+
+
 def normalize_search_response(
     payload: Mapping[str, Any], *, evidence: ApiEvidence | None = None
 ) -> tuple[DailySelectionCandidate, ...]:
-    """Normalize every usable offer in a 1688 keyword or image-search response."""
+    """Normalize every usable offer in a keyword or image-search response."""
     cleaned = sanitize_raw_payload(payload)
     items = _items_from_payload(cleaned)
-    audit = evidence or _response_evidence(cleaned, "item_search")
+    platform = _platform_from_evidence(evidence)
+    audit = evidence or _response_evidence(cleaned, "item_search", platform)
     candidates: list[DailySelectionCandidate] = []
     for item in items:
         candidate = _candidate_from_search_item(
             item,
             {"search_payload": cleaned, "detail_payload": None},
             audit,
+            platform,
         )
         if candidate is not None:
             candidates.append(candidate)
@@ -88,6 +103,7 @@ def enrich_candidate_with_detail(
 
     Search values remain fallbacks and prior API evidence is retained verbatim.
     """
+    platform = candidate.source_platform
     cleaned = sanitize_raw_payload(payload)
     detail = _detail_from_payload(cleaned)
     product_images = _limited_urls(
@@ -114,14 +130,14 @@ def enrich_candidate_with_detail(
     freight = _number_value(detail, ("freight", "freight_cny", "post_fee", "shipping_fee"))
     detail_price = _number_value(detail, ("price", "price_cny", "promotion_price"))
     price = detail_price if detail_price is not None else candidate.price_cny
-    moq = _integer_value(
+    moq = _moq_or_none(
         detail,
         ("moq", "min_order_quantity", "begin_num", "start_quantity", "min_num", "begin_amount", "beginAmount"),
     ) or candidate.min_order_quantity
     main_image = _url_value(detail, ("main_image_url", "main_image", "pic_url", "image_url")) or candidate.main_image_url
     shop_name = _shop_name_from_detail(detail) or candidate.shop_name
     location = _text_value(detail, ("location", "area", "province")) or candidate.location
-    evidence_records = candidate.evidence + ((evidence or _response_evidence(cleaned, "item_get")),)
+    evidence_records = candidate.evidence + ((evidence or _response_evidence(cleaned, "item_get", platform)),)
     missing = _missing_fields(
         candidate.missing_capture_fields,
         {
@@ -144,7 +160,7 @@ def enrich_candidate_with_detail(
     return DailySelectionCandidate(
         candidate_id=candidate.candidate_id,
         offer_id=candidate.offer_id,
-        source_platform="1688",
+        source_platform=platform,
         source_url=candidate.source_url,
         source_title=_text_value(detail, ("title", "name")) or candidate.source_title,
         query_keyword=candidate.query_keyword,
@@ -188,19 +204,27 @@ merge_detail_response = enrich_candidate_with_detail
 
 
 def normalize_detail_response(
-    payload: Mapping[str, Any], *, evidence: ApiEvidence | None = None
+    payload: Mapping[str, Any],
+    *,
+    evidence: ApiEvidence | None = None,
+    platform: str | None = None,
 ) -> DailySelectionCandidate:
-    """Normalize one complete OneBound item response into the canonical candidate contract."""
+    """Normalize one complete OneBound item response into the canonical candidate contract.
+
+    ``platform`` wins over evidence when both are supplied; evidence remains the
+    default so existing callers keep working unchanged.
+    """
     cleaned = sanitize_raw_payload(payload)
     detail = _detail_from_payload(cleaned)
+    resolved_platform = platform or _platform_from_evidence(evidence)
     offer_id = _text_value(detail, ("num_iid", "offer_id", "item_id", "id"))
     if offer_id is None:
         raise ValueError("item detail did not include an offer ID")
-    source_url = _canonical_1688_url(
-        _text_value(detail, ("detail_url", "url", "item_url", "offer_url")), offer_id
+    source_url = _canonical_platform_url(
+        resolved_platform, _text_value(detail, ("detail_url", "url", "item_url", "offer_url")), offer_id
     )
     if source_url is None:
-        raise ValueError("item detail did not include a valid 1688 URL")
+        raise ValueError(f"item detail did not include a valid {resolved_platform} URL")
     title = _text_value(detail, ("title", "name"))
     if title is None:
         raise ValueError("item detail did not include a title")
@@ -219,7 +243,7 @@ def normalize_detail_response(
     variants = _variants_from(detail)
     mined_weight, mined_size = _physical_evidence(detail, attributes)
     price = _number_value(detail, ("price", "price_cny", "promotion_price"))
-    moq = _integer_value(detail, ("moq", "min_order_quantity", "begin_num", "start_quantity", "min_num", "begin_amount", "beginAmount"))
+    moq = _moq_or_none(detail, ("moq", "min_order_quantity", "begin_num", "start_quantity", "min_num", "begin_amount", "beginAmount"))
     stock = _integer_value(detail, ("quantity", "stock", "inventory", "num"))
     sales = _text_value(detail, ("sales", "sales_text", "sold", "volume"))
     missing = _missing_fields(
@@ -235,9 +259,9 @@ def normalize_detail_response(
         },
     )
     return DailySelectionCandidate(
-        candidate_id=f"1688:{offer_id}",
+        candidate_id=f"{resolved_platform}:{offer_id}",
         offer_id=offer_id,
-        source_platform="1688",
+        source_platform=resolved_platform,
         source_url=source_url,
         source_title=title,
         listed_at=_text_value(detail, ("listed_at", "listing_time", "online_time", "start_time")),
@@ -250,7 +274,7 @@ def normalize_detail_response(
         category_id=_text_value(detail, ("cat_id", "category_id", "leaf_category_id", "cid")),
         price_cny=price,
         min_order_quantity=moq,
-        evidence=(evidence or _response_evidence(cleaned, "item_get"),),
+        evidence=(evidence or _response_evidence(cleaned, "item_get", platform),),
         shop_name=_shop_name_from_detail(detail),
         location=_text_value(detail, ("location", "area", "province")),
         sales_text=sales,
@@ -270,10 +294,10 @@ def normalize_detail_response(
 
 
 def _candidate_from_search_item(
-    item: Mapping[str, Any], raw_payload: Mapping[str, Any], evidence: ApiEvidence
+    item: Mapping[str, Any], raw_payload: Mapping[str, Any], evidence: ApiEvidence, platform: str
 ) -> DailySelectionCandidate | None:
     offer_id = _text_value(item, ("num_iid", "offer_id", "item_id", "id"))
-    source_url = _canonical_1688_url(_text_value(item, ("detail_url", "url", "item_url", "offer_url")), offer_id)
+    source_url = _canonical_platform_url(platform, _text_value(item, ("detail_url", "url", "item_url", "offer_url")), offer_id)
     if source_url is None:
         return None
     stable_offer_id = offer_id or source_url
@@ -282,7 +306,7 @@ def _candidate_from_search_item(
         return None
     main_image = _url_value(item, ("pic_url", "main_image_url", "image_url", "image", "pic"))
     price = _number_value(item, ("price", "price_cny", "promotion_price"))
-    moq = _integer_value(item, ("moq", "min_order_quantity", "begin_num", "start_quantity", "min_num"))
+    moq = _moq_or_none(item, ("moq", "min_order_quantity", "begin_num", "start_quantity", "min_num"))
     fields = {
         "main_image_url": main_image,
         "price_cny": price,
@@ -293,9 +317,9 @@ def _candidate_from_search_item(
     }
     missing = _missing_fields((), fields)
     return DailySelectionCandidate(
-        candidate_id=f"1688:{stable_offer_id}",
+        candidate_id=f"{platform}:{stable_offer_id}",
         offer_id=stable_offer_id,
-        source_platform="1688",
+        source_platform=platform,
         source_url=source_url,
         source_title=title,
         main_image_url=main_image,
@@ -345,18 +369,43 @@ def _shop_name_from_detail(detail: Mapping[str, Any]) -> str | None:
     )
 
 
-def _canonical_1688_url(value: str | None, offer_id: str | None) -> str | None:
+def _canonical_platform_url(platform: str, value: str | None, offer_id: str | None) -> str | None:
     candidate = value.strip() if isinstance(value, str) else ""
     if candidate.startswith("//"):
         candidate = f"https:{candidate}"
     if candidate:
         parsed = urlparse(candidate)
         hostname = (parsed.hostname or "").casefold()
-        is_1688_host = hostname == "1688.com" or hostname.endswith(".1688.com")
-        if parsed.scheme in {"http", "https"} and is_1688_host and parsed.path:
+        if parsed.scheme in {"http", "https"} and _platform_host_matches(platform, hostname) and parsed.path:
+            if platform == "taobao":
+                # Taobao item IDs live in the query string (?id=...). Keep only
+                # that parameter and drop the tracking noise (skuId, scm, ...).
+                query_id = _query_digit(parsed.query, ("id", "item_id", "itemId", "num_iid"))
+                query = f"id={query_id}" if query_id else ""
+                return urlunparse(("https", parsed.netloc.casefold(), parsed.path, "", query, ""))
             return urlunparse(("https", parsed.netloc.casefold(), parsed.path, "", "", ""))
     if offer_id:
+        if platform == "taobao":
+            return f"https://item.taobao.com/item.htm?id={offer_id}"
         return f"https://detail.1688.com/{offer_id}.html"
+    return None
+
+
+def _platform_host_matches(platform: str, hostname: str) -> bool:
+    if platform == "taobao":
+        return (
+            hostname == "taobao.com"
+            or hostname.endswith(".taobao.com")
+            or hostname == "tmall.com"
+            or hostname.endswith(".tmall.com")
+        )
+    return hostname == "1688.com" or hostname.endswith(".1688.com")
+
+
+def _query_digit(query: str, names: Sequence[str]) -> str | None:
+    for key, value in parse_qsl(query):
+        if key in names and value.isdigit():
+            return value
     return None
 
 
@@ -441,6 +490,17 @@ def _number_value(source: Mapping[str, Any], names: Sequence[str]) -> Decimal | 
 def _integer_value(source: Mapping[str, Any], names: Sequence[str]) -> int | None:
     number = _number_value(source, names)
     return int(number) if number is not None else None
+
+
+def _moq_or_none(source: Mapping[str, Any], names: Sequence[str]) -> int | None:
+    """MOQ 必须是正整数；0/负数（淘宝常见“无起批量”= 0）归一化为 None。
+
+    ``SourceVariantRecord.min_order_quantity`` 与候选级 MOQ 都校验“正数”，
+    上游返回 0 时直接透传会让整个候选契约校验失败，导致补全任务报
+    “min_order_quantity must be a positive integer”而失败。
+    """
+    moq = _integer_value(source, names)
+    return moq if moq is not None and moq >= 1 else None
 
 
 def _mapping_value(source: Mapping[str, Any], names: Sequence[str]) -> Mapping[str, Any]:
@@ -561,7 +621,7 @@ def _variants_from(source: Mapping[str, Any]) -> tuple[SourceVariantRecord, ...]
                 spec_text=spec_text,
                 image_url=_url_value(entry, ("image_url", "pic_url", "image", "sku_image")),
                 price_cny=_number_value(entry, ("price", "price_cny", "promotion_price")),
-                min_order_quantity=_integer_value(entry, ("moq", "min_order_quantity", "begin_num")),
+                min_order_quantity=_moq_or_none(entry, ("moq", "min_order_quantity", "begin_num")),
                 quantity=_integer_value(entry, ("quantity", "stock", "inventory", "num")),
                 sales=_integer_value(entry, ("sales", "sold", "volume")),
             )
@@ -668,10 +728,10 @@ def _captured_fields(missing: Sequence[str]) -> tuple[str, ...]:
     return tuple(field for field in all_fields if field not in missing)
 
 
-def _response_evidence(payload: Mapping[str, Any], operation: str) -> ApiEvidence:
+def _response_evidence(payload: Mapping[str, Any], operation: str, platform: str = "1688") -> ApiEvidence:
     request_id = payload.get("request_id")
     return ApiEvidence(
-        provider="onebound-1688",
+        provider=_provider_name(platform),
         operation=operation,
         request_id=request_id if isinstance(request_id, str) else None,
     )
