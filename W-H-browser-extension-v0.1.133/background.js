@@ -579,6 +579,15 @@ function is1688Tab(tab) {
   }
 }
 
+// 整页采集（万邦）覆盖 1688 与淘宝/天猫列表页；淘宝走同一套 prepare/start/item/finish 链路。
+function isOneboundCaptureTab(tab) {
+  try {
+    return /(^|\.)(1688|taobao|tmall)\.com$/i.test(new URL(String(tab?.url || "")).hostname);
+  } catch (_error) {
+    return false;
+  }
+}
+
 async function postOneboundPageCaptureStage(baseUrl, stage, body) {
   const endpoint = ONEBOUND_PAGE_CAPTURE_ENDPOINTS[stage];
   if (!endpoint) throw new Error(`unsupported_onebound_page_capture_stage:${stage}`);
@@ -659,7 +668,7 @@ function findOneboundPageCaptureJob(sourceTab, batchToken) {
 
 async function clearPreparedOneboundPageCaptureJobsForTab(sourceTab, connection) {
   const sourceTabId = sourceTab?.id || null;
-  if (sourceTabId == null) return { ok: false, error: "missing_source_tab", statusText: "缺少 1688 页面上下文" };
+  if (sourceTabId == null) return { ok: false, error: "missing_source_tab", statusText: "缺少列表页上下文" };
   const inMemory = self.OneboundPageCapture.preparedJobsForReplacement(Array.from(oneboundPageCaptureJobs.values()), sourceTabId);
   const remembered = typeof oneboundPageCaptureSessionStore.list === "function"
     ? await oneboundPageCaptureSessionStore.list()
@@ -721,8 +730,8 @@ async function clearPreparedOneboundPageCaptureJobsForTab(sourceTab, connection)
 }
 
 async function prepare1688OneboundPageCapture(sourceTab, message = {}) {
-  if (!is1688Tab(sourceTab)) {
-    return { ok: false, error: "unsupported_1688_page", statusText: "当前页不是 1688 页面，无法准备 OneBound 页面采集" };
+  if (!isOneboundCaptureTab(sourceTab)) {
+    return { ok: false, error: "unsupported_1688_page", statusText: "当前页不是 1688/淘宝页面，无法准备 OneBound 页面采集" };
   }
   const connection = await readConnectionContext();
   if (!connection) return { ok: false, error: "missing_plugin_session", statusText: "插件未连接工作台" };
@@ -749,14 +758,14 @@ async function prepare1688OneboundPageCapture(sourceTab, message = {}) {
       scan = result?.result || null;
       sourceUrls = self.OneboundPageCapture.canonicalizeOfferUrls(scan?.source_urls, ONEBOUND_PAGE_CAPTURE_MAX_ITEMS);
     } catch (error) {
-      return { ok: false, error: "onebound_page_scan_failed", statusText: "1688 列表页扫描失败", help: String(error?.message || error || "") };
+      return { ok: false, error: "onebound_page_scan_failed", statusText: "列表页扫描失败", help: String(error?.message || error || "") };
     }
   }
   if (!sourceUrls.length) {
     return {
       ok: false,
       error: "no_1688_offer_urls",
-      statusText: "当前 1688 列表页没有识别到可采集的数字 offerId 商品链接",
+      statusText: "当前页面没有识别到可采集的商品链接",
       help: "请确认商品卡片已加载后重试。"
     };
   }
@@ -797,7 +806,7 @@ async function start1688OneboundPageCapture(sourceTab, message = {}) {
     if (!job) {
       const saved = await oneboundPageCaptureSessionStore.load(batchToken);
       if (!saved || (sourceTab?.id != null && saved.source_tab_id !== sourceTab.id)) {
-        return { ok: false, error: "onebound_page_capture_not_prepared", statusText: "请先重新准备 1688 OneBound 页面采集" };
+        return { ok: false, error: "onebound_page_capture_not_prepared", statusText: "请先重新准备页面采集" };
       }
       job = {
         id: ++oneboundPageCaptureJobSequence,
@@ -985,7 +994,7 @@ function isWorkbenchPageControlTab(tab) {
   try {
     const parsed = new URL(String(tab.url || ""));
     return parsed.protocol === "https:"
-      && /(^|\.)(temu|1688|alibaba|pinduoduo|yangkeduo|amazon)\.com$/i.test(parsed.hostname);
+      && /(^|\.)(temu|1688|alibaba|pinduoduo|yangkeduo|amazon|taobao|tmall)\.com$/i.test(parsed.hostname);
   } catch (_error) {
     return false;
   }
@@ -1037,7 +1046,9 @@ async function ensureOpenWorkbenchPageControls() {
       "https://*.pinduoduo.com/*",
       "https://*.yangkeduo.com/*",
       "https://amazon.com/*",
-      "https://*.amazon.com/*"
+      "https://*.amazon.com/*",
+      "https://*.taobao.com/*",
+      "https://*.tmall.com/*"
     ] });
   } catch (_error) {
     return [];
@@ -10487,11 +10498,11 @@ async function runProductBatchCaptureCommand(baseUrl, sessionToken, command) {
 
 async function captureVisibleProductsToWorkbench(sourceTab) {
   const tab = sourceTab?.id ? sourceTab : await getActiveBusinessTab({ allowAny: true });
-  if (is1688Tab(tab) && !/\/offer\/\d+(?:\.html?)?\/?(?:[?#]|$)/i.test(String(tab?.url || ""))) {
+  if (isOneboundCaptureTab(tab) && !/\/offer\/\d+(?:\.html?)?\/?(?:[?#]|$)/i.test(String(tab?.url || ""))) {
     return {
       ok: false,
       error: "onebound_page_capture_requires_page_confirmation",
-      statusText: "请回到 1688 列表页点击“整页采集”，确认识别数量后再开始",
+      statusText: "请回到列表页点击“整页采集”，确认识别数量后再开始",
       help: "OneBound 批量详情请求只会在页面状态卡中确认后启动。"
     };
   }

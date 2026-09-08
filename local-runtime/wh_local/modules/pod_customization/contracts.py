@@ -64,6 +64,7 @@ class BusinessFields(BaseModel):
     target_audience: str = ""
     core_selling_points: list[str] = Field(default_factory=list)
     design_theme: str = ""
+    style_planning: str = ""
     style_keywords: list[str] = Field(default_factory=list)
     color_preferences: list[str] = Field(default_factory=list)
     excluded_elements: list[str] = Field(default_factory=list)

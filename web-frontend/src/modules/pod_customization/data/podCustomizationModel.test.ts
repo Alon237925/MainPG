@@ -3,6 +3,8 @@ import test from "node:test";
 
 import {
   POD_BATCH_COUNTS,
+  EMPTY_POD_BUSINESS_FIELDS,
+  buildPromptV1,
   businessFieldsForApi,
   canCancelPodBatch,
   canPausePodBatch,
@@ -15,6 +17,7 @@ import {
   groupPodStyleRows,
   isActiveBatchStatus,
   isPodBatchCount,
+  isPristineCreativeEdit,
   listingFieldsForApi,
   podBatchStatusLabel,
   podBatchStatusDetail,
@@ -96,12 +99,37 @@ test("business list fields are normalized at the API boundary", () => {
     target_audience: "通勤",
     core_selling_points: "轻量、防漏",
     design_theme: "山野",
+    style_planning: " 花纹铺满杯身 ",
     style_keywords: "复古, 粗线条",
     color_preferences: "松绿、砂岩黄",
     excluded_elements: "Logo",
   });
   assert.deepEqual(payload.core_selling_points, ["轻量", "防漏"]);
   assert.deepEqual(payload.style_keywords, ["复古", "粗线条"]);
+  assert.equal(payload.style_planning, "花纹铺满杯身");
+});
+
+test("built-in v1 prompt carries the renamed batch-wide fields and never the element list", () => {
+  const prompt = buildPromptV1({
+    ...EMPTY_POD_BUSINESS_FIELDS,
+    product_name: "绗缝手提托特包",
+    design_theme: "美式西南复古牛仔荒野风",
+    style_planning: "花纹铺满包身、提手处留白",
+    style_keywords: "复古牛仔靴插画、沙漠仙人掌、绿松石配饰",
+  });
+  assert.ok(prompt.includes("主题整批统一风格：美式西南复古牛仔荒野风"));
+  assert.ok(prompt.includes("样式规划：花纹铺满包身、提手处留白"));
+  assert.ok(!prompt.includes("风格关键词"));
+  assert.ok(!prompt.includes("复古牛仔靴插画"));
+});
+
+test("pristine v1 snapshot detection follows the renamed labels", () => {
+  const prompt = buildPromptV1({ ...EMPTY_POD_BUSINESS_FIELDS, product_name: "包" });
+  assert.equal(isPristineCreativeEdit(prompt), true);
+  assert.equal(isPristineCreativeEdit("手写的自定义方向：加一只小狗"), false);
+  // 旧版快照（含“设计主题/风格关键词”标签）不再视为 pristine，避免旧标签冻结。
+  const legacy = prompt.replace("主题整批统一风格：", "设计主题：").replace("样式规划：", "风格关键词：");
+  assert.equal(isPristineCreativeEdit(legacy), false);
 });
 
 test("listing fields normalize every SKU together with its own dimensions and weight", () => {

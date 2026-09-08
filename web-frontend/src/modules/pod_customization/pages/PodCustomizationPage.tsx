@@ -91,14 +91,32 @@ const BUSINESS_FIELDS: Array<{
   label: string;
   multiline?: boolean;
   required?: boolean;
+  hint?: string;
 }> = [
   { key: "product_name", label: "产品名称", required: true },
   { key: "product_category", label: "产品品类", required: true },
   { key: "target_market", label: "目标市场", required: true },
   { key: "target_audience", label: "目标人群" },
   { key: "core_selling_points", label: "核心卖点", multiline: true },
-  { key: "design_theme", label: "设计主题", required: true },
-  { key: "style_keywords", label: "风格关键词" },
+  {
+    key: "design_theme",
+    label: "主题整批统一风格",
+    required: true,
+    hint: "整批统一的创意主题与风格基调，例如：美式西南复古牛仔荒野风、复古手绘插画风",
+  },
+  {
+    key: "style_planning",
+    label: "样式规划",
+    multiline: true,
+    required: true,
+    hint: "整批统一的排布与覆盖要求，例如：花纹铺满包身、提手处留白；全铺满 / 铺满一半。无特殊要求请写“无特殊要求”",
+  },
+  {
+    key: "style_keywords",
+    label: "元素关键词",
+    required: true,
+    hint: "元素之间用顿号或逗号分隔；建议写 10 种以上不同元素；系统将按款式随机分配主打/辅主/点缀，其余元素不在该款出现；素材可跨款复用",
+  },
   { key: "color_preferences", label: "偏好配色" },
   { key: "excluded_elements", label: "禁用元素", multiline: true },
 ];
@@ -134,6 +152,7 @@ const EMPTY_BUSINESS_FIELDS_FOR_SWITCH: Record<keyof PodBusinessFieldsDraft, str
   target_audience: "",
   core_selling_points: "",
   design_theme: "",
+  style_planning: "",
   style_keywords: "",
   color_preferences: "",
   excluded_elements: "",
@@ -833,7 +852,7 @@ export function PodCustomizationPage({ isActive = true }: Props) {
             <div className="pod-section-title"><span>BRIEF EDITOR</span><h2>业务信息编辑</h2><small>用于直出 Prompt</small></div>
             <div className="pod-business-fields">
               {BUSINESS_FIELDS.map((field, fieldIndex) => (
-                <label key={field.key} className={field.multiline ? "is-multiline" : ""}><span>{field.label}{field.required && <em>*</em>}</span><textarea rows={1} ref={(el) => { businessTextareasRef.current[fieldIndex] = el; }} value={businessFields[field.key]} onChange={(event) => {
+                <label key={field.key} className={field.multiline ? "is-multiline" : ""}><span>{field.label}{field.required && <em>*</em>}{field.hint && <i className="pod-field-info" data-tip={field.hint} aria-hidden="true">ⓘ</i>}</span><textarea rows={1} ref={(el) => { businessTextareasRef.current[fieldIndex] = el; }} value={businessFields[field.key]} onChange={(event) => {
                   updateBusinessField(field.key, event.currentTarget.value);
                   autoGrowBusinessTextarea(event.currentTarget);
                 }} /></label>
@@ -895,7 +914,7 @@ export function PodCustomizationPage({ isActive = true }: Props) {
                 <div><dt>产品主体</dt><dd>{summaryFields.product_name || "未填写"}</dd></div>
                 <div><dt>目标市场</dt><dd>{summaryFields.target_market || "未填写"}</dd></div>
                 <div><dt>目标人群</dt><dd>{summaryFields.target_audience || "未填写"}</dd></div>
-                <div><dt>设计主题</dt><dd>{summaryFields.design_theme || "未填写"}</dd></div>
+                <div><dt>主题整批统一风格</dt><dd>{summaryFields.design_theme || "未填写"}</dd></div>
               </dl>
             </div>
           </section>

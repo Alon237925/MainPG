@@ -37,6 +37,7 @@ export const EMPTY_POD_BUSINESS_FIELDS: PodBusinessFieldsDraft = {
   target_audience: "",
   core_selling_points: "",
   design_theme: "",
+  style_planning: "",
   style_keywords: "",
   color_preferences: "",
   excluded_elements: "",
@@ -90,6 +91,8 @@ function valueOrFallback(value: string): string {
 }
 
 export function buildPromptV1(fields: PodBusinessFieldsDraft): string {
+  // 元素关键词按款式随机分配（后端 assign_style_elements），只进入被选中的款式，
+  // 绝不整表出现在本创意提示词中，否则全量清单会经 Creative direction 进每款。
   return [
     "[POD DIRECT LISTING PROMPT v1]",
     "模板只用于识别产品结构、轮廓、材质和可印刷区域，不作为生成底图。",
@@ -98,8 +101,8 @@ export function buildPromptV1(fields: PodBusinessFieldsDraft): string {
     `目标市场：${valueOrFallback(fields.target_market)}`,
     `目标人群：${valueOrFallback(fields.target_audience)}`,
     `核心卖点：${valueOrFallback(fields.core_selling_points)}`,
-    `设计主题：${valueOrFallback(fields.design_theme)}`,
-    `风格关键词：${valueOrFallback(fields.style_keywords)}`,
+    `主题整批统一风格：${valueOrFallback(fields.design_theme)}`,
+    `样式规划：${valueOrFallback(fields.style_planning)}`,
     `偏好配色：${valueOrFallback(fields.color_preferences)}`,
     `禁用元素：${valueOrFallback(fields.excluded_elements)}`,
     "硬性规则：",
@@ -122,7 +125,7 @@ export function isPristineCreativeEdit(text: string | null | undefined): boolean
   // Structurally still the auto-generated v1 snapshot (just copied/stored from
   // the built-in prompt), not a hand-written creative direction. Such a snapshot
   // must follow business-field edits instead of freezing stale field values.
-  return ["产品名称：", "产品品类：", "目标市场：", "设计主题：", "风格关键词：", "硬性规则："].every(
+  return ["产品名称：", "产品品类：", "目标市场：", "主题整批统一风格：", "样式规划：", "硬性规则："].every(
     (label) => trimmed.includes(label),
   );
 }
@@ -135,6 +138,7 @@ export function businessFieldsSignature(fields: PodBusinessFieldsDraft): string 
     fields.target_audience,
     fields.core_selling_points,
     fields.design_theme,
+    fields.style_planning,
     fields.style_keywords,
     fields.color_preferences,
     fields.excluded_elements,
@@ -169,6 +173,7 @@ export function businessFieldsForApi(fields: PodBusinessFieldsDraft): PodBusines
     target_audience: fields.target_audience.trim(),
     core_selling_points: splitBusinessField(fields.core_selling_points),
     design_theme: fields.design_theme.trim(),
+    style_planning: fields.style_planning.trim(),
     style_keywords: splitBusinessField(fields.style_keywords),
     color_preferences: splitBusinessField(fields.color_preferences),
     excluded_elements: splitBusinessField(fields.excluded_elements),

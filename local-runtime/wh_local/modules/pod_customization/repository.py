@@ -16,7 +16,7 @@ from ...pod_migrations import (
 from .billing_contract import PodCallOutcome, PodCallPlan, PodExecutionGrant
 from .contracts import BatchCreate, Calibration, grid_call_count, style_grid_call_count
 from .errors import PodExecutionExpired, safe_error_message
-from .prompts import build_direct_listing_prompt
+from .prompts import assign_style_elements, build_direct_listing_prompt
 
 
 def _safe_error(value: object) -> str:
@@ -387,6 +387,27 @@ class PodCustomizationRepository:
                     for variant_index in range(1, 5)
                 ],
             )
+            connection.executemany(
+                """INSERT INTO pod_customization_style_elements
+                   (batch_id, style_index, elements_json, updated_at)
+                   VALUES (?, ?, ?, ?)""",
+                [
+                    (
+                        batch_id,
+                        style_index,
+                        json.dumps(
+                            assign_style_elements(
+                                request.business_fields.style_keywords,
+                                style_index,
+                                batch_id,
+                            ),
+                            ensure_ascii=False,
+                        ),
+                        now,
+                    )
+                    for style_index in range(1, request.count + 1)
+                ],
+            )
             connection.execute(
                 """INSERT INTO pod_customization_style_grid_batches (batch_id, created_at) VALUES (?, ?)""",
                 (batch_id, now),
@@ -486,6 +507,12 @@ class PodCustomizationRepository:
                    WHERE batch_id = ?""",
                 (batch_id,),
             ).fetchall()
+            element_rows = connection.execute(
+                """SELECT style_index, elements_json
+                   FROM pod_customization_style_elements
+                   WHERE batch_id = ?""",
+                (batch_id,),
+            ).fetchall()
         result = dict(batch)
         result["business_fields"] = json.loads(result.pop("business_fields_json"))
         result["listing_fields"] = json.loads(result.pop("listing_fields_json"))
@@ -494,6 +521,10 @@ class PodCustomizationRepository:
         result["template"] = dict(snapshot) if snapshot else None
         result["items"] = [dict(item) for item in items]
         result["style_grid"] = style_grid
+        result["style_elements"] = {
+            int(row["style_index"]): json.loads(row["elements_json"])
+            for row in element_rows
+        }
         result["style_titles"] = [self._decode_title_row(row) for row in title_rows]
         result["style_export_selections"] = {
             int(row["style_index"]): bool(row["selected"])

@@ -174,3 +174,99 @@ def test_1688_prepare_still_defaults_to_1688_platform(tmp_path: Path) -> None:
 
     assert service._batches[prepared["batch_token"]].platform == "1688"
     assert seen_configs[0]["base_url"] == "https://api-gw.onebound.cn/1688"
+
+
+def _failing_provider(upstream_error: str | None = None, provider_code: str = "upstream_failed"):
+    class _FailingProvider:
+        def __init__(self) -> None:
+            self.calls = 0
+
+        def get_item_detail(self, offer_id: str):
+            self.calls += 1
+            response: dict[str, Any] = {}
+            if upstream_error:
+                response["error"] = upstream_error
+            return type(
+                "Result",
+                (),
+                {
+                    "ok": False,
+                    "response": response,
+                    "error": type("Error", (), {"code": provider_code, "message": "OneBound returned an unsuccessful response"})(),
+                },
+            )()
+
+    return _FailingProvider()
+
+
+def test_item_failure_keeps_item_not_found_diagnostic(tmp_path: Path) -> None:
+    """万邦 item-not-found 失败须保留具体原因，而不是笼统的采集失败。"""
+    from wh_local.data_collection.plugin_onebound_capture import (
+        PluginOneBoundCaptureService,
+    )
+
+    queue = DataCollectionPluginQueue(tmp_path / "runtime.sqlite3")
+    session = queue.create_session(actor_id="actor-1", workspace_id="workspace-1")
+    provider = _failing_provider(upstream_error="item-not-found", provider_code="upstream_failed")
+
+    router = APIRouter()
+    service = register_plugin_onebound_capture_routes(
+        router,
+        PluginOneBoundCaptureDependencies(
+            plugin_queue=queue,
+            provider_config_resolver=lambda _actor: {
+                "api_key": "key", "api_secret": "secret", "base_url": "https://api-gw.onebound.cn/1688",
+            },
+            provider_factory=lambda _config: provider,
+            budget=_Budget(),
+            draft_writer=_Drafts(),
+        ),
+    )
+    assert isinstance(service, PluginOneBoundCaptureService)
+    token = session["session_token"]
+    link = "https://item.taobao.com/item.htm?id=1072399809675"
+
+    prepared = service.prepare(session_token=token, page_url=link, source_urls=[link])
+    service.start(session_token=token, batch_token=prepared["batch_token"])
+    response = service.item(session_token=token, batch_token=prepared["batch_token"], source_url=link)
+
+    assert response["ok"] is False
+    assert response["error_code"] == "item-not-found"
+    assert "商品不存在或已下架" in response["message"]
+    assert provider.calls == 1
+
+
+def test_item_failure_without_mapped_code_keeps_provider_code_and_generic_reason(tmp_path: Path) -> None:
+    """未知上游错误码：保留稳定的 provider 错误码，中文原因走兜底文案。"""
+    from wh_local.data_collection.plugin_onebound_capture import (
+        PluginOneBoundCaptureService,
+    )
+
+    queue = DataCollectionPluginQueue(tmp_path / "runtime.sqlite3")
+    session = queue.create_session(actor_id="actor-1", workspace_id="workspace-1")
+    provider = _failing_provider(upstream_error="strange-upstream-code-xyz", provider_code="upstream_failed")
+
+    router = APIRouter()
+    service = register_plugin_onebound_capture_routes(
+        router,
+        PluginOneBoundCaptureDependencies(
+            plugin_queue=queue,
+            provider_config_resolver=lambda _actor: {
+                "api_key": "key", "api_secret": "secret", "base_url": "https://api-gw.onebound.cn/1688",
+            },
+            provider_factory=lambda _config: provider,
+            budget=_Budget(),
+            draft_writer=_Drafts(),
+        ),
+    )
+    assert isinstance(service, PluginOneBoundCaptureService)
+    token = session["session_token"]
+    link = "https://item.taobao.com/item.htm?id=1072399809675"
+
+    prepared = service.prepare(session_token=token, page_url=link, source_urls=[link])
+    service.start(session_token=token, batch_token=prepared["batch_token"])
+    response = service.item(session_token=token, batch_token=prepared["batch_token"], source_url=link)
+
+    assert response["ok"] is False
+    assert response["error_code"] == "upstream_failed"
+    assert response["message"] == "万邦接口返回失败"

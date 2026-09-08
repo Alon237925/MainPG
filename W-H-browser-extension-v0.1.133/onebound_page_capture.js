@@ -28,6 +28,8 @@
     });
   }
 
+  // 统一规范化：1688 → detail.1688.com/offer/{id}.html；淘宝/天猫 → item.taobao.com/item.htm?id={id}。
+  // 淘宝以商品卡锚点 id 属性（item_id_<num_iid>）为准，二次兜底读 href 的 id/item_id/num_iid 参数。
   function canonicalizeOfferUrl(value) {
     let parsed;
     try {
@@ -35,9 +37,22 @@
     } catch (_error) {
       return "";
     }
-    if (parsed.hostname.toLowerCase() !== "detail.1688.com") return "";
-    const match = parsed.pathname.match(/^\/offer\/(\d+)(?:\.html?)?\/?$/i);
-    return match ? `https://detail.1688.com/offer/${match[1]}.html` : "";
+    const hostname = parsed.hostname.toLowerCase();
+    if (hostname === "detail.1688.com") {
+      const match = parsed.pathname.match(/^\/offer\/(\d+)(?:\.html?)?\/?$/i);
+      return match ? `https://detail.1688.com/offer/${match[1]}.html` : "";
+    }
+    if (hostname === "taobao.com" || hostname.endsWith(".taobao.com")
+        || hostname === "tmall.com" || hostname.endsWith(".tmall.com")) {
+      for (const [name, rawValue] of parsed.searchParams) {
+        if (["id", "item_id", "itemid", "num_iid"].includes(String(name).toLowerCase())
+            && /^\d{6,}$/.test(String(rawValue))) {
+          return `https://item.taobao.com/item.htm?id=${String(rawValue)}`;
+        }
+      }
+      return "";
+    }
+    return "";
   }
 
   function canonicalizeOfferUrls(values, limit = DEFAULT_MAX_ITEMS) {
@@ -193,6 +208,68 @@
     let unchangedPasses = 0;
     let stopReason = "max_scroll_passes";
 
+    const isTaobaoPage = (() => {
+      let hostname = "";
+      try {
+        hostname = String(page.location?.hostname || "").toLowerCase();
+      } catch (_error) {
+        hostname = "";
+      }
+      return hostname === "taobao.com" || hostname.endsWith(".taobao.com")
+        || hostname === "tmall.com" || hostname.endsWith(".tmall.com");
+    })();
+
+    // 淘宝/天猫商品卡：锚点 id="item_id_<num_iid>"（含 data-spm-anchor-id="aItem_id_<num_iid>_..."），
+    // 兜底读 href 上的 id/item_id/num_iid 查询参数（例如 detail.tmall.com/item.htm?id=...）。
+    const taobaoItemIdFromAnchor = (anchor) => {
+      if (!anchor || typeof anchor.getAttribute !== "function") return "";
+      const anchorId = String(anchor.id || "");
+      let match = anchorId.match(/^item_id_(\d{6,})$/);
+      if (match) return match[1];
+      const spm = String(anchor.getAttribute("data-spm-anchor-id") || "");
+      match = spm.match(/^aItem_id_(\d{6,})/);
+      if (match) return match[1];
+      return "";
+    };
+
+    const scanTaobaoLinks = () => {
+      let added = 0;
+      const anchors = page.document?.querySelectorAll?.(
+        'a[id^="item_id_"], a[data-spm-anchor-id^="aItem_id_"], a[href]'
+      ) || [];
+      for (const anchor of anchors) {
+        let itemId = taobaoItemIdFromAnchor(anchor);
+        if (!itemId) {
+          let parsed;
+          try {
+            parsed = new URL(anchor.href || anchor.getAttribute?.("href") || "", page.location?.href || "https://www.taobao.com/");
+          } catch (_error) {
+            continue;
+          }
+          const hostname = parsed.hostname.toLowerCase();
+          if (!(hostname === "taobao.com" || hostname.endsWith(".taobao.com")
+                || hostname === "tmall.com" || hostname.endsWith(".tmall.com"))) {
+            continue;
+          }
+          for (const [name, rawValue] of parsed.searchParams) {
+            if (["id", "item_id", "itemid", "num_iid"].includes(String(name).toLowerCase())
+                && /^\d{6,}$/.test(String(rawValue))) {
+              itemId = String(rawValue);
+              break;
+            }
+          }
+        }
+        if (!itemId) continue;
+        const sourceUrl = `https://item.taobao.com/item.htm?id=${itemId}`;
+        if (seen.has(sourceUrl)) continue;
+        seen.add(sourceUrl);
+        sourceUrls.push(sourceUrl);
+        added += 1;
+        if (sourceUrls.length >= maxItems) break;
+      }
+      return added;
+    };
+
     const nearestAplusReport = (el) => {
       let node = el && el.parentElement;
       for (let i = 0; node && i < 5; i += 1) {
@@ -204,6 +281,7 @@
     };
 
     const scanLinks = () => {
+      if (isTaobaoPage) return scanTaobaoLinks();
       let added = 0;
       const anchors = page.document?.querySelectorAll?.("a[href]") || [];
       for (const anchor of anchors) {

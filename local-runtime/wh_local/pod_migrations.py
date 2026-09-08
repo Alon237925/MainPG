@@ -314,6 +314,31 @@ POD_MIGRATION_CONTRACTS: dict[str, MigrationEffect] = {
             )
         }
     ),
+    "012_batch_execution_fencing": MigrationEffect(
+        column_additions={"pod_customization_batches": ("execution_epoch", "last_progress_at")},
+        indexes={
+            "idx_pod_batches_stale_check": _index(
+                "pod_customization_batches",
+                "status last_progress_at",
+                sql_fragments=(
+                    "WHERE status IN ('generating_patterns', 'compositing', 'generating_titles')",
+                ),
+            )
+        },
+    ),
+    "013_style_elements": MigrationEffect(
+        tables={
+            "pod_customization_style_elements": _table(
+                "batch_id style_index elements_json updated_at",
+                checks=("CHECK (style_index >= 1)",),
+            )
+        },
+        indexes={
+            "idx_pod_style_elements_batch": _index(
+                "pod_customization_style_elements", "batch_id style_index"
+            )
+        },
+    ),
 }
 
 
