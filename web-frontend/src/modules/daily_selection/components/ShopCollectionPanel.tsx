@@ -178,7 +178,7 @@ export function ShopCollectionPanel({ isActive = true }: ShopCollectionPanelProp
   return (
     <section className="shop-collection-panel" aria-label="整店采集">
       <header className="shop-collection-header">
-        <div><strong>整店采集</strong><p>从一个商品定位店铺，后台分页采集并将成功商品直接写入产品处理草稿池。</p></div>
+        <div className="shop-collection-title"><span className="iconfont icon-shop" aria-hidden="true"></span><div><strong>整店采集</strong><p>从一个商品定位店铺，后台分页采集并将成功商品直接写入产品处理草稿池。</p></div></div>
         <span className="shop-collection-persistent">后台持续执行</span>
       </header>
 

@@ -43,6 +43,37 @@ export function TopNavigation({ sidebarPinned, activeKey, tabs, onToggleSidebar,
   const themeMenuRef = useRef<HTMLDivElement>(null);
   const { theme, setTheme } = useTheme();
   const { uiMode, setUiMode } = useUiMode();
+
+  // 本地头像：仅用于本地展示，base64 存 localStorage。
+  const AVATAR_KEY = "jye_workspace_avatar";
+  const [avatarSrc, setAvatarSrc] = useState<string | null>(() => {
+    try {
+      return localStorage.getItem(AVATAR_KEY);
+    } catch {
+      return null;
+    }
+  });
+  const fileInputRef = useRef<HTMLInputElement>(null);
+
+  const openAvatarPicker = () => fileInputRef.current?.click();
+
+  const handleAvatarFile = (event: React.ChangeEvent<HTMLInputElement>) => {
+    const file = event.target.files?.[0];
+    event.target.value = ""; // 允许再次选择同一文件
+    if (!file || !file.type.startsWith("image/")) return;
+    const reader = new FileReader();
+    reader.onload = () => {
+      const result = typeof reader.result === "string" ? reader.result : null;
+      if (!result) return;
+      setAvatarSrc(result);
+      try {
+        localStorage.setItem(AVATAR_KEY, result);
+      } catch {
+        // 存储空间不足时仅保留内存中的头像用于本次显示。
+      }
+    };
+    reader.readAsDataURL(file);
+  };
   // 关闭动画延迟期间判活用的最新 activeKey 与在途 timer（卸载时清理）。
   const activeKeyRef = useRef(activeKey);
   useEffect(() => {
@@ -153,11 +184,23 @@ export function TopNavigation({ sidebarPinned, activeKey, tabs, onToggleSidebar,
           </div>
           <InboxBell />
           <details className="user-menu">
-            <summary><span className="avatar">{uiMode === "apple" ? "界" : "U"}</span><span>本地用户</span><span className="caret">⌄</span></summary>
+            <summary className={avatarSrc ? "has-avatar" : ""}>
+              {avatarSrc ? (
+                <img className="avatar-img" src={avatarSrc} alt="本地用户头像" title="更换头像" />
+              ) : (
+                <span className="avatar">{uiMode === "apple" ? "界" : "U"}</span>
+              )}
+              {!avatarSrc && <span>本地用户</span>}
+              <span className="caret">⌄</span>
+            </summary>
             <div className="user-popover">
               <strong>个人中心</strong>
               <span>管理当前员工账号</span>
               <div className="user-menu-actions">
+                <button className="user-menu-action" type="button" onClick={openAvatarPicker}>
+                  <span className="iconfont icon-camera" aria-hidden="true" />
+                  <span>{avatarSrc ? "更换头像" : "上传头像"}</span>
+                </button>
                 <button className="user-menu-action" type="button" onClick={onOpenPersonalCenter}>
                   <span className="iconfont icon-edit" aria-hidden="true" />
                   <span>用户账号</span>
@@ -183,6 +226,15 @@ export function TopNavigation({ sidebarPinned, activeKey, tabs, onToggleSidebar,
               <button className="user-menu-signout" type="button" onClick={onSignOut}>退出登录</button>
             </div>
           </details>
+          <input
+            ref={fileInputRef}
+            className="avatar-file-input"
+            type="file"
+            accept="image/*"
+            onChange={handleAvatarFile}
+            aria-hidden="true"
+            tabIndex={-1}
+          />
         </div>
       </div>
       <div className="topbar-lower-row">

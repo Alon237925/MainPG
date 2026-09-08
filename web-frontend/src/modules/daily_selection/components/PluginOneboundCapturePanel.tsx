@@ -311,7 +311,7 @@ export function PluginOneboundCapturePanel({ isActive = true, onOpenDraft }: Plu
   return (
     <section className="shop-collection-panel plugin-capture-panel" aria-label="插件采集">
       <header className="shop-collection-header">
-        <div><strong>插件采集批次</strong><p>插件登记 1688 链接后，在这里采集，采集完成后审核候选并确认入池。</p></div>
+        <div className="shop-collection-title"><span className="iconfont icon-cloud" aria-hidden="true"></span><div><strong>插件采集批次</strong><p>插件登记 1688 链接后，在这里采集，采集完成后审核候选并确认入池。</p></div></div>
         <span className="shop-collection-persistent">自动同步进度</span>
       </header>
 

@@ -165,6 +165,7 @@ export function SourcingPanel({ preview, batchId, busy, sourceCount, links, sele
     productId: string;
     productTitle: string;
     imageUrl?: string;
+    officialLinkUrl?: string;
     skus: QuoteBatchSkuPrice[];
     loading: boolean;
     error: string;
@@ -241,24 +242,25 @@ export function SourcingPanel({ preview, batchId, busy, sourceCount, links, sele
     if (!batchId || !productId) return;
     const productTitle = item?.product_title || "Temu 商品";
     const imageUrl = item?.main_image_url;
-    setTemuSkuDrawer({ productId, productTitle, imageUrl, skus: [], loading: true, error: "" });
+    setTemuSkuDrawer({ productId, productTitle, imageUrl, officialLinkUrl: item?.official_link_url, skus: [], loading: true, error: "" });
     try {
       const selections = await priceVerificationApi.listBatchSelections(batchId);
       const selection = selections.find((entry) => entry.skc_id === productId);
       if (!selection) {
-        setTemuSkuDrawer({ productId, productTitle, imageUrl, skus: [], loading: false, error: "当前批次未找到该商品的 SKU 采集记录。" });
+        setTemuSkuDrawer({ productId, productTitle, imageUrl, officialLinkUrl: item?.official_link_url, skus: [], loading: false, error: "当前批次未找到该商品的 SKU 采集记录。" });
         return;
       }
       setTemuSkuDrawer({
         productId,
         productTitle: selection.product_title || productTitle,
         imageUrl: selection.main_image_url || imageUrl,
+        officialLinkUrl: selection.official_link_url || item?.official_link_url,
         skus: selection.sku_prices,
         loading: false,
         error: "",
       });
     } catch (error) {
-      setTemuSkuDrawer({ productId, productTitle, imageUrl, skus: [], loading: false, error: `读取 Temu SKU 失败：${actionError(error)}` });
+      setTemuSkuDrawer({ productId, productTitle, imageUrl, officialLinkUrl: item?.official_link_url, skus: [], loading: false, error: `读取 Temu SKU 失败：${actionError(error)}` });
     }
   };
 
@@ -548,6 +550,7 @@ export function SourcingPanel({ preview, batchId, busy, sourceCount, links, sele
           <div className="pv-temu-sku-product">
             {temuSkuDrawer.imageUrl ? <img src={temuSkuDrawer.imageUrl} alt="" referrerPolicy="no-referrer" /> : null}
             <strong>{temuSkuDrawer.productTitle}</strong>
+            {temuSkuDrawer.officialLinkUrl ? <a className="batch-review-original-link" href={temuSkuDrawer.officialLinkUrl} target="_blank" rel="noreferrer">采集原链接 ↗</a> : null}
           </div>
           <div className="pv-temu-sku-drawer-body">
             {temuSkuDrawer.loading ? <p className="pv-temu-sku-status">正在读取 SKU 信息…</p> : null}

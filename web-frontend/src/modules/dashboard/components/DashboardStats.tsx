@@ -1,30 +1,68 @@
 import { useEffect, useMemo, useState } from "react";
 import type { WorkspaceModuleId } from "../../../app/navigation/modules";
 import { getDashboardStats, type DashboardStats, type DashboardTrendPoint } from "../api/dashboardApi";
+import { loadBillingUsageHistory, type BillingUsageEntry } from "../../personal_center/api/personalCenterApi";
 import "./../styles/dashboardStats.css";
 import { AppleAppGlyph } from "../../../shared/components/AppleAppGlyph";
 
 type DashboardStatsProps = { onOpenModule: (id: WorkspaceModuleId) => void; variant?: "classic" | "apple" };
 
-type TrendMetric = "all" | "inbound" | "processed";
+type TrendMode = "dual" | "sum";
 
-function getTrendValue(point: DashboardTrendPoint, metric: TrendMetric) {
-  if (metric === "inbound") return point.inboundCount;
-  if (metric === "processed") return point.processedCount;
-  return point.inboundCount + point.processedCount;
-}
-
+/* ── 折线趋势图 ─────────────────────────────────────────────── */
 function DashboardTrendChart({ points }: { points: DashboardTrendPoint[] }) {
   const [days, setDays] = useState(14);
-  const [metric, setMetric] = useState<TrendMetric>("all");
+  const [mode, setMode] = useState<TrendMode>("dual");
+  const [hover, setHover] = useState<number | null>(null);
+
   const visiblePoints = useMemo(() => points.slice(-days), [days, points]);
-  const values = useMemo(() => visiblePoints.map((point) => getTrendValue(point, metric)), [metric, visiblePoints]);
-  const total = values.reduce((sum, value) => sum + value, 0);
-  const maximum = Math.max(...values, 1);
-  const lastPoint = visiblePoints[visiblePoints.length - 1];
+
+  // 两条线：产品处理（红） 与 POD 生成（蓝）；汇总模式合成一条线。
+  const processed = useMemo(() => visiblePoints.map((p) => p.processedCount), [visiblePoints]);
+  const inbound = useMemo(() => visiblePoints.map((p) => p.inboundCount), [visiblePoints]);
+  const sums = useMemo(() => visiblePoints.map((p) => p.inboundCount + p.processedCount), [visiblePoints]);
+
+  const activeSeries = mode === "sum" ? [{ key: "sum", label: "汇总", color: "#e1568a", values: sums }]
+    : [
+        { key: "processed", label: "产品处理", color: "#e23b4e", values: processed },
+        { key: "inbound", label: "POD 生成", color: "#2f6bff", values: inbound },
+      ];
+
+  const allValues = activeSeries.flatMap((s) => s.values);
+  const total = allValues.reduce((a, b) => a + b, 0);
+  const maxValue = Math.max(...allValues, 1);
+
+  // 内边距：给坐标轴留出空间
+  const width = 720;
+  const height = 250;
+  const pad = { top: 16, right: 18, bottom: 30, left: 44 };
+  const plotW = width - pad.left - pad.right;
+  const plotH = height - pad.top - pad.bottom;
+
+  const xAt = (i: number) => pad.left + (i / Math.max(visiblePoints.length - 1, 1)) * plotW;
+  const yAt = (v: number) => pad.top + plotH - (v / maxValue) * plotH;
+
+  const buildLine = (values: number[]) =>
+    values.map((v, i) => `${i === 0 ? "M" : "L"}${xAt(i).toFixed(2)},${yAt(v).toFixed(2)}`).join(" ");
+
+  const buildArea = (values: number[]) =>
+    `${buildLine(values)} L${xAt(values.length - 1).toFixed(2)},${(pad.top + plotH).toFixed(2)} L${xAt(0).toFixed(2)},${(pad.top + plotH).toFixed(2)} Z`;
+
+  // y 轴刻度（取 4 档 + 顶部）
+  const yTicks = Array.from({ length: 5 }, (_, i) => (maxValue / 4) * i);
+
+  // x 轴标签：均匀抽样，避免拥挤
+  const labelStep = Math.max(1, Math.ceil(visiblePoints.length / 7));
+  const labels = visiblePoints.map((p, i) => {
+    const d = new Date(`${p.date}T00:00:00`);
+    return { i, text: `${d.getMonth() + 1}/${d.getDate()}`, show: i % labelStep === 0 || i === visiblePoints.length - 1 };
+  });
+
   const rangeLabel = visiblePoints.length
-    ? `${visiblePoints[0].date.replace(/-/g, "/")} - ${lastPoint?.date.replace(/-/g, "/")}`
+    ? `${visiblePoints[0].date.replace(/-/g, "/")} - ${visiblePoints[visiblePoints.length - 1]?.date.replace(/-/g, "/")}`
     : "暂无日期";
+
+  const hovered = hover !== null ? visiblePoints[hover] : null;
 
   return (
     <section className="dashboard-trend-card">
@@ -38,41 +76,216 @@ function DashboardTrendChart({ points }: { points: DashboardTrendPoint[] }) {
           </select>
         </label>
         <div className="dashboard-trend-range"><span>日期</span><strong>{rangeLabel}</strong></div>
-        <label>
-          <span>业务类型</span>
-          <select value={metric} onChange={(event) => setMetric(event.target.value as TrendMetric)}>
-            <option value="all">全部业务</option>
-            <option value="inbound">产品入库</option>
-            <option value="processed">产品处理</option>
-          </select>
-        </label>
-        <div className="dashboard-trend-total"><span>总计</span><strong>{total}</strong></div>
+        <div className="dashboard-trend-mode" role="tablist" aria-label="显示方式">
+          <button type="button" role="tab" aria-selected={mode === "dual"} className={mode === "dual" ? "is-active" : ""} onClick={() => setMode("dual")}>双线对比</button>
+          <button type="button" role="tab" aria-selected={mode === "sum"} className={mode === "sum" ? "is-active" : ""} onClick={() => setMode("sum")}>汇总</button>
+        </div>
+        <div className="dashboard-trend-total"><span>总计</span><strong className={mode === "sum" ? "is-sum" : ""}>{total}</strong></div>
       </div>
 
-      <div
-        className="dashboard-trend-plot"
-        style={{ gridTemplateColumns: `repeat(${Math.max(visiblePoints.length, 1)}, minmax(0, 1fr))` }}
-        aria-label={`${rangeLabel}业务趋势，总计${total}`}
-      >
-        {visiblePoints.map((point, index) => {
-          const value = values[index];
-          const date = new Date(`${point.date}T00:00:00`);
-          const label = `${date.getMonth() + 1}/${date.getDate()}`;
-          return (
-            <div className="dashboard-trend-column" key={point.date} title={`${point.date}：${value}`}>
-              <div className="dashboard-trend-value">{value > 0 ? value : ""}</div>
-              <div className="dashboard-trend-bar-track"><i style={{ height: `${Math.max(value ? 8 : 0, (value / maximum) * 100)}%` }} /></div>
-              <span>{label}</span>
-            </div>
-          );
-        })}
+      <div className="dashboard-trend-plot" aria-label={`${rangeLabel}业务趋势，总计${total}`}>
+        <svg
+          className="dashboard-linechart"
+          viewBox={`0 0 ${width} ${height}`}
+          preserveAspectRatio="none"
+          onMouseLeave={() => setHover(null)}
+          onMouseMove={(event) => {
+            const rect = event.currentTarget.getBoundingClientRect();
+            const relX = ((event.clientX - rect.left) / rect.width) * width;
+            const idx = Math.round(((relX - pad.left) / plotW) * Math.max(visiblePoints.length - 1, 1));
+            const clamped = Math.min(Math.max(idx, 0), visiblePoints.length - 1);
+            setHover(visiblePoints.length ? clamped : null);
+          }}
+        >
+          {/* 横向网格 + 纵坐标 */}
+          {yTicks.map((tick) => (
+            <g key={`y-${tick}`}>
+              <line className="chart-grid" x1={pad.left} x2={width - pad.right} y1={yAt(tick)} y2={yAt(tick)} />
+              <text className="chart-tick" x={pad.left - 8} y={yAt(tick) + 3} textAnchor="end">{Math.round(tick)}</text>
+            </g>
+          ))}
+          {/* 纵轴主线 */}
+          <line className="chart-axis" x1={pad.left} x2={pad.left} y1={pad.top} y2={pad.top + plotH} />
+          <line className="chart-axis" x1={pad.left} x2={width - pad.right} y1={pad.top + plotH} y2={pad.top + plotH} />
+          {/* 横轴日期 */}
+          {labels.map(({ i, text, show }) => show && (
+            <text key={`x-${i}`} className="chart-tick" x={xAt(i)} y={height - 8} textAnchor="middle">{text}</text>
+          ))}
+
+          {/* 面积渐变 */}
+          {activeSeries.map((s) => (
+            <path key={`area-${s.key}`} className="chart-area" d={buildArea(s.values)} fill={`url(#grad-${s.key})`} />
+          ))}
+          {/* 折线 */}
+          {activeSeries.map((s) => (
+            <path key={`line-${s.key}`} className="chart-line" d={buildLine(s.values)} stroke={s.color} />
+          ))}
+          {/* 数据点 */}
+          {activeSeries.map((s) => (
+            s.values.map((v, i) => (
+              <circle
+                key={`dot-${s.key}-${i}`}
+                className="chart-dot"
+                cx={xAt(i)}
+                cy={yAt(v)}
+                r={hover === i ? 4.4 : 3}
+                fill={s.color}
+              />
+            ))
+          ))}
+          {/* 悬停指示线 */}
+          {hover !== null && <line className="chart-hover-line" x1={xAt(hover)} x2={xAt(hover)} y1={pad.top} y2={pad.top + plotH} />}
+
+          <defs>
+            {activeSeries.map((s) => (
+              <linearGradient key={`g-${s.key}`} id={`grad-${s.key}`} x1="0" y1="0" x2="0" y2="1">
+                <stop offset="0%" stopColor={s.color} stopOpacity="0.24" />
+                <stop offset="100%" stopColor={s.color} stopOpacity="0" />
+              </linearGradient>
+            ))}
+          </defs>
+        </svg>
+
         {total === 0 && <div className="dashboard-trend-empty">当前时间范围暂无业务记录</div>}
+
+        {hovered && (
+          <div
+            className="dashboard-trend-tooltip"
+            style={{ left: `${(xAt(hover!) / width) * 100}%` }}
+          >
+            <strong>{hovered.date}</strong>
+            <span><i className="is-processed" />产品处理 <b>{hovered.processedCount}</b></span>
+            <span><i className="is-inbound" />POD 生成 <b>{hovered.inboundCount}</b></span>
+            <span><i className="is-sum" />汇总 <b>{hovered.inboundCount + hovered.processedCount}</b></span>
+          </div>
+        )}
       </div>
-      <div className="dashboard-trend-legend"><span><i className="is-primary" />当前筛选业务量</span><small>数据每分钟自动更新</small></div>
+
+      <div className="dashboard-trend-legend">
+        <div>
+          <span><i className="is-processed" />产品处理</span>
+          <span><i className="is-inbound" />POD 生成</span>
+          <span><i className="is-sum" />汇总</span>
+        </div>
+        <small>数据每分钟自动更新</small>
+      </div>
     </section>
   );
 }
 
+/* ── 积分消耗占比扇形图 ──────────────────────────────────────── */
+const SEGMENT_META = {
+  processing: { label: "产品处理", color: "#4c8df6" },
+  pod: { label: "POD 生成", color: "#8a5cf0" },
+  combo: { label: "商品组合", color: "#f0a137" },
+} as const;
+
+type SegmentKey = keyof typeof SEGMENT_META;
+
+function categorizeUsage(entry: BillingUsageEntry): SegmentKey {
+  const fk = String(entry.feature_key || "");
+  const ref = `${entry.usage_id || ""} ${entry.source_ref || ""}`;
+  if (ref.includes("combo-kit:")) return "combo";
+  if (fk === "pod_customization.batch" || entry.billing_profile === "pod_random_v1") return "pod";
+  return "processing";
+}
+
+function polarPoint(cx: number, cy: number, r: number, angleDeg: number) {
+  const rad = ((angleDeg - 90) * Math.PI) / 180;
+  return { x: cx + r * Math.cos(rad), y: cy + r * Math.sin(rad) };
+}
+
+function donutArc(cx: number, cy: number, r: number, startDeg: number, endDeg: number) {
+  const s = polarPoint(cx, cy, r, startDeg);
+  const e = polarPoint(cx, cy, r, endDeg);
+  const large = endDeg - startDeg > 180 ? 1 : 0;
+  return `M${s.x.toFixed(2)},${s.y.toFixed(2)} A${r},${r} 0 ${large} 1 ${e.x.toFixed(2)},${e.y.toFixed(2)}`;
+}
+
+function DashboardPointsPie() {
+  const [segments, setSegments] = useState<Array<{ key: SegmentKey; value: number }>>([]);
+  const [loading, setLoading] = useState(true);
+  const [loaded, setLoaded] = useState(false);
+
+  useEffect(() => {
+    let cancelled = false;
+    loadBillingUsageHistory({ limit: 100 })
+      .then((res) => {
+        if (cancelled) return;
+        const totals: Record<SegmentKey, number> = { processing: 0, pod: 0, combo: 0 };
+        for (const item of res.items ?? []) {
+          const pts = Math.max(item.charged_points ?? 0, 0);
+          totals[categorizeUsage(item)] += pts;
+        }
+        setSegments(Object.keys(totals).map((k) => ({ key: k as SegmentKey, value: totals[k as SegmentKey] })));
+        setLoaded(true);
+        setLoading(false);
+      })
+      .catch(() => {
+        if (!cancelled) { setLoaded(true); setLoading(false); }
+      });
+    return () => { cancelled = true; };
+  }, []);
+
+  const hasData = segments.some((s) => s.value > 0);
+  const total = segments.reduce((sum, s) => sum + s.value, 0);
+
+  const cx = 88, cy = 88, r = 66, thickness = 30;
+  let angle = 0;
+  const arcs = segments
+    .filter((s) => s.value > 0)
+    .map((s, i) => {
+      const sweep = (s.value / total) * 360;
+      const start = angle + 2; // 每段留 2° 间隔
+      const end = angle + sweep - 2;
+      angle += sweep;
+      const meta = SEGMENT_META[s.key];
+      return { ...s, meta, start, end, sweep };
+    });
+
+  return (
+    <section className="dashboard-points-card">
+      <div className="dashboard-points-heading">
+        <span className="iconfont icon-piechart" aria-hidden="true"></span>
+        <strong>积分消耗占比</strong>
+        <small>产品处理 · POD · 商品组合</small>
+      </div>
+
+      <div className="dashboard-points-body">
+        <div className="dashboard-points-donut">
+          {hasData ? (
+            <svg viewBox={`0 0 ${cx * 2} ${cy * 2}`} width={176} height={176}>
+              {arcs.map((a) => (
+                <path key={a.key} d={donutArc(cx, cy, r, a.start, a.end)}
+                  fill="none" stroke={a.meta.color} strokeWidth={thickness} strokeLinecap="round"
+                  className="dashboard-pie-seg" />
+              ))}
+              <text className="dashboard-pie-total" x={cx} y={cy - 2} textAnchor="middle">{total.toLocaleString()}</text>
+              <text className="dashboard-pie-total-label" x={cx} y={cy + 16} textAnchor="middle">积分</text>
+            </svg>
+          ) : (
+            <div className="dashboard-points-empty"><span className="iconfont icon-fund" aria-hidden="true"></span>{loading ? "加载中…" : "暂无消耗数据"}</div>
+          )}
+        </div>
+
+        <ul className="dashboard-points-legend">
+          {segments.map((s) => {
+            const pct = total ? Math.round((s.value / total) * 100) : 0;
+            return (
+              <li key={s.key}>
+                <i style={{ background: SEGMENT_META[s.key].color }} />
+                <span>{SEGMENT_META[s.key].label}</span>
+                <b>{pct}%</b>
+              </li>
+            );
+          })}
+        </ul>
+      </div>
+    </section>
+  );
+}
+
+/* ── 数据概览 ────────────────────────────────────────────────── */
 export function DashboardStats({ onOpenModule, variant = "classic" }: DashboardStatsProps) {
   const [stats, setStats] = useState<DashboardStats | null>(null);
 
@@ -84,7 +297,6 @@ export function DashboardStats({ onOpenModule, variant = "classic" }: DashboardS
       });
     };
     load();
-    // 数据概览定时刷新：产品处理任务/入库在别处进行时，这里能跟上变化
     const timer = window.setInterval(load, 60_000);
     const onVisible = () => {
       if (document.visibilityState === "visible") load();
@@ -128,31 +340,38 @@ export function DashboardStats({ onOpenModule, variant = "classic" }: DashboardS
         <div>
           <h2>数据概览</h2>
         </div>
-        <span className="muted">实时统计</span>
+        <span className="muted"><span className="iconfont icon-linechart" aria-hidden="true"></span> 实时统计</span>
       </div>
-      <div className="stats-grid">
-        <button className="stats-card" onClick={() => onOpenModule("profit_activity_products")} title="点击打开产品库">
-          <span className="stats-icon iconfont icon-folder"></span>
-          <span className="stats-label">产品库产品总数</span>
-          <strong className="stats-value">{format(stats?.productCount)}</strong>
-          <span className="stats-note">{productSites}</span>
-        </button>
 
-        <button className="stats-card" onClick={() => onOpenModule("profit_activity_products")} title="点击打开产品库">
-          <span className="stats-icon iconfont icon-download"></span>
-          <span className="stats-label">今日入库数量</span>
-          <strong className="stats-value">{format(stats?.todayInboundCount)}</strong>
-          <span className="stats-note">按北京时间统计</span>
-        </button>
+      <div className="stats-container">
+        <div className="stats-grid">
+          <button className="stats-card" onClick={() => onOpenModule("profit_activity_products")} title="点击打开产品库">
+            <span className="stats-icon iconfont icon-container"></span>
+            <span className="stats-label">产品库产品总数</span>
+            <strong className="stats-value">{format(stats?.productCount)}</strong>
+            <span className="stats-note">{productSites}</span>
+          </button>
 
-        <button className="stats-card" onClick={() => onOpenModule("product_processing")} title="点击打开产品处理">
-          <span className="stats-icon iconfont icon-setting"></span>
-          <span className="stats-label">今日产品处理数量</span>
-          <strong className="stats-value">{format(stats?.todayProcessedCount)}</strong>
-          <span className="stats-note">按北京时间统计</span>
-        </button>
+          <button className="stats-card" onClick={() => onOpenModule("profit_activity_products")} title="点击打开产品库">
+            <span className="stats-icon iconfont icon-download"></span>
+            <span className="stats-label">今日入库数量</span>
+            <strong className="stats-value">{format(stats?.todayInboundCount)}</strong>
+            <span className="stats-note">按北京时间统计</span>
+          </button>
+
+          <button className="stats-card" onClick={() => onOpenModule("product_processing")} title="点击打开产品处理">
+            <span className="stats-icon iconfont icon-setting"></span>
+            <span className="stats-label">今日产品处理数量</span>
+            <strong className="stats-value">{format(stats?.todayProcessedCount)}</strong>
+            <span className="stats-note">按北京时间统计</span>
+          </button>
+        </div>
       </div>
-      <DashboardTrendChart points={stats?.trend ?? []} />
+
+      <div className="dashboard-chart-layout">
+        <DashboardTrendChart points={stats?.trend ?? []} />
+        <DashboardPointsPie />
+      </div>
     </section>
   );
 }

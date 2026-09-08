@@ -644,7 +644,7 @@ export function PersonalCenterPage() {
 
       <div className="personal-stats">
         <div className="personal-stat is-balance">
-          <span>可用积分</span>
+          <span className="personal-stat-title"><i className="iconfont icon-gold" aria-hidden="true" />可用积分</span>
           <b>{summary?.wallet.available_points.toLocaleString() ?? "--"}</b>
           {loading && <span className="personal-stat-spinner" aria-label="积分刷新中" />}
           <button

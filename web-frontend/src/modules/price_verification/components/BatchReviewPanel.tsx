@@ -151,6 +151,9 @@ export function BatchReviewPanel({ batchId, items, busy, onConfirm, onDelete, on
                           <div>
                             <strong title={item.product_title}>{item.product_title || "未命名商品"}</strong>
                             <small>SKC：{item.skc_id}</small>
+                            {item.official_link_url ? (
+                              <a className="batch-review-original-link" href={item.official_link_url} target="_blank" rel="noreferrer">采集原链接 ↗</a>
+                            ) : null}
                             {skuPrices.length ? <button type="button" className="batch-review-sku-toggle" onClick={() => toggleSkuDetails(item.skc_id)} aria-expanded={expanded}>{expanded ? `收起下属 SKU（${skuPrices.length}）` : `查看下属 SKU（${skuPrices.length}）`}</button> : null}
                           </div>
                         </div>

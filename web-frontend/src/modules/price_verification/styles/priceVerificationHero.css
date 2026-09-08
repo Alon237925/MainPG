@@ -75,30 +75,31 @@
 }
 
 .price-verification-steps {
-  gap: 0;
+  gap: 12px;
 }
 
 .price-verification-steps .price-verification-step {
-  min-height: 62px;
-  padding: 6px 16px;
-  border: 0 !important;
-  border-radius: 0;
-  background: transparent !important;
-  box-shadow: none !important;
+  min-height: 74px;
+  padding: 13px 15px;
+  border: 1px solid var(--theme-module-border, #eee) !important;
+  border-radius: 14px;
+  background: var(--theme-module-surface, #fff) !important;
+  box-shadow: 0 8px 22px var(--theme-card-shadow, rgba(120, 90, 160, .06));
+  transition: transform .18s ease, border-color .18s ease, box-shadow .18s ease;
 }
 
 .price-verification-steps .price-verification-step:first-child {
-  padding-left: 0;
+  padding-left: 15px;
 }
 
 .price-verification-steps .price-verification-step-number {
-  width: 27px;
-  height: 27px;
+  width: 30px;
+  height: 30px;
   font-size: .7rem;
 }
 
 .price-verification-steps .price-verification-step strong {
-  margin-bottom: 1px;
+  margin-bottom: 2px;
   color: var(--theme-text-primary, #24425e);
   font-size: .9rem;
 }
@@ -113,8 +114,9 @@
   display: none;
 }
 
-.price-verification-steps .price-verification-step:hover:not(:disabled) {
-  background: transparent !important;
+.price-verification-steps .price-verification-step:hover:not([aria-disabled="true"]) {
+  border-color: color-mix(in srgb, var(--theme-primary, #12a9d8) 42%, transparent) !important;
+  transform: translateY(-1px);
 }
 
 .price-verification-steps .price-verification-step:hover:not([aria-disabled="true"]) .price-verification-step-number {
@@ -129,9 +131,7 @@
 .price-verification-steps .price-verification-step:focus,
 .price-verification-steps .price-verification-step:focus-visible {
   outline: 0 !important;
-  border: 0 !important;
-  background: transparent !important;
-  box-shadow: none !important;
+  box-shadow: 0 0 0 3px color-mix(in srgb, var(--theme-primary, #12a9d8) 26%, transparent) !important;
 }
 
 .price-verification-steps .price-verification-step[aria-disabled="true"] {
@@ -140,19 +140,20 @@
 }
 
 .price-verification-steps .price-verification-step.is-current-flow {
-  border: 0 !important;
-  background: transparent !important;
-  box-shadow: none !important;
+  border-color: transparent !important;
+  background: var(--theme-hero-gradient, linear-gradient(135deg, #c952a8, #8f5ae0)) !important;
+  box-shadow: 0 12px 28px color-mix(in srgb, var(--theme-primary, #12a9d8) 34%, transparent);
+  transform: translateY(-1px);
 }
 
 .price-verification-steps .price-verification-step.is-current-flow .price-verification-step-number {
   color: var(--theme-on-primary, #fff) !important;
-  background: var(--theme-primary, #12a9d8) !important;
+  background: rgba(255, 255, 255, .26) !important;
 }
 
 .price-verification-steps .price-verification-step.is-current-flow strong,
 .price-verification-steps .price-verification-step.is-current-flow small {
-  color: var(--theme-module-primary-strong, #0d7fba);
+  color: #fff;
 }
 
 @media (max-width: 700px) {

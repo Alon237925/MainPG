@@ -1196,13 +1196,6 @@ export function DailySelectionPage({ view = "directions", initialDirectionId, on
             )}
           </section>
           <section className="daily-collection-surface" aria-label="每日选品采集面板">
-            <header className="daily-drawer-header">
-              <div>
-                <span>DAILY SELECTION</span>
-                <strong>采集与候选商品</strong>
-              </div>
-              <span className="collection-workspace-context">来源：{collectionWorkspaceMode === "shop" ? "1688 整店" : collectionWorkspaceMode === "plugin" ? "1688 插件" : "每日选品"}</span>
-            </header>
             <div className="collection-workspace-tabs" role="tablist" aria-label="采集入口">
               <button
                 type="button"
@@ -1210,21 +1203,21 @@ export function DailySelectionPage({ view = "directions", initialDirectionId, on
                 aria-selected={collectionWorkspaceMode === "daily"}
                 className={collectionWorkspaceMode === "daily" ? "is-active" : ""}
                 onClick={() => setCollectionWorkspaceMode("daily")}
-              >每日选品</button>
+              ><span className="iconfont icon-search" aria-hidden="true"></span>每日选品</button>
               <button
                 type="button"
                 role="tab"
                 aria-selected={collectionWorkspaceMode === "shop"}
                 className={collectionWorkspaceMode === "shop" ? "is-active" : ""}
                 onClick={() => setCollectionWorkspaceMode("shop")}
-              >整店采集</button>
+              ><span className="iconfont icon-shop" aria-hidden="true"></span>整店采集</button>
               <button
                 type="button"
                 role="tab"
                 aria-selected={collectionWorkspaceMode === "plugin"}
                 className={collectionWorkspaceMode === "plugin" ? "is-active" : ""}
                 onClick={() => setCollectionWorkspaceMode("plugin")}
-              >插件采集</button>
+              ><span className="iconfont icon-cloud" aria-hidden="true"></span>插件采集</button>
             </div>
             {collectionWorkspaceMode === "plugin" ? (
               <PluginOneboundCapturePanel isActive={isActive} onOpenDraft={onOpenProductProcessingDraft} />
@@ -1235,7 +1228,7 @@ export function DailySelectionPage({ view = "directions", initialDirectionId, on
               <div className="daily-work-grid">
         <form className="daily-panel collection-panel" onSubmit={submitCollection}>
           <div className="daily-panel-title">
-            <div><span className="title-icon">⌕</span><strong>关键词/参考图采集</strong></div>
+            <div><span className="title-icon iconfont icon-search" aria-hidden="true"></span><strong>关键词/参考图采集</strong></div>
             <span>当前方向：{selectedDirection.name}</span>
           </div>
 
@@ -1278,7 +1271,7 @@ export function DailySelectionPage({ view = "directions", initialDirectionId, on
           <div className="collection-advanced-header">
             <div><strong>高级筛选</strong><span>价格、SKU、并发与风险规则</span></div>
             <button type="button" aria-expanded={advancedCollectionOpen} aria-controls="collection-settings-drawer" onClick={() => { setHistoryDrawerOpen(false); setAdvancedCollectionOpen(true); }}>
-              <span aria-hidden="true">⚙</span>高级设置
+              <span className="iconfont icon-setting" aria-hidden="true"></span>高级设置
             </button>
           </div>
 
