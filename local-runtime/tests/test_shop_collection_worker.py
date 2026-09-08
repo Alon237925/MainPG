@@ -286,7 +286,20 @@ def test_listing_never_fetches_more_than_one_hundred_pages(tmp_path: Path) -> No
 
         def search_shop(self, seller_nick: str, page: int) -> Result:
             self.pages_seen.append(page)
-            return Result({"items": [], "has_next": True})
+            # 第 1 页必须非空（空的第 1 页属于可诊断失败，见列表空页守卫）；
+            # 其余页置空但 has_next=True，验证翻页上限仍按 100 页封顶。
+            items = (
+                [
+                    {
+                        "offer_id": f"p{page}",
+                        "source_url": f"https://detail.1688.com/offer/p{page}.html",
+                        "title": f"Product {page}",
+                    }
+                ]
+                if page == 1
+                else []
+            )
+            return Result({"items": items, "has_next": True})
 
     provider = EndlessProvider()
     worker = ShopCollectionWorker(
@@ -517,3 +530,147 @@ def test_stale_item_token_is_rejected_before_intake(tmp_path: Path) -> None:
 
     assert type(stale_error.value).__name__ == "_StaleItemLease"
     assert intakes == []
+
+
+def test_listing_no_data_error_finishes_listing_and_enriches_discovered_items(tmp_path: Path) -> None:
+    """列表页遇到万邦“数据不存在”（error_code=4010）应视为列表结束而非整批失败。"""
+    repository = _repository(tmp_path)
+    repository.create_batch(
+        batch_id="batch-1", workspace_id="default", actor_id="actor-a", shop_sid="b2b-shop"
+    )
+
+    class NoDataProvider(FakeProvider):
+        def __init__(self) -> None:
+            super().__init__({})
+            self.pages_seen: list[int] = []
+
+        def search_shop(self, seller_nick: str, page: int) -> Result:
+            self.pages_seen.append(page)
+            if page == 1:
+                return Result(
+                    {
+                        "items": [
+                            {
+                                "offer_id": "1",
+                                "source_url": "https://detail.1688.com/offer/1.html",
+                                "title": "Product 1",
+                            }
+                        ],
+                        "has_next": True,
+                    }
+                )
+            error = type(
+                "Error",
+                (),
+                {
+                    "code": "upstream_failed",
+                    "message": "OneBound returned an unsuccessful response",
+                    "context": {"upstream_code": "4010", "upstream_reason": "不存在相应的数据信息"},
+                },
+            )()
+            return Result({}, error=error)
+
+    provider = NoDataProvider()
+    worker = ShopCollectionWorker(
+        repository=repository,
+        provider_config_resolver=lambda actor: {},
+        provider_factory=lambda config: provider,
+        intake_shop_candidate=lambda **payload: {"action": "created", "draft": {}},
+        page_normalizer=_page,
+        detail_normalizer=_detail,
+    )
+    worker.process_batch("batch-1")
+
+    batch = repository.get_batch(workspace_id="default", batch_id="batch-1")
+    assert provider.pages_seen == [1, 2]
+    assert batch.listing_complete
+    assert batch.discovered_count == 1
+    assert batch.succeeded_count == 1
+    assert batch.status in {"completed", "partial"}
+
+
+def test_listing_keeps_failing_on_real_data_error(tmp_path: Path) -> None:
+    """列表页遇到真实数据错误（5000 data error，无“不存在/无数据”语义)仍判失败。"""
+    repository = _repository(tmp_path)
+    repository.create_batch(
+        batch_id="batch-2", workspace_id="default", actor_id="actor-a", shop_sid="b2b-shop"
+    )
+
+    class BrokenProvider(FakeProvider):
+        def __init__(self) -> None:
+            super().__init__({})
+            self.pages_seen: list[int] = []
+
+        def search_shop(self, seller_nick: str, page: int) -> Result:
+            self.pages_seen.append(page)
+            if page == 1:
+                return Result({"items": [{"offer_id": "1", "title": "P1"}], "has_next": True})
+            error = type(
+                "Error",
+                (),
+                {
+                    "code": "upstream_failed",
+                    "message": "OneBound returned an unsuccessful response",
+                    "context": {"upstream_code": "5000", "upstream_reason": "data error"},
+                },
+            )()
+            return Result({}, error=error)
+
+    provider = BrokenProvider()
+    worker = ShopCollectionWorker(
+        repository=repository,
+        provider_config_resolver=lambda actor: {},
+        provider_factory=lambda config: provider,
+        intake_shop_candidate=lambda **payload: {"action": "created", "draft": {}},
+        page_normalizer=_page,
+        detail_normalizer=_detail,
+    )
+    worker.process_batch("batch-2")
+
+    batch = repository.get_batch(workspace_id="default", batch_id="batch-2")
+    assert provider.pages_seen == [1, 2]
+    assert batch.status == "failed"
+    assert "error_code=5000" in batch.error_message
+
+
+def test_listing_caps_at_one_hundred_twenty_items(tmp_path: Path) -> None:
+    """单店铺采集上限 120：两页(60/页)后不再翻页，直接进入 enriching。"""
+    repository = _repository(tmp_path)
+    repository.create_batch(
+        batch_id="batch-3", workspace_id="default", actor_id="actor-a", shop_sid="b2b-shop"
+    )
+
+    class SixtyPerPageProvider(FakeProvider):
+        def __init__(self) -> None:
+            super().__init__({})
+            self.pages_seen: list[int] = []
+
+        def search_shop(self, seller_nick: str, page: int) -> Result:
+            self.pages_seen.append(page)
+            items = [
+                {
+                    "offer_id": str(page * 100 + index),
+                    "source_url": f"https://detail.1688.com/offer/{page * 100 + index}.html",
+                    "title": f"Product {page}-{index}",
+                }
+                for index in range(60)
+            ]
+            return Result({"items": items, "has_next": True})
+
+    provider = SixtyPerPageProvider()
+    worker = ShopCollectionWorker(
+        repository=repository,
+        provider_config_resolver=lambda actor: {},
+        provider_factory=lambda config: provider,
+        intake_shop_candidate=lambda **payload: {"action": "created", "draft": {}},
+        page_normalizer=_page,
+        detail_normalizer=_detail,
+    )
+    worker.process_batch("batch-3")
+
+    batch = repository.get_batch(workspace_id="default", batch_id="batch-3")
+    assert provider.pages_seen == [1, 2]
+    assert batch.discovered_count == 120
+    assert batch.succeeded_count == 120
+    assert batch.status == "completed"
+    assert batch.listing_complete
