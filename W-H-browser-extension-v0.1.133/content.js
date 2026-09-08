@@ -502,8 +502,51 @@
     }
   }
 
+  function isTaobaoItemDetailPage(parsed) {
+    const hostname = String(parsed.hostname || "").toLowerCase();
+    if (/(^|\.)(item|detail|world|main)\.(taobao|tmall)\.com$/i.test(hostname)) return true;
+    if (/\/item\.htm(?:$|[\?#])/i.test(parsed.pathname)) return true;
+    if (/\/i\d{5,}\.htm(?:$|[\?#])/i.test(parsed.pathname)) return true;
+    return false;
+  }
+
+  function isTaobaoProductListPage() {
+    let parsed;
+    try {
+      parsed = new URL(location.href);
+    } catch (_error) {
+      return false;
+    }
+    if (!/(^|\.)(taobao|tmall)\.com$/i.test(parsed.hostname)) return false;
+    if (isExcludedProductCapturePage(parsed)) return false;
+    if (isTaobaoItemDetailPage(parsed)) return false;
+    // 新版淘宝搜索/列表页商品卡：锚点 id="item_id_<num_iid>" 或 data-spm-anchor-id="aItem_id_<num_iid>_..."。
+    const cardAnchors = document.querySelectorAll(
+      'a[id^="item_id_"], a[data-spm-anchor-id^="aItem_id_"]'
+    );
+    if (cardAnchors.length >= 1) return true;
+    // 兜底：多数商品链接指向 item.taobao.com / detail.tmall.com 且页面含价格/销量信号。
+    const itemLinks = document.querySelectorAll(
+      'a[href*="item.htm?id="], a[href*="item.taobao.com"], a[href*="detail.tmall.com"]'
+    );
+    if (itemLinks.length < 1) return false;
+    const bodyText = String(document.body?.innerText || "").slice(0, 8000);
+    const hasPriceSignal = /(?:￥|¥|\$)\s*\d|销量|已售|月销|评价|包邮|满减|到手价/i.test(bodyText);
+    return hasPriceSignal || visibleProductImageCount() >= 4;
+  }
+
+  // 整页采集（万邦）覆盖：1688、淘宝、天猫列表/搜索页
+  function isOneboundCaptureListPage() {
+    return is1688ProductListPage() || isTaobaoProductListPage();
+  }
+
+  // 列表页采集按钮的显示门控：老链路（批量采集本页）或整页采集（万邦）任一命中即显示。
+  function isListCaptureSupportedPage() {
+    return isSupportedProductListPage() || isTaobaoProductListPage();
+  }
+
   function isCurrentOneboundPageCapture(state, batchToken = null) {
-    return is1688ProductListPage()
+    return isOneboundCaptureListPage()
       && canUseOneboundPageCaptureState(state, location.href, oneboundPageCaptureGeneration, batchToken);
   }
 
@@ -626,7 +669,7 @@
     invalidateOneboundPageCaptureForNavigation();
     const button = document.getElementById("temu-workbench-product-list-capture");
     const cancelButton = document.getElementById("temu-workbench-product-list-cancel");
-    if (!isSupportedProductListPage()) {
+    if (!isListCaptureSupportedPage()) {
       if (button) button.remove();
       if (cancelButton) cancelButton.remove();
       document.getElementById("temu-workbench-page-capture-status")?.remove();
@@ -637,7 +680,7 @@
   }
 
   function renderProductListCaptureButton() {
-    if (!isSupportedProductListPage()) return;
+    if (!isListCaptureSupportedPage()) return;
     const content = floatContentRoot();
     if (!content) return;
     if (content.querySelector("#temu-workbench-product-list-capture")) {
@@ -647,10 +690,10 @@
     const button = document.createElement("button");
     button.id = "temu-workbench-product-list-capture";
     button.type = "button";
-    button.textContent = is1688ProductListPage() ? "整页采集（万邦）" : "批量采集本页";
+    button.textContent = isOneboundCaptureListPage() ? "整页采集（万邦）" : "批量采集本页";
     button.style.cssText = panelButtonStyle("#2563eb", "rgba(37,99,235,0.48)");
     button.addEventListener("click", () => {
-      if (is1688ProductListPage()) {
+      if (isOneboundCaptureListPage()) {
         prepare1688OneboundPageCapture();
         return;
       }
@@ -701,12 +744,12 @@
         connected = false;
       }
       button.disabled = !connected;
-      button.textContent = connected ? (is1688ProductListPage() ? "整页采集（万邦）" : "批量采集本页") : "先连接工作台";
+      button.textContent = connected ? (isOneboundCaptureListPage() ? "整页采集（万邦）" : "批量采集本页") : "先连接工作台";
       button.style.opacity = connected ? "1" : "0.72";
       button.title = !connected
         ? "请先打开扩展弹窗连接本地工作台"
-        : is1688ProductListPage()
-          ? "先扫描并识别当前 1688 列表页；确认后再采集待处理商品"
+        : isOneboundCaptureListPage()
+          ? "先扫描并识别当前列表页商品卡；确认后再到工作台启动万邦采集"
           : "采集当前列表页商品链接，逐个打开详情页复用单品采集，自动跳过广告、推广和店铺卡片";
     });
   }
@@ -904,7 +947,7 @@
   }
 
   async function prepare1688OneboundPageCapture(sourceUrls = null) {
-    if (!is1688ProductListPage() || oneboundPageCapture?.phase === "preparing" || oneboundPageCapture?.phase === "running") return;
+    if (!isOneboundCaptureListPage() || oneboundPageCapture?.phase === "preparing" || oneboundPageCapture?.phase === "running") return;
     const state = createOneboundPageCaptureState(location.href, ++oneboundPageCaptureGeneration);
     oneboundPageCapture = state;
     setOneboundPageCaptureButtonState("正在扫描...", true);

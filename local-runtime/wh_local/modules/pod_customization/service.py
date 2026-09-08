@@ -35,14 +35,18 @@ from .export import (
 from .export_records import PodExportRecordStore
 from .errors import image_provider_outcome_for_exception, safe_error_message
 from .repository import PodCustomizationRepository, PodRepositoryError
-from .prompts import LISTING_IMAGE_ROLES, build_direct_listing_prompt
+from .prompts import (
+    LISTING_IMAGE_ROLES,
+    assign_style_elements,
+    build_direct_listing_prompt,
+    build_style_listing_prompt,
+)
 from .runtime_contracts import (
     SUPPORTED_TEMPLATE_IMAGE_CONTENT_TYPES,
     DirectListingGridRequest,
     PodAiRuntime,
 )
 from .title_runtime import PodTitleRequest, visual_signature
-from .theme_registry import ThemeRegistry
 from .worker import PodBatchWorker, PodBillingRun, POD_PROGRESS_TIMEOUT_SECONDS
 
 
@@ -67,7 +71,6 @@ class PodCustomizationService:
         if start_workers:
             self.repository.recover_interrupted_batches()
             self.repository.recover_billing_runs()
-        theme_registry = self._build_theme_registry(asset_root)
         self.worker = (
             PodBatchWorker(
                 self.repository,
@@ -75,7 +78,6 @@ class PodCustomizationService:
                 ai_runtime,
                 title_runtime=title_runtime,
                 coordinator_workers=getattr(ai_runtime, "batch_workers", 1),
-                theme_registry=theme_registry,
             )
             if start_workers
             else None
@@ -95,27 +97,6 @@ class PodCustomizationService:
         if start_workers:
             self._start_reaper()
             self._start_cache_sweeper()
-
-    @staticmethod
-    def _build_theme_registry(asset_root: Path) -> ThemeRegistry:
-        """Create the theme registry, optionally wired to Doubao for enrichment.
-
-        Construction never fails startup: if the Ark client cannot be built
-        (unconfigured credentials), the registry still loads and layers any
-        persisted Doubao-learned pools, it just won't generate new ones.
-        """
-        registry_path = Path(asset_root) / "pod_theme_registry.json"
-        complete = None
-        try:
-            from wh_local.modules.product_processing.doubao_ark import DoubaoArkClient, DoubaoArkError
-
-            try:
-                complete = DoubaoArkClient(usage_kind="text").complete
-            except DoubaoArkError:
-                complete = None
-        except Exception:
-            complete = None
-        return ThemeRegistry(registry_path, complete=complete)
 
     def upload_template(
         self,
@@ -223,7 +204,10 @@ class PodCustomizationService:
             raise ValueError("direct POD listing template must be a JPEG, PNG, or WEBP image")
         trial_id = uuid.uuid4().hex
         billing_run = self._freeze_trial(actor, trial_id, request)
-        prompt = build_direct_listing_prompt(request.business_fields, request.creative_prompt)
+        base_prompt = build_direct_listing_prompt(request.business_fields, request.creative_prompt)
+        trial_elements = assign_style_elements(
+            request.business_fields.style_keywords, 1, trial_id
+        )
         grid_asset_ids: list[str] = []
         generated_grids: list[Any] = []
         split_error = ""
@@ -235,7 +219,8 @@ class PodCustomizationService:
                 template_image=template_image,
                 template_content_type=template_content_type,
                 trial_id=trial_id,
-                prompt=prompt,
+                base_prompt=base_prompt,
+                trial_elements=trial_elements,
                 billing_run=billing_run,
             )
         except PodBillingAuthorizationRequired as exc:
@@ -251,20 +236,29 @@ class PodCustomizationService:
         template_image: bytes,
         template_content_type: str,
         trial_id: str,
-        prompt: str,
+        base_prompt: str,
+        trial_elements: dict[str, object],
         billing_run: PodBillingRun,
     ) -> dict[str, Any]:
         grid_asset_ids: list[str] = []
         generated_grids: list[Any] = []
         split_error = ""
         for attempt in (1, 2):
+            attempt_prompt = build_style_listing_prompt(
+                base_prompt,
+                style_index=1,
+                attempt=attempt,
+                business_fields=request.business_fields.model_dump(),
+                creative_prompt=request.creative_prompt,
+                style_elements=trial_elements,
+            )
             provider_call_id = f"{trial_id}:image:{attempt}"
             grid_request = DirectListingGridRequest(
                 trial_id=trial_id,
                 template_id=request.template_id,
                 template_image=template_image,
                 template_content_type=template_content_type,
-                prompt=prompt,
+                prompt=attempt_prompt,
                 attempt=attempt,
             )
             try:
@@ -302,7 +296,7 @@ class PodCustomizationService:
                     owner_user_id=actor.id,
                     template_id=request.template_id,
                     status="failed",
-                    prompt_snapshot=prompt,
+                    prompt_snapshot=attempt_prompt,
                     grid_attempt_asset_ids=grid_asset_ids,
                     panel_asset_ids={},
                     public_urls={},
@@ -345,7 +339,7 @@ class PodCustomizationService:
                     owner_user_id=actor.id,
                     template_id=request.template_id,
                     status="failed",
-                    prompt_snapshot=prompt,
+                    prompt_snapshot=attempt_prompt,
                     grid_attempt_asset_ids=grid_asset_ids,
                     panel_asset_ids={role: asset["asset_id"] for role, asset in panel_assets.items()},
                     public_urls=public_urls,
@@ -359,7 +353,7 @@ class PodCustomizationService:
                 owner_user_id=actor.id,
                 template_id=request.template_id,
                 status="completed",
-                prompt_snapshot=prompt,
+                prompt_snapshot=attempt_prompt,
                 grid_attempt_asset_ids=grid_asset_ids,
                 panel_asset_ids={role: asset["asset_id"] for role, asset in panel_assets.items()},
                 public_urls=public_urls,

@@ -82,6 +82,11 @@
 .pod-business-fields label { display: grid; min-width: 0; gap: 4px; color: var(--pod-text-secondary); font-size: .63rem; font-weight: 800; }
 .pod-business-fields label.is-wide { grid-column: 1 / -1; }
 .pod-business-fields em { margin-left: 2px; color: #d65e58; font-style: normal; }
+.pod-business-fields label > span { position: relative; display: inline-flex; align-items: center; }
+.pod-field-info { margin-left: 4px; cursor: help; color: var(--pod-text-muted); font-style: normal; font-size: .66rem; font-weight: 700; }
+.pod-field-info:hover { color: var(--pod-primary); }
+.pod-field-info::after { content: attr(data-tip); position: absolute; z-index: 30; left: 0; bottom: calc(100% + 6px); width: 210px; padding: 7px 9px; border: 1px solid var(--pod-border-strong); border-radius: 8px; color: var(--pod-text); background: var(--pod-surface); box-shadow: 0 6px 18px rgba(15, 36, 53, .14); font-size: .6rem; font-weight: 500; line-height: 1.45; text-align: left; pointer-events: none; opacity: 0; transform: translateY(3px); transition: opacity .14s ease, transform .14s ease; }
+.pod-field-info:hover::after { opacity: 1; transform: translateY(0); }
 .pod-business-fields input,
 .pod-business-fields textarea,
 .pod-advanced-prompt-editor textarea,

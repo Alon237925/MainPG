@@ -6,8 +6,8 @@ const panel = readFileSync(new URL("./PluginOneboundCapturePanel.tsx", import.me
 const styles = readFileSync(new URL("../styles/shop-collection.css", import.meta.url), "utf8");
 
 test("plugin capture panel starts prepared OneBound batches and retries terminal failures", () => {
-  assert.match(panel, /1688 页面使用浏览器插件/);
-  assert.match(panel, /请前往 1688 页面使用浏览器插件发起整页采集/);
+  assert.match(panel, /1688\/淘宝链接/);
+  assert.match(panel, /请前往 1688 或淘宝页面使用浏览器插件发起整页采集/);
   assert.match(panel, /canRetryPluginCaptureFailures/);
   assert.match(panel, /重试失败项/);
   assert.match(panel, /selectedBatch\.status === "prepared"/);

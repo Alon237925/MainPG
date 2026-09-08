@@ -39,6 +39,7 @@ export type PodBusinessFieldsDraft = {
   target_audience: string;
   core_selling_points: string;
   design_theme: string;
+  style_planning: string;
   style_keywords: string;
   color_preferences: string;
   excluded_elements: string;

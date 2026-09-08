@@ -229,3 +229,15 @@ test("blank system template names are rejected", () => {
   const result = createPodSystemTemplate({ name: "  ", creativePrompt: "提示词", template: template("template-1") });
   assert.deepEqual(result, { ok: false, error: "请填写系统模板名称。" });
 });
+
+test("old drafts without style_planning load with it backfilled as empty string", () => {
+  const storage = new MemoryStorage();
+  const state = createEmptyPodCustomizationDraft();
+  const legacy = JSON.parse(JSON.stringify(state)) as Record<string, unknown>;
+  const fields = legacy["business_fields"] as Record<string, unknown>;
+  delete fields["style_planning"];
+  storage.setItem(podCustomizationDraftStorageKey("account-a", "workspace-a"), JSON.stringify(legacy));
+
+  const loaded = loadPodCustomizationDraft("account-a", "workspace-a", storage);
+  assert.equal(loaded.state.business_fields.style_planning, "");
+});

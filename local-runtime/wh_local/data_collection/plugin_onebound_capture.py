@@ -1,13 +1,14 @@
-"""Session-scoped, short-lived 1688 capture batches for the browser plugin.
+"""Session-scoped, short-lived 1688/Taobao capture batches for the browser plugin.
 
-The browser sends only public 1688 URLs.  Provider credentials, the provider
-instance, and daily budget guard stay in this local runtime and are created at
-most once for a started batch.
+The browser sends only public 1688/Taobao URLs.  Provider credentials, the
+provider instance, and daily budget guard stay in this local runtime and are
+created at most once for a started batch.
 """
 
 from __future__ import annotations
 
 import json
+import re
 import secrets
 import threading
 import time
@@ -33,6 +34,29 @@ _MAX_BATCHES_PER_IDENTITY = 2
 _MAX_URLS_PER_BATCH = 80
 _MAX_DETAIL_CONCURRENCY = 3
 _DETAIL_CALL_SEMAPHORE = threading.BoundedSemaphore(_MAX_DETAIL_CONCURRENCY)
+
+# 万邦接口常见业务错误码 → 面向用户的中文原因（用于插件采集失败诊断）。
+# 只映射已知、稳定的错误码；其它内容一律走兜底文案，避免暴露上游字段。
+_UPSTREAM_ERROR_REASONS: dict[str, str] = {
+    "item-not-found": "商品不存在或已下架，万邦未收录该商品",
+    "item-not-exist": "商品不存在或已下架，万邦未收录该商品",
+    "item-closed": "商品已下架，万邦未返回数据",
+    "no-permission": "万邦接口无权访问该商品",
+    "rate-limit": "万邦接口调用过于频繁，请稍后重试",
+    "rate_limit": "万邦接口调用过于频繁，请稍后重试",
+    "bucket-limit": "万邦接口调用次数已达上限",
+}
+_PROVIDER_ERROR_REASONS: dict[str, str] = {
+    "timeout": "万邦接口请求超时",
+    "upstream_failed": "万邦接口返回失败",
+    "no_results": "万邦未返回该商品数据",
+    "rate_limited": "万邦接口调用过于频繁，请稍后重试",
+    "quota_exhausted": "万邦接口额度已用完",
+    "authentication_failed": "万邦接口鉴权失败",
+    "invalid_request": "万邦接口参数校验失败",
+    "provider_disabled": "万邦采集服务未启用",
+}
+_UPSTREAM_ERROR_CODE_RE = re.compile(r"^[a-z0-9_-]{1,64}$")
 
 
 @dataclass(frozen=True)
@@ -298,6 +322,11 @@ class PluginOneBoundCaptureService:
 
         try:
             response = self._capture_item(batch, item)
+        except _ItemCaptureDiagnostic as error:
+            # Provider 失败保留安全的结构化诊断（上游错误码 + 中文原因），
+            # 前端"采集明细"据此展示具体失败原因。
+            with batch.condition:
+                response = _failure(item, error.error_code, error.message)
         except Exception:
             # Provider detail errors remain per-item diagnostics.  Do not expose
             # arbitrary upstream text because it can contain request metadata.
@@ -805,7 +834,10 @@ class PluginOneBoundCaptureService:
         with _DETAIL_CALL_SEMAPHORE:
             result = provider.get_item_detail(item.offer_id)
         if not bool(getattr(result, "ok", False)):
-            raise RuntimeError("provider item detail failed")
+            raise _ItemCaptureDiagnostic(
+                _provider_failure_code(result),
+                _provider_failure_message(result),
+            )
         candidate = normalize_detail_response(
             getattr(result, "response"),
             evidence=getattr(result, "audit", None),
@@ -976,6 +1008,52 @@ class _BatchFatal(RuntimeError):
     def __init__(self, code: str, message: str) -> None:
         super().__init__(message)
         self.code = code
+
+
+class _ItemCaptureDiagnostic(RuntimeError):
+    """Carries a safe, user-readable per-item capture failure diagnosis."""
+
+    def __init__(self, error_code: str, message: str) -> None:
+        super().__init__(message)
+        self.error_code = error_code
+        self.message = message
+
+
+def _provider_failure_code(result: Any) -> str:
+    """Derive a stable error code from a failed ProviderCallResult."""
+    response = getattr(result, "response", None)
+    if isinstance(response, Mapping):
+        upstream = str(response.get("error", "") or "").strip()
+        if upstream in _UPSTREAM_ERROR_REASONS:
+            return upstream
+    error = getattr(result, "error", None)
+    code = str(getattr(error, "code", "") or "").strip()
+    if code and _UPSTREAM_ERROR_CODE_RE.fullmatch(code):
+        return code
+    return "capture_failed"
+
+
+def _provider_failure_message(result: Any) -> str:
+    """Build a safe Chinese diagnosis from structured error fields only.
+
+    Never surfaces raw upstream body text: the provider's sanitized response may
+    still contain arbitrary platform text. Only bounded error codes are mapped.
+    """
+    response = getattr(result, "response", None)
+    upstream = ""
+    if isinstance(response, Mapping):
+        candidate = str(response.get("error", "") or "").strip()
+        if candidate and _UPSTREAM_ERROR_CODE_RE.fullmatch(candidate):
+            upstream = candidate
+    error = getattr(result, "error", None)
+    provider_code = str(getattr(error, "code", "") or "").strip()
+    if upstream in _UPSTREAM_ERROR_REASONS:
+        return f"{_UPSTREAM_ERROR_REASONS[upstream]}（code: {upstream}）"
+    if provider_code in _PROVIDER_ERROR_REASONS:
+        return _PROVIDER_ERROR_REASONS[provider_code]
+    if upstream:
+        return f"万邦未返回该商品数据（code: {upstream}）"
+    return "商品详情采集失败"
 
 
 class _BatchClosed(RuntimeError):

@@ -186,13 +186,11 @@ class PodBatchWorker:
         *,
         title_runtime: Any | None = None,
         coordinator_workers: int = 1,
-        theme_registry: Any | None = None,
     ) -> None:
         self.repository = repository
         self.assets = assets
         self.ai_runtime = ai_runtime
         self.title_runtime = title_runtime
-        self._theme_registry = theme_registry
         self._batch_action_lock = threading.RLock()
         self._coordinator = ThreadPoolExecutor(
             max_workers=max(1, min(coordinator_workers, 4)),
@@ -213,24 +211,10 @@ class PodBatchWorker:
         if self._closing.is_set():
             raise RuntimeError("POD worker is shutting down")
 
-    def _theme_pools(self) -> dict[str, Any] | None:
-        return self._theme_registry.pools() if self._theme_registry is not None else None
-
-    def ensure_theme_pool(self, theme_label: str) -> None:
-        """Background-enrich a theme's pool via Doubao without blocking generation."""
-        if self._theme_registry is None or self._closing.is_set():
-            return
-        # errors inside ensure() are swallowed there; no result needed.
-        self._coordinator.submit(self._theme_registry.ensure, theme_label)
-
-    def _maybe_enrich_theme(self, batch: dict[str, Any]) -> None:
-        """Queue a Doubao pool build for a brief whose theme has no pool yet."""
-        if self._theme_registry is None:
-            return
-        theme = str((batch.get("business_fields") or {}).get("design_theme") or "").strip()
-        if not theme or self._theme_registry.has_pool(theme):
-            return
-        self.ensure_theme_pool(theme)
+    @staticmethod
+    def _style_elements(batch: dict[str, Any], style_index: int) -> dict[str, Any]:
+        """Persisted per-style element assignment; empty dict for legacy batches."""
+        return dict((batch.get("style_elements") or {}).get(style_index) or {})
 
     def register_billing_run(self, batch_id: str, billing_run: PodBillingRun) -> None:
         with self._futures_lock:
@@ -680,7 +664,7 @@ class PodBatchWorker:
                     attempt=attempt,
                     business_fields=batch["business_fields"],
                     creative_prompt=batch["creative_prompt"],
-                    theme_pools=self._theme_pools(),
+                    style_elements=self._style_elements(batch, style_index),
                 )
                 call = self.repository.create_generation_call(
                     batch, call_kind=call_kind, call_index=call_index, prompt_snapshot=prompt
@@ -874,7 +858,6 @@ class PodBatchWorker:
         Titles stay serialized inside the title runtime and continue to use
         already-accepted titles and visual themes as deduplication context.
         """
-        self._maybe_enrich_theme(batch)
         completed_by_style: dict[int, int] = {}
         for item in batch.get("items", []):
             if item.get("status") == "completed":
@@ -1046,7 +1029,7 @@ class PodBatchWorker:
                 attempt=attempt_value,
                 business_fields=batch["business_fields"],
                 creative_prompt=batch["creative_prompt"],
-                theme_pools=self._theme_pools(),
+                style_elements=self._style_elements(batch, style_index),
             )
             call = self.repository.get_or_create_generation_call(
                 batch, call_kind=attempt_kind, call_index=style_index, prompt_snapshot=prompt
