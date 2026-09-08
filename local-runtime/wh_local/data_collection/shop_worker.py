@@ -269,6 +269,7 @@ class ShopCollectionWorker:
         if batch.listing_complete:
             return batch
         page = batch.next_page
+        stalled_pages = 0
         while page <= min(batch.max_pages, 100):
             self._raise_if_stopping()
             self._renew(lease)
@@ -331,13 +332,28 @@ class ShopCollectionWorker:
                 # 本页触及单店铺采集上限：结束翻页（等价于 has_next=False）。
                 has_next = False
             self._renew(lease)
-            self.repository.record_shop_page(
+            page_result = self.repository.record_shop_page(
                 batch_id=batch.batch_id,
                 page=page,
                 items=values,
                 has_next=has_next,
                 missing_id_count=missing_count,
             )
+            if page_result["created"] == 0:
+                # 本页没有新增任何新商品（万邦分页循环/内容重复/空页）：
+                # 连续 2 页无新增即判定分页停滞，提前结束列表，避免空转。
+                stalled_pages += 1
+                if stalled_pages >= 2:
+                    logger.info(
+                        "shop collection batch %s listing stalled at page %s (no new items for %s pages)",
+                        batch.batch_id, page, stalled_pages,
+                    )
+                    self.repository.record_shop_page(
+                        batch_id=batch.batch_id, page=page, items=(), has_next=False, missing_id_count=0,
+                    )
+                    break
+            else:
+                stalled_pages = 0
             if not has_next:
                 break
             page += 1

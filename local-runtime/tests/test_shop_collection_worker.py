@@ -286,19 +286,15 @@ def test_listing_never_fetches_more_than_one_hundred_pages(tmp_path: Path) -> No
 
         def search_shop(self, seller_nick: str, page: int) -> Result:
             self.pages_seen.append(page)
-            # 第 1 页必须非空（空的第 1 页属于可诊断失败，见列表空页守卫）；
-            # 其余页置空但 has_next=True，验证翻页上限仍按 100 页封顶。
-            items = (
-                [
-                    {
-                        "offer_id": f"p{page}",
-                        "source_url": f"https://detail.1688.com/offer/p{page}.html",
-                        "title": f"Product {page}",
-                    }
-                ]
-                if page == 1
-                else []
-            )
+            # 每页返回 1 个新商品且 has_next=True：验证翻页上限仍按 100 页封顶
+            # （空的/重复页会被“分页停滞守卫”提前结束，见其它用例）。
+            items = [
+                {
+                    "offer_id": f"p{page}",
+                    "source_url": f"https://detail.1688.com/offer/p{page}.html",
+                    "title": f"Product {page}",
+                }
+            ]
             return Result({"items": items, "has_next": True})
 
     provider = EndlessProvider()
@@ -674,3 +670,47 @@ def test_listing_caps_at_one_hundred_twenty_items(tmp_path: Path) -> None:
     assert batch.succeeded_count == 120
     assert batch.status == "completed"
     assert batch.listing_complete
+
+
+def test_listing_stops_when_pages_recycle_duplicate_items(tmp_path: Path) -> None:
+    """万邦分页循环（每页返回相同内容）时连续 2 页无新增即结束列表，不再空转。"""
+    repository = _repository(tmp_path)
+    repository.create_batch(
+        batch_id="batch-4", workspace_id="default", actor_id="actor-a", shop_sid="b2b-shop"
+    )
+
+    class RecyclingProvider(FakeProvider):
+        def __init__(self) -> None:
+            super().__init__({})
+            self.pages_seen: list[int] = []
+
+        def search_shop(self, seller_nick: str, page: int) -> Result:
+            self.pages_seen.append(page)
+            items = [
+                {
+                    "offer_id": f"r{index}",
+                    "source_url": f"https://detail.1688.com/offer/r{index}.html",
+                    "title": f"Recycled {index}",
+                }
+                for index in range(5)
+            ]
+            return Result({"items": items, "has_next": True})
+
+    provider = RecyclingProvider()
+    worker = ShopCollectionWorker(
+        repository=repository,
+        provider_config_resolver=lambda actor: {},
+        provider_factory=lambda config: provider,
+        intake_shop_candidate=lambda **payload: {"action": "created", "draft": {}},
+        page_normalizer=_page,
+        detail_normalizer=_detail,
+    )
+    worker.process_batch("batch-4")
+
+    batch = repository.get_batch(workspace_id="default", batch_id="batch-4")
+    # 第 1 页有 5 条新增；第 2、3 页无新增 → 在第 3 页后停止翻页
+    assert provider.pages_seen == [1, 2, 3]
+    assert batch.listing_complete
+    assert batch.discovered_count == 5
+    assert batch.succeeded_count == 5
+    assert batch.status in {"completed", "partial"}
