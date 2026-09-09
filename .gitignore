@@ -37,3 +37,6 @@ product_processing.db
 # 公告发布后台本地数据
 announcement-admin/announcements.sqlite3
 announcement-admin/config.json
+
+# 本地运行时业务日志（login.log / ai_processing.log / pod_processing.log / runtime.log）
+local-runtime/*.log
