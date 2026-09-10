@@ -5,10 +5,12 @@ import { PodBatchGallery } from "../components/PodBatchGallery";
 import { PodBatchHistoryDrawer } from "../components/PodBatchHistoryDrawer";
 import { PodFailedRetryDialog } from "../components/PodFailedRetryDialog";
 import { PodResultLightbox } from "../components/PodResultLightbox";
+import { SpecCardDrawer } from "../components/SpecCardDrawer";
 import { TemplateLibraryDrawer } from "../components/TemplateLibraryDrawer";
 import { PodUnsavedTemplateConfirmDialog } from "../components/PodUnsavedTemplateConfirmDialog";
 import {
   POD_BATCH_COUNTS,
+  EMPTY_SPEC_CARD,
   buildPromptV1,
   businessFieldsForApi,
   canDeletePodBatch,
@@ -17,10 +19,12 @@ import {
   isActiveBatchStatus,
   isActivePodItemStatus,
   isActivePodStyleTitleStatus,
+  isSpecCardConfigured,
   groupPodStyleRows,
   resolveCreativePrompt,
   listingFieldsForApi,
   shouldPollPodBatch,
+  specCardSummaryText,
 } from "../data/podCustomizationModel";
 import { batchRetryCandidates, type PodBatchRetryRequest } from "../data/podBatchRetry";
 import {
@@ -42,6 +46,7 @@ import type {
   PodListingFieldsDraft,
   PodTemplate,
   PodTemplateCalibration,
+  SpecCardConfig,
 } from "../types";
 import "../styles/podCustomization.css";
 
@@ -191,6 +196,7 @@ export function PodCustomizationPage({ isActive = true }: Props) {
   const [selectedItemId, setSelectedItemId] = useState<string>();
   const [businessFields, setBusinessFields] = useState<PodBusinessFieldsDraft>(initialDraft.state.business_fields);
   const [listingFields, setListingFields] = useState<PodListingFieldsDraft>(initialDraft.state.listing_fields);
+  const [specCard, setSpecCard] = useState<SpecCardConfig>(initialDraft.state.spec_card ?? EMPTY_SPEC_CARD);
   const [batchCount, setBatchCount] = useState<PodBatchCount>(initialDraft.state.batch_count);
   const [customCountMode, setCustomCountMode] = useState(initialDraft.state.custom_count_mode);
   const [customCountInput, setCustomCountInput] = useState(initialDraft.state.custom_count_input);
@@ -198,6 +204,7 @@ export function PodCustomizationPage({ isActive = true }: Props) {
   const [currentBatchEdit, setCurrentBatchEdit] = useState<string | null>(initialDraft.state.current_batch_edit);
   const [systemTemplates, setSystemTemplates] = useState<PodSystemTemplate[]>(initialDraft.state.system_templates);
   const [templateDrawerOpen, setTemplateDrawerOpen] = useState(false);
+  const [specCardDrawerOpen, setSpecCardDrawerOpen] = useState(false);
   const [historyOpen, setHistoryOpen] = useState(false);
   const [failedRetryOpen, setFailedRetryOpen] = useState(false);
   const [pendingTemplateSwitch, setPendingTemplateSwitch] = useState<string | null>(null);
@@ -339,6 +346,7 @@ export function PodCustomizationPage({ isActive = true }: Props) {
       version: 3,
       business_fields: businessFields,
       listing_fields: listingFields,
+      spec_card: specCard,
       batch_count: batchCount,
       custom_count_mode: customCountMode,
       custom_count_input: customCountInput,
@@ -352,7 +360,7 @@ export function PodCustomizationPage({ isActive = true }: Props) {
     } else if (result.ok) {
       lastDraftSaveErrorRef.current = "";
     }
-  }, [batchCount, businessFields, currentBatchEdit, customCountInput, customCountMode, draftScope?.accountId, draftScope?.workspaceId, listingFields, selectedTemplateId, systemTemplates]);
+  }, [batchCount, businessFields, currentBatchEdit, customCountInput, customCountMode, draftScope?.accountId, draftScope?.workspaceId, listingFields, selectedTemplateId, specCard, systemTemplates]);
 
   // Resize multiline business textareas on mount and whenever their values change.
   // onChange handles live typing; this effect handles initial load and draft restore.
@@ -524,7 +532,7 @@ export function PodCustomizationPage({ isActive = true }: Props) {
       setError(`请填写：${missingRequired.map((field) => field.label).join("、")}。`);
       return;
     }
-    const listingFieldsResult = listingFieldsForApi(listingFields);
+    const listingFieldsResult = listingFieldsForApi(listingFields, specCard);
     const nextSkuFieldErrors = validateSkuFields(listingFields.skus);
     setSkuFieldErrors(nextSkuFieldErrors);
     if (Object.keys(nextSkuFieldErrors).length) {
@@ -533,6 +541,10 @@ export function PodCustomizationPage({ isActive = true }: Props) {
     }
     if (!listingFieldsResult.value) {
       setError(listingFieldsResult.error ?? "请完整填写店小秘上架信息。" );
+      return;
+    }
+    if (!isSpecCardConfigured(specCard)) {
+      setError("请先点击「批量添加尺寸」完成表格配置。");
       return;
     }
     const normalizedListingFields = listingFieldsResult.value;
@@ -846,6 +858,8 @@ export function PodCustomizationPage({ isActive = true }: Props) {
 
       {error && <div className="pod-page-message is-error" role="alert"><span>!</span><p>{error}</p><button type="button" onClick={clearMessages} aria-label="关闭提示">×</button></div>}
 
+      {!error && notice && <div className="pod-page-message" role="status"><span>✓</span><p>{notice}</p><button type="button" onClick={clearMessages} aria-label="关闭提示">×</button></div>}
+
       <div className="pod-workbench-grid">
         <aside className="pod-setup-column pod-brief-sidebar">
           <section className="pod-setup-card pod-business-editor">
@@ -887,6 +901,10 @@ export function PodCustomizationPage({ isActive = true }: Props) {
                     <button type="button" onClick={() => removeSku(index)} aria-label="删除 SKU">×</button>
                   </div>)}
                 </div>
+              </div>
+              <div className="pod-spec-card-entry" aria-label="规格卡配置">
+                <button type="button" className="pod-spec-card-entry-button" onClick={() => setSpecCardDrawerOpen(true)}>批量添加尺寸<em>*</em></button>
+                <span className={isSpecCardConfigured(specCard) ? "pod-spec-card-entry-summary" : "pod-spec-card-entry-summary is-warning"}>{specCardSummaryText(specCard)}</span>
               </div>
             </section>
             <div className="pod-volume-inline"><b>生成数量</b></div>
@@ -987,6 +1005,24 @@ export function PodCustomizationPage({ isActive = true }: Props) {
         busy={switchingTemplate}
         onClose={() => setPendingTemplateSwitch(null)}
         onConfirm={confirmTemplateSwitch}
+      />
+
+      <SpecCardDrawer
+        open={specCardDrawerOpen}
+        config={specCard}
+        batch={activeBatch}
+        baseTemplateId={selectedTemplate?.id}
+        onClose={() => setSpecCardDrawerOpen(false)}
+        onSave={(next) => {
+          setSpecCard(next);
+          setNotice(`规格卡配置已保存：${specCardSummaryText(next)}。`);
+        }}
+        onReprinted={(batchId, result) => {
+          setNotice(result.failed > 0
+            ? `全批重印完成：成功 ${result.reprinted} 款、失败 ${result.failed} 款，该批次需重新导出。`
+            : `全批重印完成：${result.reprinted} 款已更新，该批次需重新导出。`);
+          void refreshActiveBatch(batchId);
+        }}
       />
     </section>
   );

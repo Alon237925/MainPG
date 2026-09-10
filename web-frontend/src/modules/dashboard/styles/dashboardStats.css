@@ -188,58 +188,54 @@
     color-mix(in srgb, var(--theme-module-surface-soft, #fbf6f9) 70%, transparent);
 }
 
-.dashboard-linechart {
+.trend-svg {
   display: block;
   width: 100%;
   height: 240px;
 }
 
-.chart-transition {
-  transition: d .35s cubic-bezier(.4, 0, .2, 1);
-}
-
-.chart-grid {
+.trend-grid {
   stroke: color-mix(in srgb, var(--theme-module-border, #ecdbe6) 80%, transparent);
   stroke-width: 1;
   stroke-dasharray: 3 4;
 }
 
-.chart-axis {
+.trend-baseline {
   stroke: color-mix(in srgb, var(--theme-text-muted, #b9a5c2) 60%, transparent);
   stroke-width: 1.2;
 }
 
-.chart-tick {
+.trend-tick {
   fill: var(--theme-text-muted, #9c88a6);
   font-size: 11px;
   font-family: inherit;
 }
 
-.chart-area {
+.trend-area {
   opacity: .9;
   pointer-events: none;
 }
 
-.chart-line {
+.trend-line {
   fill: none;
   stroke-width: 2.4;
   stroke-linecap: round;
   stroke-linejoin: round;
 }
 
-.chart-dot {
+.trend-dot {
   stroke: #fff;
   stroke-width: 1.6;
   transition: r .15s ease;
 }
 
-.chart-hover-line {
+.trend-cursor {
   stroke: color-mix(in srgb, var(--theme-text-secondary, #8a6f96) 55%, transparent);
   stroke-width: 1;
   stroke-dasharray: 4 4;
 }
 
-.dashboard-trend-tooltip {
+.trend-tip {
   position: absolute;
   z-index: 5;
   top: 10px;
@@ -256,12 +252,16 @@
   pointer-events: none;
 }
 
-.dashboard-trend-tooltip strong {
+.trend-tip[data-flip="true"] {
+  transform: translateX(-100%);
+}
+
+.trend-tip strong {
   color: #4a2f5c;
   font-size: .86rem;
 }
 
-.dashboard-trend-tooltip span {
+.trend-tip span {
   display: flex;
   align-items: center;
   gap: 6px;
@@ -270,34 +270,18 @@
   white-space: nowrap;
 }
 
-.dashboard-trend-tooltip span b {
+.trend-tip span b {
   margin-left: auto;
   color: #3a2b52;
   font-variant-numeric: tabular-nums;
 }
 
-.dashboard-trend-tooltip i,
-.dashboard-trend-legend i {
+.trend-tip i {
   display: inline-block;
   width: 9px;
   height: 9px;
   border-radius: 3px;
   flex: none;
-}
-
-.dashboard-trend-tooltip i.is-processed,
-.dashboard-trend-legend i.is-processed {
-  background: #e23b4e;
-}
-
-.dashboard-trend-tooltip i.is-inbound,
-.dashboard-trend-legend i.is-inbound {
-  background: #2f6bff;
-}
-
-.dashboard-trend-tooltip i.is-sum,
-.dashboard-trend-legend i.is-sum {
-  background: #e1568a;
 }
 
 .dashboard-trend-mode {
@@ -713,7 +697,7 @@
   }
 
   .dashboard-trend-plot,
-  .dashboard-linechart {
+  .trend-svg {
     min-height: 220px;
     height: 220px;
   }
