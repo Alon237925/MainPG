@@ -2,6 +2,7 @@ import { apiRequest } from "../../../shared/api/apiClient";
 import { ppRequest, ppUpload, type ApiContext } from "./client";
 import type {
   DraftMediaResponse,
+  DraftSkuAvailabilityResponse,
   MediaAssetView,
   MiaoshouExportResponse,
   MiaoshouTemplateKind,
@@ -77,6 +78,11 @@ export type PreviewSavePayload = {
     core_fields: PreviewCoreFields;
     image_manifest_v2: PreviewImageManifest;
     shipping_package_records?: Record<string, ShippingPackageRecordOverride>;
+    variant_image_mode?: "source" | "main";
+    /** 被整行剔除的 SKU 变种键：导出时该变种不产生表格行。 */
+    excluded_variant_keys?: string[];
+    /** 逐个 SKU 指定的规格图：键=变种键，值=预览资产 ID 或 http(s) 图片地址。 */
+    variant_image_overrides?: Record<string, string>;
   };
 };
 
@@ -124,6 +130,19 @@ export async function uploadPreviewAssets(
   form.append("draft_id", String(draftId));
   files.forEach((file) => form.append("image_files", file));
   return ppUpload(ctx, `/api/product-processing/tasks/${taskId}/preview/assets`, form);
+}
+
+/** 把外部图片经后端图床转存成本商品的预览资产，拿到同源地址后即可框选裁剪。 */
+export async function importPreviewAssetFromUrl(
+  ctx: ApiContext,
+  taskId: number,
+  draftId: number,
+  url: string,
+): Promise<{ asset: PreviewImageAsset }> {
+  return ppRequest(ctx, `/api/product-processing/tasks/${taskId}/preview/assets/import-url`, {
+    method: 'POST',
+    body: { draft_id: draftId, url },
+  });
 }
 
 export function saveProductPreview(
@@ -239,4 +258,15 @@ export function retryMediaAsset(
     `/api/product-processing/media-assets/${encodeURIComponent(assetId)}/retry`,
     { method: "POST", body: {} },
   );
+}
+
+/** 草稿池「SKU 规格图可用性判断」：并行检测所选/当前页链接的 SKU 规格图是否含中文。 */
+export function checkDraftSkuAvailability(
+  ctx: ApiContext,
+  draftIds: number[],
+): Promise<DraftSkuAvailabilityResponse> {
+  return ppRequest(ctx, `/api/product-processing/drafts/sku-availability`, {
+    method: "POST",
+    body: { draft_ids: draftIds },
+  });
 }

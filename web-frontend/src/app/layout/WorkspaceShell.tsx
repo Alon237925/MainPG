@@ -12,6 +12,10 @@ import {
 } from "../navigation/modules";
 import { Sidebar } from "./Sidebar";
 import { TopNavigation, type WorkspaceTab } from "./TopNavigation";
+import { PeachGarden } from "../../shared/components/PeachGarden";
+import { InkTap } from "../../shared/components/InkTap";
+import { useTheme } from "../../shared/hooks/useTheme";
+import { useUiMode } from "../../shared/hooks/useUiMode";
 import { WorkspaceHomePage } from "../../modules/dashboard/pages/WorkspaceHomePage";
 import { DailySelectionPage } from "../../modules/daily_selection/pages/DailySelectionPage";
 import { ProfitActivityProductsPage } from "../../modules/profit_activity/pages/ProfitActivityProductsPage";
@@ -80,6 +84,9 @@ function moduleTab(id: WorkspaceModuleId, flatModules: WorkspaceModule[]): Works
 }
 
 export function WorkspaceShell({ currentRole = "operator", onSignOut, playEntryAnimation = false, onEntryAnimationComplete = () => undefined }: WorkspaceShellProps) {
+  const { theme } = useTheme();
+  const { uiMode } = useUiMode();
+
   const [sidebarCollapsed, setSidebarCollapsed] = useState(false);
   const [sidebarHovered, setSidebarHovered] = useState(false);
   const [isNarrowDesktop, setIsNarrowDesktop] = useState(() => window.matchMedia(NARROW_DESKTOP_QUERY).matches);
@@ -479,6 +486,8 @@ export function WorkspaceShell({ currentRole = "operator", onSignOut, playEntryA
 
   return (
     <main className={`workspace-shell${playEntryAnimation ? " is-brand-entering" : ""}`}>
+      <PeachGarden theme={theme} uiMode={uiMode} />
+      <InkTap theme={theme} uiMode={uiMode} />
       <Sidebar
         collapsed={sidebarIsCollapsed && !sidebarTemporarilyExpanded}
         activeId={activeModuleId}

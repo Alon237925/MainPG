@@ -7,8 +7,9 @@ import threading
 import time
 
 from collections.abc import Mapping
-from contextlib import asynccontextmanager
+from contextlib import asynccontextmanager, closing
 from pathlib import Path
+import sqlite3
 from typing import Any
 
 from fastapi import Depends, FastAPI, HTTPException, Query, Request
@@ -60,6 +61,7 @@ from ..data_collection.shop_routes import (
 from ..data_collection.shop_worker import ShopCollectionWorker
 from ..db import init_db
 from ..modules.basic_settings.router import create_router as create_basic_settings_router
+from ..modules.themes.router import create_themes_router
 from ..modules.ai_service import create_router as create_ai_service_router
 from ..modules.ai_service.temporary_cos import TemporaryCosStore
 from ..messages import (
@@ -444,6 +446,15 @@ def create_app(database_path: Path | None = None) -> FastAPI:
         app.include_router(create_admin_proxy_router(remote_customer_auth, customer_sessions))
 
     app.include_router(create_basic_settings_router(db_path))
+    # 主题商店资源：优先读运行根目录下的源码包(wh_local/data/themes)，打包构建
+    # 时再回退到 PyInstaller 解包目录。客户端走公网下载，此路由仅服务端/开发机需要，
+    # 找不到目录时挂空列表，不影响启动。
+    _themes_candidates = [
+        config.runtime_root / "wh_local" / "data" / "themes",
+        Path(getattr(sys, "_MEIPASS", config.runtime_root)) / "wh_local" / "data" / "themes",
+    ]
+    themes_dir = next((p for p in _themes_candidates if p.is_dir()), Path("_no_themes_dir"))
+    app.include_router(create_themes_router(themes_dir))
     ai_service_assets = config.data_dir / "ai-service" / "assets"
     app.include_router(
         create_ai_service_router(
@@ -531,11 +542,29 @@ def create_app(database_path: Path | None = None) -> FastAPI:
     )
 
     # 公告消息：从公告发布后台定时同步，前端右上角站内信读取。
+    # 定向发送：同步时携带最近登录的远端账号 ID，后台据此返回发给该账号的定向公告。
+    def _current_remote_account_id() -> str:
+        try:
+            with closing(sqlite3.connect(db_path)) as conn:
+                row = conn.execute(
+                    "SELECT account_id FROM auth_accounts ORDER BY updated_at DESC LIMIT 1"
+                ).fetchone()
+                if row and row[0]:
+                    return str(row[0])
+                # 老版本登录镜像没有 auth_accounts 行：回退到 customer_users。
+                row = conn.execute(
+                    "SELECT remote_customer_id FROM customer_users ORDER BY updated_at DESC LIMIT 1"
+                ).fetchone()
+                return str(row[0] or "") if row else ""
+        except Exception:
+            return ""
+
     messages_repository = MessagesRepository(db_path)
     messages_sync = AnnouncementSyncService(
         messages_repository,
         config.announce_base_url,
         interval_seconds=180,
+        account_id_provider=_current_remote_account_id,
     )
     app.include_router(create_messages_router(messages_repository, messages_sync))
     app.state.messages_sync = messages_sync
