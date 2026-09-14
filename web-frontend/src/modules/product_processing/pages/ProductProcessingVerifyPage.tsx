@@ -4,10 +4,9 @@ import { useChangePoller } from '../../../shared/hooks/useChangePoller';
 import { SkuBatchManager } from '../components/SkuBatchManager';
 import { ppRequest, type ApiContext } from '../api/client';
 import { productProcessingApiContext } from '../api/context';
-import { checkDraftSkuAvailability, type DraftCollectionBatch } from '../api/productProcessingApi';
+import { type DraftCollectionBatch } from '../api/productProcessingApi';
 import { variantPresentation } from '../data/skuPresentation';
 import type {
-  DraftSkuAvailabilityItem,
   DraftSummary,
   DraftVariant,
   ProductProcessingOptions,
@@ -121,11 +120,6 @@ export function ProductProcessingVerifyPage({ onStartProcessing, isActive = true
   const [batchBusy, setBatchBusy] = useState(false);
   // 批次列表是否还有更多（后端 limit 上限 200，超出时提示，避免以为“只有这么多”）
   const [batchesHasMore, setBatchesHasMore] = useState(false);
-  // SKU 规格图可用性判断：draftId -> 判定结果。仅在内存中保留，点按钮后并行检测。
-  const [skuAvailability, setSkuAvailability] = useState<Record<number, DraftSkuAvailabilityItem>>({});
-  const [skuAvailabilityBusy, setSkuAvailabilityBusy] = useState(false);
-  // 只看 SKU 直用：判断完成后一键筛出「规格图干净、可直接作图」的草稿
-  const [onlyCleanSku, setOnlyCleanSku] = useState(false);
   const draftListRef = useRef<HTMLDivElement>(null);
   const stickyToolbarRef = useRef<HTMLDivElement>(null);
   const stickySpacerRef = useRef<HTMLDivElement>(null);
@@ -244,15 +238,7 @@ export function ProductProcessingVerifyPage({ onStartProcessing, isActive = true
     () => drafts.filter((d) => selectedIds.has(d.id) && d.status !== 'deleted' && d.status !== 'processed' && d.status !== 'processing'),
     [drafts, selectedIds]
   );
-  // SKU 可用性判断已覆盖的草稿数 / 其中判定为可直接使用的数量
-  const skuJudgedCount = useMemo(
-    () => selectableDrafts.reduce((sum, d) => sum + (skuAvailability[d.id] ? 1 : 0), 0),
-    [selectableDrafts, skuAvailability]
-  );
-  const cleanSkuCount = useMemo(
-    () => selectableDrafts.reduce((sum, d) => sum + (skuAvailability[d.id]?.clean ? 1 : 0), 0),
-    [selectableDrafts, skuAvailability]
-  );
+  // SKU 原图可用性判断已移到「处理设置」页（点开始处理之后的页面）自动执行
   const filteredDrafts = useMemo(() => {
     const keyword = searchTerm.trim().toLowerCase();
     return selectableDrafts.filter((d) => {
@@ -262,15 +248,13 @@ export function ProductProcessingVerifyPage({ onStartProcessing, isActive = true
       if (skuCountFilter > 1 && variantCount >= skuCountFilter) return false;
       // 不看单规格：隐藏无变种 / 仅 1 个变种的单规格草稿
       if (hideSingleSpec && variantCount <= 1) return false;
-      // 只看 SKU 直用：仅保留可用性判断为「规格图干净」的草稿
-      if (onlyCleanSku && !skuAvailability[d.id]?.clean) return false;
       if (!keyword) return true;
       // 搜索框只按标题搜索
       return [d.title, d.product_name, raw.source_title]
         .filter(Boolean)
         .some((value) => String(value).toLowerCase().includes(keyword));
     });
-  }, [selectableDrafts, searchTerm, skuCountFilter, hideSingleSpec, onlyCleanSku, skuAvailability]);
+  }, [selectableDrafts, searchTerm, skuCountFilter, hideSingleSpec]);
   const totalDrafts = filteredDrafts.length;
   const totalPages = Math.max(1, Math.ceil(totalDrafts / pageSize));
   const pageStart = (page - 1) * pageSize;
@@ -535,28 +519,6 @@ export function ProductProcessingVerifyPage({ onStartProcessing, isActive = true
     setSkuBatchOpen(true);
   };
 
-  // SKU 规格图可用性判断：有勾选时判断已勾选链接，无勾选时判断当前页链接。
-  // 检测在服务端并行执行；结果只保留在内存里，不落库、不影响草稿状态。
-  const runSkuAvailabilityCheck = async () => {
-    const targets = (selectedIds.size ? selectedDrafts : pageDrafts).map((draft) => draft.id);
-    if (!targets.length) { setError('当前没有可判断的链接'); return; }
-    setSkuAvailabilityBusy(true);
-    setError('');
-    try {
-      const data = await checkDraftSkuAvailability(ctx, targets);
-      setSkuAvailability((prev) => {
-        const next = { ...prev };
-        for (const item of data.results || []) next[item.draft_id] = item;
-        return next;
-      });
-      const summary = data.summary || { total: 0, clean: 0, unavailable: 0, skipped: 0 };
-      notify(
-        `SKU 可用性判断完成：可用 ${summary.clean} 条，不可用 ${summary.unavailable} 条，`
-        + `跳过（SKU 规格图 ≥ 20 张）${summary.skipped} 条`,
-      );
-    } catch (err) { fail(err); } finally { setSkuAvailabilityBusy(false); }
-  };
-
   const saveRow = async (draft: DraftSummary) => {
     setLoading(true);
     try {
@@ -702,13 +664,6 @@ export function ProductProcessingVerifyPage({ onStartProcessing, isActive = true
             <button className={batchesOpen ? 'is-active' : ''} onClick={() => { setBatchesOpen((value) => !value); if (!batchesOpen) refreshBatches(); }} disabled={batchBusy}><i className="iconfont icon-appstore" aria-hidden="true" />采集批次{draftBatches.length ? `（${draftBatches.length}）` : ''}</button>
             <button onClick={toggleSelectAllPage} disabled={!pageDrafts.length}><i className={`iconfont ${allPageSelected ? 'icon-close-circle' : 'icon-select'}`} aria-hidden="true" />{allPageSelected ? '取消全选' : '全选本页'}</button>
             <button onClick={openSkuBatch} disabled={!selectedIds.size}><i className="iconfont icon-barcode" aria-hidden="true" />批量管理 SKU</button>
-            <button onClick={() => void runSkuAvailabilityCheck()} disabled={skuAvailabilityBusy} title="并行检测链接的 SKU 规格图是否含中文水印；SKU 规格图 ≥ 20 张的链接自动跳过"><i className="iconfont icon-check-circle" aria-hidden="true" />{skuAvailabilityBusy ? '判断中…' : 'SKU 可用性判断'}</button>
-            <button
-              className={onlyCleanSku ? 'is-active' : ''}
-              onClick={() => { setOnlyCleanSku((value) => !value); setPage(1); }}
-              disabled={!skuJudgedCount && !onlyCleanSku}
-              title={skuJudgedCount ? `一键筛出规格图干净的草稿（当前判定可直用 ${cleanSkuCount} 条）` : '请先执行「SKU 可用性判断」'}
-            ><i className="iconfont icon-filter" aria-hidden="true" />只看 SKU 直用{onlyCleanSku ? `（${cleanSkuCount}）` : ''}</button>
             <button className="primary" onClick={() => handleProcess(false)} disabled={loading || !selectedIds.size}><i className="iconfont icon-rocket" aria-hidden="true" />开始处理</button>
             <button className={canUndoDelete ? 'undo-delete' : ''} onClick={handleDeleteOrUndo} disabled={loading || (!selectedIds.size && !deletedBatch)} title={canUndoDelete ? `恢复最近删除的 ${deletedBatch?.ids.length || 0} 条草稿` : '删除已勾选草稿'}>{canUndoDelete ? <span aria-hidden="true">↶</span> : <i className="iconfont icon-delete" aria-hidden="true" />}{canUndoDelete ? `撤回删除（${deletedBatch?.ids.length || 0}）` : '删除选择'}</button>
             <button onClick={() => refresh().catch(fail)} disabled={loading}><i className="iconfont icon-sync" aria-hidden="true" />刷新</button>
@@ -723,7 +678,7 @@ export function ProductProcessingVerifyPage({ onStartProcessing, isActive = true
               {hiddenSelectedCount > 0 && <em>（{hiddenSelectedCount} 条被筛选隐藏）</em>}
             </span>
             <span><i className="iconfont icon-file-text" aria-hidden="true" />本页 <strong>{pageDrafts.length}</strong></span>
-            {(skuCountFilter > 1 || hideSingleSpec || onlyCleanSku) && (
+            {(skuCountFilter > 1 || hideSingleSpec) && (
               <span><i className="iconfont icon-filter" aria-hidden="true" />筛选后 <strong>{totalDrafts}</strong></span>
             )}
             {dirtyCount > 0 && <span className="dirty"><i className="iconfont icon-save" aria-hidden="true" />未保存修改 <strong>{dirtyCount}</strong></span>}
@@ -869,9 +824,6 @@ export function ProductProcessingVerifyPage({ onStartProcessing, isActive = true
             const isSelected = selectedIds.has(draft.id);
             return (
               <article key={draft.id} className={`pool-card ${isSelected ? 'selected' : ''}`}>
-                {skuAvailability[draft.id]?.clean && (
-                  <span className="pool-sku-availability-tag" title="该链接的 SKU 规格图均无明显中文水印，可直接用于作图"><i className="iconfont icon-check-circle" aria-hidden="true" />sku规格图可用</span>
-                )}
                 <div className="pool-card-body">
                   <label className="pool-check">
                     <input type="checkbox" checked={isSelected} onChange={onSelect} />

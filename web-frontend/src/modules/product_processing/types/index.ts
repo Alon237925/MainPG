@@ -316,7 +316,7 @@ export type DraftMediaResponse = {
   groups: DraftMediaGroups & Record<string, MediaBindingView[]>;
 };
 
-/** 草稿池「SKU 规格图可用性判断」单条链接结果。 */
+/** 处理设置页「SKU 规格图可用性判断」单条链接结果。 */
 export type DraftSkuAvailabilityItem = {
   draft_id: number;
   status: "pending" | "clean" | "unavailable" | "skipped" | "missing";
@@ -326,6 +326,10 @@ export type DraftSkuAvailabilityItem = {
   chinese: string[];
   failed: number;
   reason: string;
+  /** 检出中文的 SKU 变种导出键（「优化链接 SKU」据此剔除对应变种）。 */
+  chinese_variant_keys?: string[];
+  /** 该链接所有有规格图的 SKU 都检出中文：不剔除，回退商品主图以免整条商品消失。 */
+  all_sku_chinese?: boolean;
 };
 
 export type DraftSkuAvailabilityResponse = {

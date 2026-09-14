@@ -260,7 +260,7 @@ export function retryMediaAsset(
   );
 }
 
-/** 草稿池「SKU 规格图可用性判断」：并行检测所选/当前页链接的 SKU 规格图是否含中文。 */
+/** 处理设置页「SKU 规格图可用性判断」：检测所选链接的 SKU 规格图是否含中文水印。 */
 export function checkDraftSkuAvailability(
   ctx: ApiContext,
   draftIds: number[],
