@@ -226,7 +226,7 @@
 
 .pod-gallery { min-width: 0; min-height: 0; padding: 16px; }
 .pod-gallery-header { display: flex; align-items: center; justify-content: space-between; gap: 12px 16px; flex-wrap: wrap; }
-.pod-gallery-headline { display: flex; align-items: center; gap: 12px; min-width: 0; flex: 1 1 auto; }
+.pod-gallery-headline { display: flex; align-items: center; justify-content: space-between; gap: 12px; min-width: 0; flex: 1 1 auto; }
 .pod-gallery-title { min-width: 0; }
 .pod-gallery-title > span { color: var(--pod-primary); font-size: .61rem; font-weight: 900; letter-spacing: .09em; }
 .pod-gallery-header h2 { overflow: hidden; margin: 4px 0 3px; font-size: 1.08rem; text-overflow: ellipsis; white-space: nowrap; }
@@ -561,7 +561,7 @@
 .pod-listing-sku-dimensions [role="columnheader"] { min-width: 0; padding: 8px 7px; overflow: hidden; color: var(--pod-text); font-size: .58rem; font-weight: 800; text-overflow: ellipsis; white-space: nowrap; }
 .pod-listing-sku-dimensions [role="columnheader"] { color: var(--pod-text-secondary); background: var(--pod-surface-tint); font-size: .55rem; }
 .pod-listing-legacy-dimensions dl { grid-template-columns: repeat(3, minmax(0, 1fr)); }
-.pod-gallery-header-actions { display: flex; flex-wrap: wrap; align-items: center; justify-content: flex-end; gap: 8px 12px; flex: 0 1 auto; }
+.pod-gallery-header-actions { display: flex; flex-wrap: wrap; align-items: center; justify-content: flex-end; gap: 8px 12px; flex: 0 1 auto; margin-left: auto; }
 .pod-dianxiaomi-export { display: flex; flex-direction: column; align-items: flex-end; gap: 5px; }
 .pod-export-buttons { display: flex; flex-wrap: wrap; align-items: center; justify-content: flex-end; gap: 5px; }
 .pod-dianxiaomi-export button { min-height: 34px; padding: 7px 10px; border: 1px solid var(--pod-border-strong); border-radius: 9px; color: #fff; background: var(--theme-primary-button-gradient, linear-gradient(105deg, #087bf5, #14c8c0)); font-size: .63rem; font-weight: 850; white-space: nowrap; }
@@ -662,6 +662,7 @@
   .pod-gallery { padding: 12px; }
   .pod-gallery-header { align-items: flex-start; }
   .pod-gallery-headline { flex-wrap: wrap; }
+  .pod-gallery-header-actions { margin-left: 0; }
   .pod-batch-status { width: fit-content; }
   .pod-dianxiaomi-export { align-items: flex-start; }
   .pod-export-buttons { justify-content: flex-start; }

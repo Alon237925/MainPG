@@ -104,13 +104,13 @@ export function PodBatchGallery({ batch, busyAction, onOpenResult, onRegenerateS
         </div>
         {batchStatusDetail && <small className="pod-batch-status-detail">{batchStatusDetail}</small>}
         <div className="pod-dianxiaomi-export">
-          <button type="button" className="pod-open-failed-retry" disabled={!canRetryBatch || Boolean(busyAction)} title={retryBlockReason || "批量重试失败款式"} onClick={onOpenFailedRetry}>批量重试失败项</button>
-          {!canRetryBatch && retryBlockReason && <small>{retryBlockReason}</small>}
           <div className="pod-export-buttons">
+            <button type="button" className="pod-open-failed-retry" disabled={!canRetryBatch || Boolean(busyAction)} title={retryBlockReason || "批量重试失败款式"} onClick={onOpenFailedRetry}>批量重试失败项</button>
             <button type="button" disabled={!canExport} title={exportButtonTitle} onClick={onExportDianxiaomi}>{exporting ? "正在导出店小秘表格" : "导出店小秘表格"}</button>
             <button type="button" disabled={!canExport} title={exportButtonTitle} onClick={() => onExportMiaoshou("apparel")}>{exportingMiaoshou === "apparel" ? "正在导出妙手表格" : "导出妙手表格（服饰）"}</button>
             <button type="button" disabled={!canExport} title={exportButtonTitle} onClick={() => onExportMiaoshou("general")}>{exportingMiaoshou === "general" ? "正在导出妙手表格" : "导出妙手表格（非服饰）"}</button>
           </div>
+          {!canRetryBatch && retryBlockReason && <small>{retryBlockReason}</small>}
           {(exportStatus.selected_exportable_style_count !== undefined || exportStatus.user_excluded_style_count !== undefined) && <small>已选可导出 {exportStatus.selected_exportable_style_count ?? exportStatus.exportable_style_count} 款 · 用户排除 {exportStatus.user_excluded_style_count ?? 0} 款</small>}
           {!canExport && <small>{exportBlockReason}</small>}
         </div>
