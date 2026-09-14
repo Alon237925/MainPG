@@ -64,6 +64,7 @@ from ..modules.basic_settings.router import create_router as create_basic_settin
 from ..modules.themes.router import create_themes_router
 from ..modules.ai_service import create_router as create_ai_service_router
 from ..modules.ai_service.temporary_cos import TemporaryCosStore
+from ..modules.help_agent import create_router as create_help_agent_router
 from ..messages import (
     AnnouncementSyncService,
     MessagesRepository,
@@ -463,6 +464,7 @@ def create_app(database_path: Path | None = None) -> FastAPI:
             legacy_pod_enabled=False,
         )
     )
+    app.include_router(create_help_agent_router(db_path))
     pod_ai_runtime = PodCustomizationAiRuntime(image_workers=8, batch_workers=2)
     pod_title_runtime = PodTitleRuntime(executor_workers=8, provider_concurrency=8)
     pod_brief_runtime = PodBriefRuntime(executor_workers=2, provider_concurrency=2)

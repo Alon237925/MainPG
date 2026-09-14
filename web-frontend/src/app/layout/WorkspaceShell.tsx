@@ -41,6 +41,7 @@ import type { DimensionCanvasItem, DimensionNotification } from "../../modules/p
 import { DimensionNotificationRefreshFence } from "../../modules/product_processing/data/dimensionNotificationRefresh";
 import { EmptyModulePage } from "../../shared/components/EmptyModulePage";
 import { BrandEntryAnimation } from "../../shared/components/BrandEntryAnimation";
+import { HelpAgentWidget } from "../../modules/help_agent/components/HelpAgentWidget";
 import { WorkspaceTabScrollStore } from "./workspaceTabState";
 
 type WorkspaceShellProps = {
@@ -540,6 +541,7 @@ export function WorkspaceShell({ currentRole = "operator", onSignOut, playEntryA
       >
         <span aria-hidden="true">↑</span>
       </button>
+      <HelpAgentWidget />
       <BrandEntryAnimation active={playEntryAnimation} onComplete={onEntryAnimationComplete} />
     </main>
   );
