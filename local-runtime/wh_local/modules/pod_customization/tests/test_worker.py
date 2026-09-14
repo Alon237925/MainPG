@@ -1090,7 +1090,7 @@ def test_batch_retry_billing_resume_reuses_the_persisted_selection(tmp_path: Pat
     runtime.close()
 
 
-def test_batch_retry_rejects_a_style_without_four_failed_images_before_freezing(tmp_path: Path) -> None:
+def test_batch_retry_rejects_a_fully_completed_style_before_freezing(tmp_path: Path) -> None:
     runtime = ListingOnlyRuntime([])
     billing = BillingCoordinator()
     service = _service(tmp_path, runtime, billing)
@@ -1101,7 +1101,7 @@ def test_batch_retry_rejects_a_style_without_four_failed_images_before_freezing(
     freezes_before = len(billing.freezes)
     before = service.get_batch(actor, batch["id"])
 
-    with pytest.raises(PodRepositoryError, match="all four images failed") as captured:
+    with pytest.raises(PodRepositoryError, match="unfinished images") as captured:
         service.retry_failed(
             actor,
             batch["id"],
@@ -1112,6 +1112,39 @@ def test_batch_retry_rejects_a_style_without_four_failed_images_before_freezing(
     assert captured.value.status_code == 409
     assert len(billing.freezes) == freezes_before
     assert service.get_batch(actor, batch["id"])["items"] == before["items"]
+    service.close()
+    runtime.close()
+
+
+def test_batch_retry_accepts_a_partially_completed_style(tmp_path: Path) -> None:
+    """断电中断会留下「部分完成」的款式：该款必须能整款重试，而不是被卡死。"""
+    runtime = ListingOnlyRuntime([])
+    billing = BillingCoordinator()
+    service = _service(tmp_path, runtime, billing, title_runtime=object())
+    actor = _actor()
+    template = _ready_template(service, actor)
+    batch = _create_batch(service, actor, template["id"])
+    _prepare_batch_retry_candidates(service, batch["id"])
+    with service.repository._connect() as connection:
+        connection.execute(
+            """UPDATE pod_customization_style_grid_results
+               SET status = 'completed', pattern_asset_id = 'pattern', composite_asset_id = 'composite'
+               WHERE batch_id = ? AND style_index = 1 AND variant_index = 1""",
+            (batch["id"],),
+        )
+    service.worker.submit_batch_retry = lambda *_args: None
+
+    service.retry_failed(actor, batch["id"], image_style_indices=[1], title_style_indices=[])
+
+    with service.repository._connect() as connection:
+        statuses = [
+            row["status"] for row in connection.execute(
+                """SELECT status FROM pod_customization_style_grid_results
+                   WHERE batch_id = ? AND style_index = 1 ORDER BY variant_index""",
+                (batch["id"],),
+            ).fetchall()
+        ]
+    assert statuses == ["generating_pattern"] * 4
     service.close()
     runtime.close()
 

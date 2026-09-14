@@ -60,7 +60,9 @@ test("the spec-card configuration is frozen into the create-batch listing snapsh
   // 必填口径：每个 SKU 行的长/宽/高（第 2/3/4 列）都要非空，表头行与第 1 列不参与。
   assert.match(modelSource, /\[1, 2, 3\]\.every\(\(column\) => typeof row\[column\] === "string" && row\[column\]\.trim\(\)\.length > 0\)/);
   assert.match(modelSource, /export function specCardSummaryText\(config: SpecCardConfig \| null \| undefined\): string \{/);
-  assert.match(modelSource, /return `\$\{rows\} 行 · \$\{style\} · \$\{corner\}`;/);
+  // 用户规格（2026-09-12）：关掉「印到图上」时摘要补一句，页面上能看出素材图不带卡片。
+  assert.match(modelSource, /const printing = config\.enabled \? "" : " · 不印图";/);
+  assert.match(modelSource, /return `\$\{rows\} 行 · \$\{style\} · \$\{corner\}\$\{printing\}`;/);
   assert.match(modelSource, /if \(!config \|\| !isSpecCardConfigured\(config\)\) return "未配置";/);
   assert.match(modelSource, /export const EMPTY_SPEC_CARD: SpecCardConfig = \{/);
 });
@@ -80,8 +82,22 @@ test("the drawer mirrors the shared drawer shell with dialog semantics", () => {
 test("the drawer edits the table, the style and the corner through the dedicated sections", () => {
   assert.match(drawerSource, /<SpecCardTableEditor cells=\{cells\} onChange=\{setCells\} disabled=\{readOnly\} \/>/);
   assert.match(drawerSource, /<SpecCardAppearanceControls[\s\S]*?onCornerChange=\{setCorner\}/);
-  assert.match(drawerSource, /<SpecCardPreview cells=\{cells\} style=\{style\} corner=\{corner\} baseTemplateId=\{baseTemplateId\} \/>/);
+  assert.match(drawerSource, /<SpecCardPreview cells=\{cells\} style=\{style\} corner=\{corner\} enabled=\{enabled\} baseTemplateId=\{baseTemplateId\} \/>/);
   assert.match(appearanceSource, /const CORNER_OPTIONS: SpecCardCorner\[\] = \["top-left", "top-right", "bottom-left", "bottom-right"\];/);
+
+  // 用户规格（2026-09-12）：卡片外观里新增「是否印到图上」，关掉后素材图保持干净母版（长/宽/高仍照常导出）。
+  assert.match(appearanceSource, /export function SpecCardAppearanceControls\(\{ style, corner, enabled, onStyleChange, onCornerChange, onEnabledChange, disabled = false \}: Props\)/);
+  assert.match(appearanceSource, /const PRINT_OPTIONS: Array<\{ value: boolean; label: string; hint: string \}> = \[/);
+  assert.match(appearanceSource, /\{ value: true, label: "印到图上", hint: "素材图带尺寸卡片" \}/);
+  assert.match(appearanceSource, /\{ value: false, label: "不印", hint: "素材图保持干净" \}/);
+  assert.match(appearanceSource, /aria-label="是否印到图上"/);
+  assert.match(appearanceSource, /data-print=\{option\.value \? "on" : "off"\}/);
+  assert.match(appearanceSource, /onClick=\{\(\) => onEnabledChange\(option\.value\)\}/);
+  assert.match(drawerSource, /const \[enabled, setEnabled\] = useState\(config\.enabled\);/);
+  assert.match(drawerSource, /setEnabled\(next\.enabled\);/);
+  assert.match(drawerSource, /onEnabledChange=\{setEnabled\}/);
+  assert.match(drawerSource, /const currentConfig = \(\): SpecCardConfig => \(\{\s*enabled,/);
+  assert.match(drawerSource, /enabled: next\.enabled,/);
   assert.match(appearanceSource, /role="radiogroup" aria-label="卡片位置"/);
   assert.match(appearanceSource, /data-corner=\{option\}/);
   assert.match(styles, /\.pod-spec-card-corner-grid \{ display: grid;[\s\S]*?grid-template-columns: repeat\(2, minmax\(0, 1fr\)\);/);

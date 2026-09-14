@@ -767,13 +767,15 @@ class PodCustomizationRepository:
 
     def recover_interrupted_batches(self) -> int:
         now = _now()
-        message = "POD 批次中断，未完成款式已记为失败，可从失败项重试"
+        message = "上次运行未正常结束（强制关机或断电），批次已停止，未完成款式已记为失败，可整款重试"
         with self._connect() as connection:
+            # 断电/强杀后批次可能停在任意非终态：既有正在生成的阶段，也有
+            # 只入队未开工的 queued，以及暂停/取消请求尚未落地的过渡态。
+            # 三者都必须收敛到终态，否则前端会一直显示「运行中」且无法重试。
             rows = connection.execute(
-                """SELECT batches.batch_id FROM pod_customization_batches AS batches
-                   INNER JOIN pod_customization_style_grid_batches AS style_grids
-                     ON style_grids.batch_id = batches.batch_id
-                   WHERE batches.status IN ('generating_patterns', 'compositing', 'generating_titles')"""
+                """SELECT batch_id FROM pod_customization_batches
+                   WHERE status IN ('queued', 'generating_patterns', 'compositing',
+                                    'generating_titles', 'pausing', 'cancelling')"""
             ).fetchall()
             for row in rows:
                 batch_id = row["batch_id"]
@@ -2857,8 +2859,8 @@ class PodCustomizationRepository:
                        WHERE batch_id = ? AND style_index = ? ORDER BY variant_index""",
                     (batch_id, style_index),
                 ).fetchall()
-                if len(rows) != 4 or any(row["status"] != "failed" for row in rows):
-                    raise PodRepositoryError("only styles with all four images failed can be retried", 409)
+                if len(rows) != 4 or all(row["status"] == "completed" for row in rows):
+                    raise PodRepositoryError("only styles with unfinished images can be retried", 409)
 
             for style_index in title_style_indices:
                 title = connection.execute(
@@ -2896,14 +2898,16 @@ class PodCustomizationRepository:
                 raise PodRepositoryError("POD batch must settle before retrying failed styles", 409)
 
             for style_index in image_style_indices:
+                # 一款的四张图来自同一次 2×2 生图调用，重试即整款重生成，
+                # 因此这里连同已完成的槽位一起重置（部分完成的款式也能重试）。
                 updated = connection.execute(
                     """UPDATE pod_customization_style_grid_results
                        SET status = 'generating_pattern', error_message = '', updated_at = ?
-                       WHERE batch_id = ? AND style_index = ? AND status = 'failed'""",
+                       WHERE batch_id = ? AND style_index = ?""",
                     (now, batch_id, style_index),
                 )
                 if updated.rowcount != 4:
-                    raise PodRepositoryError("only styles with all four images failed can be retried", 409)
+                    raise PodRepositoryError("POD style must keep its four image slots", 409)
                 title_reset = connection.execute(
                     """UPDATE pod_customization_style_titles
                        SET style_task_id = '', status = 'queued', title = '', normalized_title = NULL,

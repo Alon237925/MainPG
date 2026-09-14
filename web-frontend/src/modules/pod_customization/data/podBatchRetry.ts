@@ -22,11 +22,13 @@ export function batchRetryCandidates(styles: readonly PodStyleRow[]): {
   const image: PodBatchRetryCandidate[] = [];
   const title: PodBatchRetryCandidate[] = [];
   for (const style of styles) {
-    if (style.results.length === 4 && style.results.every((result) => result?.status === "failed")) {
+    // 一款的四张图来自同一次生图调用：只要还有槽位未完成（含断电中断留下的
+    // 部分完成），该款就应当可整款重试；仅四张全完成时不再重生成。
+    if (style.results.length === 4 && style.results.some((result) => result?.status !== "completed")) {
       image.push({
         styleIndex: style.index,
         title: style.title,
-        reason: firstFailureReason(style.results) || "四张图片均生成失败",
+        reason: firstFailureReason(style.results) || "存在未完成的图片",
       });
       continue;
     }

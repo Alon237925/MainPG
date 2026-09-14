@@ -684,6 +684,9 @@ class PodCustomizationService:
         """
 
         config = self._validated_spec_card_config(config_mapping)
+        if not config.enabled:
+            # 「不印到图上」：预览与生成结果一致 —— 直接给干净底图（无底图时给空白示意底图）。
+            return base_content or blank_spec_card_base_jpeg(self.SPEC_CARD_PREVIEW_BASE_SIDE)
         request = spec_card.SpecCardRequest(
             cells=config.cells, style=config.style, corner=config.corner
         )
@@ -752,15 +755,20 @@ class PodCustomizationService:
             pattern_asset_id, batch["workspace_id"], batch["owner_user_id"]
         )
         base_content = self.assets.read(asset["relative_path"])
-        result = spec_card.render_spec_card(
-            base_content,
-            spec_card.SpecCardRequest(cells=config.cells, style=config.style, corner=config.corner),
-        )
+        if config.enabled:
+            result = spec_card.render_spec_card(
+                base_content,
+                spec_card.SpecCardRequest(cells=config.cells, style=config.style, corner=config.corner),
+            )
+            rendered = result.jpeg_bytes
+        else:
+            # 「不印到图上」：重印即去掉已印的卡片，素材图回到干净母版。
+            rendered = base_content
         self._save_batch_asset(
-            batch, SPEC_CARD_ASSET_KIND, f"style-{style_index}-hero-card.jpg", result.jpeg_bytes
+            batch, SPEC_CARD_ASSET_KIND, f"style-{style_index}-hero-card.jpg", rendered
         )
         public_url = self.ai_runtime.publish_listing_image(
-            build_spec_card_media(result.jpeg_bytes),
+            build_spec_card_media(rendered),
             namespace=batch["workspace_id"],
             role="hero",
         )
@@ -1090,8 +1098,8 @@ class PodCustomizationService:
             raise PodRepositoryError("POD style index is outside the batch range", 422)
         for style_index in image_style_indices:
             results = [item for item in batch["items"] if int(item.get("style_index") or 0) == style_index]
-            if len(results) != 4 or any(item.get("status") != "failed" for item in results):
-                raise PodRepositoryError("only styles with all four images failed can be retried", 409)
+            if len(results) != 4 or all(item.get("status") == "completed" for item in results):
+                raise PodRepositoryError("only styles with unfinished images can be retried", 409)
         for style_index in title_style_indices:
             title = next(
                 (row for row in batch["style_titles"] if int(row["style_index"]) == style_index),
