@@ -164,7 +164,9 @@ export function specCardSummaryText(config: SpecCardConfig | null | undefined): 
   const rows = config.cells.length;
   const style = SPEC_CARD_STYLE_LABELS[config.style] ?? SPEC_CARD_STYLE_LABELS.light;
   const corner = SPEC_CARD_CORNER_LABELS[config.corner] ?? SPEC_CARD_CORNER_LABELS["bottom-right"];
-  return `${rows} 行 · ${style} · ${corner}`;
+  // 关掉「印到图上」时补一句，避免用户在页面上看不出素材图会不会带卡片。
+  const printing = config.enabled ? "" : " · 不印图";
+  return `${rows} 行 · ${style} · ${corner}${printing}`;
 }
 
 /** 提交载荷里带的规格卡快照（单元格内容原样透传，不做任何加工）。 */

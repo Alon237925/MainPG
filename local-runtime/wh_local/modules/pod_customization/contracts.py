@@ -337,9 +337,11 @@ class SpecCardRequestBase(BaseModel):
     cells: Any = None
     style: str = "light"
     corner: str = "bottom-right"
+    # 是否把卡片印到第 4 张图上；关掉时素材图保持干净母版（长/宽/高数据仍必填）。
+    enabled: bool = True
 
     def config_mapping(self) -> dict[str, Any]:
-        return {"cells": self.cells, "style": self.style, "corner": self.corner}
+        return {"cells": self.cells, "style": self.style, "corner": self.corner, "enabled": self.enabled}
 
 
 class SpecCardPreviewRequest(SpecCardRequestBase):

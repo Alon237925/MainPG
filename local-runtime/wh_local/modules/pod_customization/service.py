@@ -684,6 +684,9 @@ class PodCustomizationService:
         """
 
         config = self._validated_spec_card_config(config_mapping)
+        if not config.enabled:
+            # 「不印到图上」：预览与生成结果一致 —— 直接给干净底图（无底图时给空白示意底图）。
+            return base_content or blank_spec_card_base_jpeg(self.SPEC_CARD_PREVIEW_BASE_SIDE)
         request = spec_card.SpecCardRequest(
             cells=config.cells, style=config.style, corner=config.corner
         )
@@ -752,15 +755,20 @@ class PodCustomizationService:
             pattern_asset_id, batch["workspace_id"], batch["owner_user_id"]
         )
         base_content = self.assets.read(asset["relative_path"])
-        result = spec_card.render_spec_card(
-            base_content,
-            spec_card.SpecCardRequest(cells=config.cells, style=config.style, corner=config.corner),
-        )
+        if config.enabled:
+            result = spec_card.render_spec_card(
+                base_content,
+                spec_card.SpecCardRequest(cells=config.cells, style=config.style, corner=config.corner),
+            )
+            rendered = result.jpeg_bytes
+        else:
+            # 「不印到图上」：重印即去掉已印的卡片，素材图回到干净母版。
+            rendered = base_content
         self._save_batch_asset(
-            batch, SPEC_CARD_ASSET_KIND, f"style-{style_index}-hero-card.jpg", result.jpeg_bytes
+            batch, SPEC_CARD_ASSET_KIND, f"style-{style_index}-hero-card.jpg", rendered
         )
         public_url = self.ai_runtime.publish_listing_image(
-            build_spec_card_media(result.jpeg_bytes),
+            build_spec_card_media(rendered),
             namespace=batch["workspace_id"],
             role="hero",
         )

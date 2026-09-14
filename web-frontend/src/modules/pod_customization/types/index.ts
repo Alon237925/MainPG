@@ -109,6 +109,7 @@ export type SpecCardPreviewRequest = {
   cells: string[][];
   style: SpecCardStyle;
   corner: SpecCardCorner;
+  enabled: boolean;
   base_template_id?: string;
 };
 
@@ -120,6 +121,7 @@ export type SpecCardReprintRequest = {
   cells: string[][];
   style: SpecCardStyle;
   corner: SpecCardCorner;
+  enabled: boolean;
   style_index?: number | null;
 };
 
