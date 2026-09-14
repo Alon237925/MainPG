@@ -1098,8 +1098,8 @@ class PodCustomizationService:
             raise PodRepositoryError("POD style index is outside the batch range", 422)
         for style_index in image_style_indices:
             results = [item for item in batch["items"] if int(item.get("style_index") or 0) == style_index]
-            if len(results) != 4 or any(item.get("status") != "failed" for item in results):
-                raise PodRepositoryError("only styles with all four images failed can be retried", 409)
+            if len(results) != 4 or all(item.get("status") == "completed" for item in results):
+                raise PodRepositoryError("only styles with unfinished images can be retried", 409)
         for style_index in title_style_indices:
             title = next(
                 (row for row in batch["style_titles"] if int(row["style_index"]) == style_index),
