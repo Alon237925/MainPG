@@ -174,28 +174,30 @@ class MessagesRepository:
         finally:
             con.close()
 
-    def prune_retracted(self, active_server_ids: list[int]) -> int:
-        """按服务器在线公告 id 列表撤回本地消息。
+    def prune_retracted(self, active_server_ids: list[int], kind: str = "announcement") -> int:
+        """按服务器在线消息 id 列表撤回本地消息。
 
-        服务器上已下线/已删除的公告，本地对应消息一并移除（含已读状态）。
+        服务器上已下线/已删除的消息，本地对应消息一并移除（含已读状态）。
         仅在同步成功、拿到完整在线列表时调用；服务器不可达时不得调用，
         避免断网误删本地消息。
+
+        ``kind`` 限定撤回的消息类型：公告与反馈回复各自独立撤回，
+        不会因公告在线列表把反馈回复误删（反之亦然）。
         """
         ids = [int(value) for value in active_server_ids if int(value) > 0]
         con = self._connect()
         try:
-            # 只撤回公告类消息（kind='announcement'），反馈回复由独立通道管理，
-            # 不随公告在线列表被误删。
             if not ids:
                 cur = con.execute(
-                    "DELETE FROM messages WHERE server_id > 0 AND kind = 'announcement'"
+                    "DELETE FROM messages WHERE server_id > 0 AND kind = ?",
+                    (kind,),
                 )
             else:
                 placeholders = ",".join("?" * len(ids))
                 cur = con.execute(
-                    f"DELETE FROM messages WHERE server_id > 0 AND kind = 'announcement' "
+                    f"DELETE FROM messages WHERE server_id > 0 AND kind = ? "
                     f"AND server_id NOT IN ({placeholders})",
-                    ids,
+                    [kind, *ids],
                 )
             con.commit()
             return cur.rowcount

@@ -266,6 +266,8 @@ export type FeedbackHistoryItem = {
   total_image_bytes: number;
   status: FeedbackStatus;
   admin_note: string;
+  /** 管理员真正推送给用户的回复（来自 feedback_replies），按时间升序。 */
+  replies: Array<{ content: string; created_at: string }>;
   status_updated_at: string;
   app_version: string;
   platform: string;

@@ -31,6 +31,14 @@ function formatFeedbackTime(iso: string): string {
   }
 }
 
+/** 从"【我的反馈】原文\n\n【回复】xxx"的回复正文里，只取【回复】之后的内容。 */
+function extractReplyContent(content: string): string {
+  const marker = "【回复】";
+  const idx = content.indexOf(marker);
+  const reply = idx >= 0 ? content.slice(idx + marker.length) : content;
+  return reply.trim();
+}
+
 export function FeedbackPanel() {
   const [content, setContent] = useState("");
   const [category, setCategory] = useState<FeedbackCategory>("suggestion");
@@ -276,7 +284,15 @@ export function FeedbackPanel() {
                         {item.image_count > 0 && <span className="feedback-list-images">含 {item.image_count} 张图</span>}
                       </div>
                       <p className="feedback-list-content">{item.content}</p>
-                      {item.admin_note && <p className="feedback-list-note">官方回复：{item.admin_note}</p>}
+                      {item.replies && item.replies.length > 0 && (
+                        <div className="feedback-list-replies">
+                          {item.replies.map((reply, replyIndex) => (
+                            <p key={replyIndex} className="feedback-list-note">
+                              官方回复{formatFeedbackTime(reply.created_at) ? `（${formatFeedbackTime(reply.created_at)}）` : ""}：{extractReplyContent(reply.content)}
+                            </p>
+                          ))}
+                        </div>
+                      )}
                     </li>
                   ))}
                 </ul>

@@ -12,11 +12,11 @@ export type InboxMessage = {
 
 const TOKEN_KEY = "wh_demo_token";
 
-/** 优先使用登录 token；未登录时回退到本地开发管理员 token（仅开发环境有效）。 */
+/** 优先使用登录 token；仅在开发环境未登录时回退到本地开发管理员 token。 */
 function resolveToken(): string {
   const stored = window.localStorage.getItem(TOKEN_KEY);
   if (stored) return stored;
-  return "dev-admin-token";
+  return import.meta.env.DEV ? "dev-admin-token" : "";
 }
 
 function mapMessage(value: unknown): InboxMessage {

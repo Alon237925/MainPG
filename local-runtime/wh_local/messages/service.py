@@ -149,9 +149,13 @@ class FeedbackReplySyncService:
                 {**item, "id": int(item.get("id") or 0) + 1_000_000_000}
                 for item in items
             ]
-            return self.repository.upsert_server_announcements(
+            new_count = self.repository.upsert_server_announcements(
                 reply_items, kind="feedback_reply"
             )
+            # 撤回：服务器已删除的反馈回复，本地对应消息一并移除。
+            active_ids = [int(item.get("id") or 0) for item in reply_items]
+            self.repository.prune_retracted(active_ids, kind="feedback_reply")
+            return new_count
         except Exception as exc:  # 离线/服务器未就绪：静默降级
             logger.info("feedback reply sync unavailable (%s): %s", url, exc)
             return 0

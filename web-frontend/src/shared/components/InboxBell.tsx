@@ -179,6 +179,7 @@ export function InboxBell() {
   };
 
   const handleDelete = async (messageId: number) => {
+    const target = messages.find((item) => item.id === messageId);
     try {
       await deleteMessage(messageId);
     } catch {
@@ -190,6 +191,8 @@ export function InboxBell() {
       next.delete(messageId);
       return next;
     });
+    // 删除的是未读消息时乐观减未读，避免依赖 refreshList 异步返回（失败则红点不更新）。
+    if (target && !target.read) setUnread((current) => Math.max(0, current - 1));
     unreadEpochRef.current += 1;
     void refreshList();
   };
