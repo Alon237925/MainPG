@@ -761,8 +761,10 @@ export function PersonalCenterPage() {
       <div className="personal-stats">
         <div className="personal-stat is-balance">
           <span className="personal-stat-title"><i className="iconfont icon-gold" aria-hidden="true" />可用积分</span>
-          <b>{summary?.wallet.available_points.toLocaleString() ?? "--"}</b>
-          {loading && <span className="personal-stat-spinner" aria-label="积分刷新中" />}
+          <div className="personal-stat-value">
+            <b>{summary?.wallet.available_points.toLocaleString() ?? "--"}</b>
+            {loading && <span className="personal-stat-spinner" aria-label="积分刷新中" />}
+          </div>
           <button
             type="button"
             className="personal-stats-refresh is-on-dark"
@@ -777,20 +779,19 @@ export function PersonalCenterPage() {
                 : "↻ 刷新"}
           </button>
         </div>
-        <div className="personal-stat">
-          <span>总积分</span>
-          <b>{summary?.wallet.points_balance.toLocaleString() ?? "--"}</b>
-        </div>
-        <div className="personal-stat">
-          <span>冻结积分</span>
-          <b>{summary?.wallet.frozen_points.toLocaleString() ?? "--"}</b>
-        </div>
-        <div className="personal-stat">
-          <span>换算比例</span>
-          <b>{summary?.pricing.ratio_label ?? "1 元 = 100 积分"}</b>
-          <button type="button" className="personal-stats-refresh" onClick={() => refreshBalance()} disabled={balanceCooldownActive || loading} aria-label="刷新余额">
-            {balanceCooldownActive ? `${balanceCooldownSeconds} 秒后` : loading ? <><span className="personal-spinner" aria-hidden="true" />刷新中…</> : "↻ 刷新"}
-          </button>
+        <div className="personal-stat-meta">
+          <div className="personal-stat-item">
+            <span>总积分</span>
+            <b>{summary?.wallet.points_balance.toLocaleString() ?? "--"}</b>
+          </div>
+          <div className="personal-stat-item">
+            <span>冻结积分</span>
+            <b>{summary?.wallet.frozen_points.toLocaleString() ?? "--"}</b>
+          </div>
+          <div className="personal-stat-item is-ratio">
+            <span>换算比例</span>
+            <b>{summary?.pricing.ratio_label ?? "1 元 = 100 积分"}</b>
+          </div>
         </div>
       </div>
 
@@ -820,22 +821,25 @@ export function PersonalCenterPage() {
         <div className="personal-panel-content">
         {activePanel === "wallet" ? <div className="personal-grid">
         <article className="personal-card topup-card">
-          <div className="personal-card-title">
-            <span className="iconfont icon-moneycollect" aria-hidden="true" />
-            <h2>充值积分</h2>
-          </div>
-          <div className="provider-switch">
-            <button type="button" className="is-wechat is-unavailable" disabled title="微信支付暂未开放">
-              <span className={providerMeta.wechat.icon} aria-hidden="true" />
-              微信支付
-              <small>暂未开放</small>
-            </button>
-            <button type="button" className="is-alipay is-active" aria-pressed="true">
-              <span className={providerMeta.alipay.icon} aria-hidden="true" />
-              支付宝
-            </button>
+          <div className="topup-header">
+            <div className="personal-card-title">
+              <span className="iconfont icon-moneycollect" aria-hidden="true" />
+              <h2>充值积分</h2>
+            </div>
+            <div className="provider-switch">
+              <button type="button" className="is-wechat is-unavailable" disabled title="微信支付暂未开放">
+                <span className={providerMeta.wechat.icon} aria-hidden="true" />
+                <span>微信支付</span>
+                <small>暂未开放</small>
+              </button>
+              <button type="button" className="is-alipay is-active" aria-pressed="true">
+                <span className={providerMeta.alipay.icon} aria-hidden="true" />
+                <span>支付宝</span>
+              </button>
+            </div>
           </div>
           <p className="topup-promotion-banner">
+            <span className="iconfont icon-gift" aria-hidden="true" />
             {summary?.topup_promotion?.name || "固定套餐档位递增赠送"}：仅固定套餐享赠送，自定义金额按原价到账。
           </p>
           <div className="topup-products">
@@ -846,39 +850,40 @@ export function PersonalCenterPage() {
                 className={activePackage?.package_id === item.package_id ? "is-active" : ""}
                 onClick={() => setSelectedPackage(item.package_id)}
               >
-                <strong>{totalPoints(item).toLocaleString()} 积分</strong>
-                <span>{money(item.amount_cents)}</span>
-                <small>
+                <span className="topup-product-points">{totalPoints(item).toLocaleString()}<i>积分</i></span>
+                <span className="topup-product-price">{money(item.amount_cents)}</span>
+                <span className="topup-product-bonus">
                   基础 {basePoints(item).toLocaleString()}
                   {promotionBonusPoints(item)
-                    ? ` + 赠送${item.promotion_bonus_percent ? ` ${item.promotion_bonus_percent}%` : ""} ${promotionBonusPoints(item).toLocaleString()}`
+                    ? ` · 赠送 ${promotionBonusPoints(item).toLocaleString()}`
                     : ""}
-                  {promotionBonusPoints(item) ? ` = 合计 ${totalPoints(item).toLocaleString()}` : ""}
-                </small>
+                </span>
               </button>
             ))}
           </div>
-          <label className={`custom-topup ${selectedPackage === "custom" ? "is-active" : ""}`}>
-            <span>自定义金额</span>
-            <div>
-              <b>¥</b>
-              <input
-                type="number"
-                min="1"
-                max="3000"
-                step="1"
-                inputMode="numeric"
-                value={customAmount}
-                onFocus={() => setSelectedPackage("custom")}
-                onChange={(event) => {
-                  setCustomAmount(event.target.value);
-                  setSelectedPackage("custom");
-                }}
-                placeholder="1 - 3000"
-                aria-label="自定义充值金额，单位元"
-              />
-              <em>元</em>
-            </div>
+          <div className={`custom-topup ${selectedPackage === "custom" ? "is-active" : ""}`}>
+            <label>
+              <span>自定义金额</span>
+              <div>
+                <b>¥</b>
+                <input
+                  type="number"
+                  min="1"
+                  max="3000"
+                  step="1"
+                  inputMode="numeric"
+                  value={customAmount}
+                  onFocus={() => setSelectedPackage("custom")}
+                  onChange={(event) => {
+                    setCustomAmount(event.target.value);
+                    setSelectedPackage("custom");
+                  }}
+                  placeholder="1 - 3000"
+                  aria-label="自定义充值金额，单位元"
+                />
+                <em>元</em>
+              </div>
+            </label>
             <small>
               {!customAmount
                 ? "支持 1 - 3000 元整数充值"
@@ -892,7 +897,7 @@ export function PersonalCenterPage() {
                         ? `预计到账 ${totalPoints(customQuote).toLocaleString()} 积分（自定义金额不参与固定套餐赠送）`
                         : "正在获取服务器报价..."}
             </small>
-          </label>
+          </div>
           <button className="primary-topup" type="button" disabled={!activePackage || creating || customQuoteLoading} onClick={() => void submitTopup(activePackage)}>
             {creating ? "正在创建服务器订单..." : "创建充值订单"}
           </button>
@@ -910,7 +915,6 @@ export function PersonalCenterPage() {
           {paymentNotice && <p className="payment-notice">{paymentNotice}</p>}
         </article>
 
-        <div className="personal-stack">
         <article className="personal-card orders-card">
           <div className="personal-card-title">
             <span className="iconfont icon-accountbook-fill" aria-hidden="true" />
@@ -929,11 +933,15 @@ export function PersonalCenterPage() {
                   {promotionBonusPoints(order) > 0 && <small>含赠送 {promotionBonusPoints(order).toLocaleString()} 积分</small>}
                 </div>
               </div>
-            )) : <p className="empty-orders">暂无充值订单</p>}
+            )) : (
+              <div className="empty-orders">
+                <span className="iconfont icon-inbox" aria-hidden="true" />
+                <p>暂无充值订单</p>
+                <span>充值成功后将在这里显示最近记录</span>
+              </div>
+            )}
           </div>
         </article>
-
-        </div>
         </div> : activePanel === "pricing" ? (
           <article className="personal-card pricing-card">
             <div className="personal-card-title">

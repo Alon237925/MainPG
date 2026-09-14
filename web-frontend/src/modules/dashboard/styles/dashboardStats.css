@@ -97,7 +97,6 @@
   display: grid;
   gap: 10px;
   min-width: 0;
-  margin-top: 14px;
   padding: 14px 16px 12px;
   overflow: hidden;
   border: 1px solid color-mix(in srgb, var(--theme-card-border, #c8d4cf) 84%, transparent);
@@ -347,20 +346,36 @@
 
 .dashboard-points-card {
   display: grid;
-  grid-template-rows: auto 1fr;
+  grid-template-rows: auto auto 1fr;
   min-width: 0;
-  padding: 16px 16px 14px;
+  padding: 14px 16px 14px;
   border: 1px solid color-mix(in srgb, var(--theme-card-border, #e6d9ea) 88%, transparent);
   border-radius: 18px;
   background: color-mix(in srgb, var(--theme-module-surface, #fffdf8) 92%, transparent);
   box-shadow: 0 14px 34px color-mix(in srgb, var(--theme-card-shadow, rgba(126, 84, 128, .1)) 70%, transparent);
 }
 
+.dashboard-points-eyebrow {
+  color: var(--theme-text-muted, #768c88);
+  font-size: .7rem;
+  font-weight: 800;
+  letter-spacing: .05em;
+  line-height: 1;
+}
+
 .dashboard-points-heading {
   display: flex;
   align-items: center;
+  justify-content: space-between;
   gap: 8px;
-  flex-wrap: wrap;
+  min-height: 40px;
+  margin-top: 6px;
+}
+
+.dashboard-points-title {
+  display: flex;
+  align-items: center;
+  gap: 8px;
 }
 
 .dashboard-points-heading .iconfont {
@@ -373,11 +388,26 @@
   font-size: .88rem;
 }
 
-.dashboard-points-heading small {
-  width: 100%;
-  color: var(--theme-text-muted, #a58ba8);
+.dashboard-points-total {
+  display: grid;
+  justify-items: end;
+  gap: 1px;
+}
+
+.dashboard-points-total span {
+  color: var(--theme-text-muted, #768c88);
   font-size: .7rem;
-  font-weight: 700;
+  font-weight: 800;
+  letter-spacing: .05em;
+}
+
+.dashboard-points-total strong {
+  color: var(--theme-text-primary, #16332f);
+  font-size: 1.5rem;
+  font-weight: 800;
+  line-height: 1;
+  letter-spacing: -.01em;
+  font-variant-numeric: tabular-nums;
 }
 
 .dashboard-points-body {
@@ -722,7 +752,6 @@
   }
 
   .dashboard-trend-card {
-    margin-top: 14px;
     padding: 12px;
   }
 

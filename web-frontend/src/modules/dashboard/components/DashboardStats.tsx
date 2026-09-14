@@ -301,10 +301,16 @@ function DashboardPointsPie() {
 
   return (
     <section className="dashboard-points-card">
+      <span className="dashboard-points-eyebrow">产品处理 · POD · 商品组合</span>
       <div className="dashboard-points-heading">
-        <span className="iconfont icon-piechart" aria-hidden="true"></span>
-        <strong>积分消耗占比</strong>
-        <small>产品处理 · POD · 商品组合</small>
+        <div className="dashboard-points-title">
+          <span className="iconfont icon-piechart" aria-hidden="true"></span>
+          <strong>积分消耗占比</strong>
+        </div>
+        <div className="dashboard-points-total">
+          <span>总计</span>
+          <strong>{total.toLocaleString()}</strong>
+        </div>
       </div>
 
       <div className="dashboard-points-body">
