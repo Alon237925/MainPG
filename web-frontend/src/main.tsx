@@ -12,6 +12,8 @@ import "./shared/styles/ink-tap.css";
 import "./shared/styles/framework-flow.css";
 import "./modules/product_processing/styles/product-processing.css";
 import "./shared/styles/apple-workspace.css";
+import "driver.js/dist/driver.css";
+import "./shared/styles/guide-tour.css";
 
 // 桌面端后端存活心跳：在 React 组件树渲染前启动，确保只要 JS 加载成功就上报，
 // 业务组件渲染失败也不影响后端存活判定（避免"关页即停"看门狗误杀后端）。

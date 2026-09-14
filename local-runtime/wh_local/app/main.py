@@ -61,6 +61,7 @@ from ..data_collection.shop_routes import (
 from ..data_collection.shop_worker import ShopCollectionWorker
 from ..db import init_db
 from ..modules.basic_settings.router import create_router as create_basic_settings_router
+from ..modules.dashboard.router import create_router as create_dashboard_router
 from ..modules.themes.router import create_themes_router
 from ..modules.ai_service import create_router as create_ai_service_router
 from ..modules.ai_service.temporary_cos import TemporaryCosStore
@@ -534,6 +535,9 @@ def create_app(database_path: Path | None = None) -> FastAPI:
         ),
         prefix="/api",
     )
+
+    # 工作台看板：聚合本地库指标（产品库 / 处理任务 / 趋势 / 分布），供首页一次性读取。
+    app.include_router(create_dashboard_router(db_path))
 
     # 核价及货源模块
     _register_price_verification(

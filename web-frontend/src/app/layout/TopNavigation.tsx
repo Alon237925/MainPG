@@ -38,10 +38,11 @@ type TopNavigationProps = {
   onSelectTab: (key: string) => void;
   onCloseTab: (key: string) => void;
   onOpenPersonalCenter: () => void;
+  onOpenGuide?: () => void;
   onSignOut: () => void;
 };
 
-export function TopNavigation({ sidebarPinned, activeKey, tabs, onToggleSidebar, onSelectTab, onCloseTab, onOpenPersonalCenter, onSignOut }: TopNavigationProps) {
+export function TopNavigation({ sidebarPinned, activeKey, tabs, onToggleSidebar, onSelectTab, onCloseTab, onOpenPersonalCenter, onOpenGuide, onSignOut }: TopNavigationProps) {
   const [closingKeys, setClosingKeys] = useState<string[]>([]);
   const [topbarStuck, setTopbarStuck] = useState(false);
   const [themePanelOpen, setThemePanelOpen] = useState(false);
@@ -186,6 +187,15 @@ export function TopNavigation({ sidebarPinned, activeKey, tabs, onToggleSidebar,
         )}
         <div id="workspace-topbar-status" className="topbar-status-slot" />
         <div className="topbar-actions">
+          <button
+            type="button"
+            className="icon-button guide-entry-button"
+            onClick={onOpenGuide}
+            title="新手引导"
+            aria-label="新手引导"
+          >
+            <i className="iconfont icon-question-circle" aria-hidden="true" />
+          </button>
           <div className="theme-quick-menu" ref={themeMenuRef}>
             <button
               type="button"

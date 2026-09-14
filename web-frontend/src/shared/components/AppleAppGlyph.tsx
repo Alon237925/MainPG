@@ -33,6 +33,13 @@ export function AppleAppGlyph({ name }: AppleAppGlyphProps) {
       return <svg {...common}><path d="M5 19V9M12 19V5M19 19v-7" /><path d="M3.5 19.5h17" /><path d="m5 7 6-4 7 5" /></svg>;
     case "profit_activity_products":
       return <svg {...common}><path d="M4.5 7.5h15v11h-15z" /><path d="M3.5 4.5h17v3h-17z" /><path d="M9.5 11h5" /></svg>;
+    case "combo_workflow":
+    case "combo_generate":
+    case "combo_prompt_preset":
+    case "combo_history":
+      return <svg {...common}><rect x="4" y="4" width="10" height="10" rx="2" /><path d="M9 20h9a2 2 0 0 0 2-2V9" /><path d="m18.5 3 .7 2.1 2.1.7-2.1.7-.7 2.1-.7-2.1-2.1-.7 2.1-.7.7-2.1Z" /></svg>;
+    case "pod_customization":
+      return <svg {...common}><path d="M9.5 3.5 12 5l2.5-1.5 4 2-1.5 4-2-1v8.5h-6V8.5l-2 1-1.5-4 4-2Z" /></svg>;
     case "ai_service":
       return <svg {...common}><path d="m12 3 1.2 4.1L17 8.5l-3.8 1.4L12 14l-1.2-4.1L7 8.5l3.8-1.4L12 3Z" /><path d="m18.5 13 .7 2.3 2.1.7-2.1.8-.7 2.2-.7-2.2-2.1-.8 2.1-.7.7-2.3Z" /><path d="m5.5 13 .6 1.8 1.7.7-1.7.6-.6 1.9-.6-1.9-1.7-.6 1.7-.7.6-1.8Z" /></svg>;
     case "personal_center":

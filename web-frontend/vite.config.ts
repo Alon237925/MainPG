@@ -1,7 +1,7 @@
 import { defineConfig } from "vite";
 import react from "@vitejs/plugin-react";
 
-const BACKEND = "http://127.0.0.1:8010";
+const BACKEND = "http://127.0.0.1:8011";
 
 // 开发模式下页面在 vite(5174) 而 API 在 8010，浏览器会带上 Origin=5174，
 // 后端 require_same_origin（更新等接口）要求 Origin 与后端 base_url 同源，

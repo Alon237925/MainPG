@@ -1,6 +1,7 @@
 import { useEffect, useState } from "react";
 import { BRAND_LOGO_URL, BRAND_MANUAL_URL, BRAND_MARK_URL, BRAND_NAME } from "../../../shared/brand";
-import type { WorkspaceModuleId } from "../../../app/navigation/modules";
+import type { WorkspaceModule, WorkspaceModuleId } from "../../../app/navigation/modules";
+import { isWorkspaceNavigationGroup, workspaceModules } from "../../../app/navigation/modules";
 import { DashboardStats } from "../components/DashboardStats";
 import { useUiMode } from "../../../shared/hooks/useUiMode";
 import { AppleAppGlyph } from "../../../shared/components/AppleAppGlyph";
@@ -16,15 +17,85 @@ function getGreeting(): string {
 
 type WorkspaceHomePageProps = { onOpenModule: (id: WorkspaceModuleId) => void };
 
-const launchpadItems: Array<{ id: WorkspaceModuleId; label: string; tone: string }> = [
-  { id: "daily_selection", label: "每日选品", tone: "blue" },
-  { id: "product_processing", label: "AI 产品处理", tone: "violet" },
-  { id: "product_processing_history", label: "历史记录", tone: "slate" },
-  { id: "dimension_canvas", label: "尺寸画布", tone: "cyan" },
-  { id: "price_verification", label: "核价匹配", tone: "orange" },
-  { id: "profit_activity", label: "利润活动", tone: "green" },
-  { id: "profit_activity_products", label: "产品库", tone: "pink" },
-];
+type NavTone = "blue" | "cyan" | "violet" | "green" | "amber" | "rose" | "slate" | "orange" | "pink" | "indigo";
+
+type NavModule = { id: WorkspaceModuleId; label: string; description: string; iconClass?: string; tone: NavTone };
+
+/** 模块强调色：与 apple 模式应用图标共用同一套色名。 */
+const MODULE_TONE: Record<string, NavTone> = {
+  daily_selection: "blue",
+  product_processing: "violet",
+  product_processing_history: "slate",
+  dimension_canvas: "cyan",
+  combo_generate: "orange",
+  combo_prompt_preset: "orange",
+  combo_history: "slate",
+  pod_customization: "indigo",
+  price_verification: "green",
+  profit_activity: "green",
+  profit_activity_products: "pink",
+  personal_center: "slate",
+};
+
+function toNavModule(module: WorkspaceModule): NavModule {
+  return {
+    id: module.id,
+    label: module.label,
+    description: module.description,
+    iconClass: module.iconClass,
+    tone: MODULE_TONE[module.id] ?? "blue",
+  };
+}
+
+/** 直接复用侧边栏的模块配置，避免功能名称与描述出现第二处口径。 */
+const navGroups: Array<{ id: string; label: string; items: NavModule[] }> = (() => {
+  const groups: Array<{ id: string; label: string; items: NavModule[] }> = [];
+  const standalone: NavModule[] = [];
+  for (const item of workspaceModules) {
+    if (item.id === "dashboard") continue;
+    if (isWorkspaceNavigationGroup(item)) {
+      groups.push({ id: item.id, label: item.label, items: item.children.map(toNavModule) });
+    } else {
+      standalone.push(toNavModule(item));
+    }
+  }
+  if (standalone.length) groups.push({ id: "standalone", label: "更多工具", items: standalone });
+  return groups;
+})();
+
+function ClassicModuleNav({ onOpenModule }: { onOpenModule: (id: WorkspaceModuleId) => void }) {
+  return (
+    <section className="dash-panel dash-nav" aria-label="功能导航">
+      <header className="dash-panel-head">
+        <div className="dash-panel-title">
+          <h3>功能导航</h3>
+          <p>按业务流程整理的全部模块，点击卡片直达</p>
+        </div>
+      </header>
+      {navGroups.map((group) => (
+        <div className="dash-nav-group" key={group.id}>
+          <h4 className="dash-nav-group-title">{group.label}</h4>
+          <div className="dash-nav-grid">
+            {group.items.map((item) => (
+              <button
+                key={item.id}
+                type="button"
+                className={`dash-nav-card is-${item.tone}`}
+                onClick={() => onOpenModule(item.id)}
+              >
+                <span className="dash-nav-icon" aria-hidden="true"><span className={item.iconClass} /></span>
+                <span className="dash-nav-body">
+                  <strong>{item.label}</strong>
+                  <em>{item.description}</em>
+                </span>
+              </button>
+            ))}
+          </div>
+        </div>
+      ))}
+    </section>
+  );
+}
 
 function formatChineseDate() {
   return new Intl.DateTimeFormat("zh-CN", {
@@ -52,13 +123,20 @@ function AppleWorkspaceHome({ greeting, onOpenModule }: { greeting: string; onOp
       <DashboardStats onOpenModule={onOpenModule} variant="apple" />
 
       <section className="mac-section">
-        <div className="mac-section-heading"><div><span>LAUNCHPAD</span><h2>应用</h2></div><small>常用工具集中在这里</small></div>
+        <div className="mac-section-heading"><div><span>LAUNCHPAD</span><h2>全部功能</h2></div><small>按业务流程分组，与左侧导航同源</small></div>
         <div className="mac-launchpad">
-          {launchpadItems.map((item) => (
-            <button type="button" key={item.id} onClick={() => onOpenModule(item.id)}>
-              <span className={`mac-app-icon is-${item.tone}`}><AppleAppGlyph name={item.id} /></span>
-              <strong>{item.label}</strong>
-            </button>
+          {navGroups.map((group) => (
+            <div className="mac-launchpad-group" key={group.id}>
+              <h3>{group.label}</h3>
+              <div className="mac-launchpad-grid">
+                {group.items.map((item) => (
+                  <button type="button" key={item.id} onClick={() => onOpenModule(item.id)}>
+                    <span className={`mac-app-icon is-${item.tone}`}><AppleAppGlyph name={item.id} /></span>
+                    <strong>{item.label}</strong>
+                  </button>
+                ))}
+              </div>
+            </div>
           ))}
         </div>
       </section>
@@ -104,6 +182,7 @@ export function WorkspaceHomePage({ onOpenModule }: WorkspaceHomePageProps) {
         <a className="dashboard-manual-link" href={BRAND_MANUAL_URL} target="_blank" rel="noopener noreferrer">使用手册 ↗</a>
       </section>
       <DashboardStats onOpenModule={onOpenModule} />
+      <ClassicModuleNav onOpenModule={onOpenModule} />
     </div>
   );
 }

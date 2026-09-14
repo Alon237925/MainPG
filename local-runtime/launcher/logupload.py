@@ -18,7 +18,7 @@ import os
 import sys
 import time
 from pathlib import Path
-from typing import Any
+from typing import Any, Callable
 from urllib.error import HTTPError, URLError
 from urllib.request import Request, urlopen
 
@@ -60,13 +60,28 @@ def login(username: str, password: str, timeout: float = 10.0) -> tuple[str, dic
     return str(token), data.get("account") or {}
 
 
-def upload_log(token: str, log_path: Path, timeout: float = 60.0) -> dict[str, Any]:
-    """上传日志文件到服务器，返回服务器记录的信息。"""
+def upload_log(
+    token: str,
+    log_path: Path,
+    timeout: float = 60.0,
+    on_log: Callable[[str], None] | None = None,
+) -> dict[str, Any]:
+    """上传日志文件到服务器，返回服务器记录的信息。
+
+    ``on_log`` 把上传进度逐行回传给调用方（启动器日志页），不需要进度时传 None。
+    """
+    def _emit(line: str) -> None:
+        if on_log is not None:
+            on_log(line)
+
     if not log_path or not log_path.exists():
         raise LogUploadError(f"找不到日志文件：{log_path}")
+    _emit(f"已定位日志文件：{log_path}")
     raw = log_path.read_bytes()
     if len(raw) > _MAX_LOG_PAYLOAD_BYTES:
         raw = raw[-_MAX_LOG_PAYLOAD_BYTES:]  # 只取末尾（最新）部分
+        _emit(f"日志超过 {_MAX_LOG_PAYLOAD_BYTES // (1024 * 1024)}MB，仅上传末尾最新部分")
+    _emit(f"已读取 {len(raw)} 字节，正在上传…")
     content_b64 = base64.b64encode(raw).decode("ascii")
     payload = {
         "log_name": log_path.name,
@@ -90,6 +105,7 @@ def upload_log(token: str, log_path: Path, timeout: float = 60.0) -> dict[str, A
     if not data.get("ok"):
         detail = data.get("detail") or data.get("message") or "上传失败"
         raise LogUploadError(str(detail))
+    _emit("服务器已接收日志")
     return data
 
 
