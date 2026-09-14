@@ -551,6 +551,23 @@ export function PersonalCenterPage() {
     loadUsage(false);
   }, [activePanel, loadUsage]);
 
+  // 操作答疑兜底按钮：切到「意见反馈」面板、滚到反馈区，并把原问题带过去预填。
+  const feedbackRef = useRef<HTMLDivElement>(null);
+  const [prefillFeedback, setPrefillFeedback] = useState("");
+  useEffect(() => {
+    const onOpenFeedback = (event: Event) => {
+      const detail = (event as CustomEvent<{ question?: string }>).detail;
+      const question = typeof detail?.question === "string" ? detail.question.trim() : "";
+      if (question) setPrefillFeedback(question);
+      setActivePanel("feedback");
+      window.requestAnimationFrame(() => {
+        feedbackRef.current?.scrollIntoView({ behavior: "smooth", block: "start" });
+      });
+    };
+    window.addEventListener("mainpg:open-feedback", onOpenFeedback);
+    return () => window.removeEventListener("mainpg:open-feedback", onOpenFeedback);
+  }, []);
+
   useEffect(() => {
     if (!pendingPaymentOrderId) return;
 
@@ -1113,7 +1130,9 @@ export function PersonalCenterPage() {
         ) : activePanel === "version" ? (
           <SystemVersionPanel />
         ) : activePanel === "feedback" ? (
-          <FeedbackPanel />
+          <div ref={feedbackRef}>
+            <FeedbackPanel initialContent={prefillFeedback} />
+          </div>
         ) : (
           <article className="personal-card usage-card">
             <div className="personal-card-title">

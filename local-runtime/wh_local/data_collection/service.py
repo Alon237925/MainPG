@@ -16,7 +16,7 @@ from pydantic import BaseModel, ConfigDict, Field, field_validator
 
 from .budget import UnlimitedApiBudget
 from .collector import DailySelectionCollector, DailySelectionProvider
-from .criteria import DailySelectionCriteria, validate_criteria
+from .criteria import validate_criteria
 from .empty_collection import (
     EmptyCollectionRetryRunner,
     SkuRepullOutboxDispatcher,

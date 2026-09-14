@@ -928,6 +928,15 @@ def _module_migrations() -> list[tuple[str, str, str]]:
                 ai_service_sql.read_text(encoding="utf-8"),
             )
         )
+    help_agent_sql = root / "modules" / "help_agent" / "migrations" / "001_help_agent.sql"
+    if help_agent_sql.exists():
+        migrations.append(
+            (
+                "help_agent:001_help_agent",
+                "help_agent",
+                help_agent_sql.read_text(encoding="utf-8"),
+            )
+        )
     profit_activity_sql = root / "modules" / "profit_activity" / "migrations" / "001_profit_activity.sql"
     if profit_activity_sql.exists():
         migrations.append(
@@ -1282,6 +1291,8 @@ DEFAULT_PERMISSIONS: tuple[tuple[str, str, str, str], ...] = (
     ("ai_service.create", "ai_service", "create", "发起 AI 对话、上传素材和创建商品图"),
     ("ai_service.delete", "ai_service", "delete", "删除本人 AI 会话和素材"),
     ("ai_service.settings_manage", "ai_service", "settings_manage", "维护 AI 模型白名单和创作模板"),
+    ("help_agent.read", "help_agent", "read", "使用操作答疑、查看未命中问题清单"),
+    ("help_agent.delete", "help_agent", "delete", "清空操作答疑未命中问题清单"),
     ("settings.read", "settings", "read", "查看系统配置"),
     ("settings.manage", "settings", "manage", "维护系统配置、密钥和运行参数"),
     ("stores.manage", "stores", "manage", "维护店铺配置和平台站点信息"),
@@ -1333,6 +1344,7 @@ OPERATOR_PERMISSIONS: frozenset[str] = frozenset(
         "ai_service.read",
         "ai_service.create",
         "ai_service.delete",
+        "help_agent.read",
     }
 )
 
