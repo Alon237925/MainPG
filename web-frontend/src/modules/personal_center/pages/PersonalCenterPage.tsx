@@ -41,6 +41,41 @@ function money(amountCents: number) {
   return `¥${(amountCents / 100).toFixed(2)}`;
 }
 
+/** 数字滚动动画：目标值变化时从旧值 ease-out 滚到新值；首次直接展示（缓存值不闪）。 */
+function useAnimatedNumber(value: number | null | undefined, duration = 720): number | null {
+  const [display, setDisplay] = useState<number | null>(() => (typeof value === "number" ? value : null));
+  const fromRef = useRef<number>(typeof value === "number" ? value : 0);
+  const rafRef = useRef(0);
+  useEffect(() => {
+    if (typeof value !== "number") {
+      setDisplay(null);
+      return;
+    }
+    const from = fromRef.current;
+    const to = value;
+    if (from === to) {
+      setDisplay(to);
+      return;
+    }
+    const start = performance.now();
+    const step = (now: number) => {
+      const p = Math.min(1, (now - start) / duration);
+      const eased = 1 - Math.pow(1 - p, 3);
+      const next = Math.round(from + (to - from) * eased);
+      setDisplay(next);
+      if (p < 1) {
+        rafRef.current = requestAnimationFrame(step);
+      } else {
+        fromRef.current = to;
+      }
+    };
+    cancelAnimationFrame(rafRef.current);
+    rafRef.current = requestAnimationFrame(step);
+    return () => cancelAnimationFrame(rafRef.current);
+  }, [value, duration]);
+  return display;
+}
+
 type PointsSnapshot = Pick<BillingPackage, "points" | "base_points" | "promotion_bonus_points" | "total_points">;
 
 function basePoints(product: PointsSnapshot) {
@@ -247,6 +282,9 @@ export function PersonalCenterPage() {
 
   const [summary, setSummary] = useState<BillingSummary | null>(cachedBalance?.summary ?? null);
   const [activePanel, setActivePanel] = useState<"wallet" | "usage" | "pricing" | "model" | "version" | "feedback">("wallet");
+  // 可用积分与总积分的数字滚动动画（首次直接用缓存值，不闪）。
+  const animatedAvailablePoints = useAnimatedNumber(summary?.wallet.available_points);
+  const animatedTotalPoints = useAnimatedNumber(summary?.wallet.points_balance);
   // 生图模型切换：下拉选项由服务端白名单给出，切换后所有生图任务立即跟随。
   const [imageModel, setImageModel] = useState("");
   const [imageModelChoices, setImageModelChoices] = useState<ImageModelChoice[]>([]);
@@ -657,28 +695,6 @@ export function PersonalCenterPage() {
 
   return (
     <section className="personal-center-page">
-      <div className="personal-hero">
-        <div className="personal-avatar-card">
-          <div className="personal-avatar" onClick={() => avatarSrc && setAvatarPreviewOpen(true)} title={avatarSrc ? "查看大图" : undefined}>
-            {avatarSrc ? (
-              <img className="personal-avatar-img" src={avatarSrc} alt="用户头像" />
-            ) : (
-              (account?.username || summary?.account.username || "U").slice(0, 1).toUpperCase()
-            )}
-          </div>
-          <div>
-            <p>个人中心</p>
-            <h1>{account?.username || summary?.account.username || "当前用户"}</h1>
-          </div>
-        </div>
-        <div className="personal-hero-actions">
-          <button className="personal-password-entry" type="button" onClick={openPasswordDialog}>
-            <span className="iconfont icon-key" aria-hidden="true" />
-            修改密码
-          </button>
-        </div>
-      </div>
-
       {/* portal 到 body：workspace-tab-panel 的 fill-mode 入场动画创建层叠上下文，
           会把 fixed 弹层的 z-index 锁在面板内、被 sticky 顶栏(z:18)盖住 */}
       {avatarPreviewOpen && avatarSrc && createPortal(
@@ -758,67 +774,98 @@ export function PersonalCenterPage() {
       {error && <div className="personal-alert is-error">{error}</div>}
       {loading && <div className="personal-alert">正在读取服务器账户与积分数据...</div>}
 
-      <div className="personal-stats">
-        <div className="personal-stat is-balance">
-          <span className="personal-stat-title"><i className="iconfont icon-gold" aria-hidden="true" />可用积分</span>
-          <div className="personal-stat-value">
-            <b>{summary?.wallet.available_points.toLocaleString() ?? "--"}</b>
-            {loading && <span className="personal-stat-spinner" aria-label="积分刷新中" />}
-          </div>
-          <button
-            type="button"
-            className="personal-stats-refresh is-on-dark"
-            onClick={() => refreshBalance()}
-            disabled={balanceCooldownActive || loading}
-            aria-label="刷新可用积分"
-          >
-            {balanceCooldownActive
-              ? `${balanceCooldownSeconds} 秒后可刷新`
-              : loading
-                ? <><span className="personal-spinner" aria-hidden="true" />刷新中…</>
-                : "↻ 刷新"}
-          </button>
-        </div>
-        <div className="personal-stat-meta">
-          <div className="personal-stat-item">
-            <span>总积分</span>
-            <b>{summary?.wallet.points_balance.toLocaleString() ?? "--"}</b>
-          </div>
-          <div className="personal-stat-item">
-            <span>冻结积分</span>
-            <b>{summary?.wallet.frozen_points.toLocaleString() ?? "--"}</b>
-          </div>
-          <div className="personal-stat-item is-ratio">
-            <span>换算比例</span>
-            <b>{summary?.pricing.ratio_label ?? "1 元 = 100 积分"}</b>
-          </div>
-        </div>
-      </div>
+      <nav className="personal-subnav" aria-label="个人中心二级导航">
+        <button type="button" className={activePanel === "wallet" ? "is-active" : ""} onClick={() => setActivePanel("wallet")}>
+          <span className="iconfont icon-wallet-fill" aria-hidden="true" />
+          <span>积分钱包</span>
+        </button>
+        <button type="button" className={activePanel === "usage" ? "is-active" : ""} onClick={() => setActivePanel("usage")}>
+          <span className="iconfont icon-accountbook-fill" aria-hidden="true" />
+          <span>消费流水</span>
+        </button>
+        <button type="button" className={activePanel === "pricing" ? "is-active" : ""} onClick={() => setActivePanel("pricing")}>
+          <span className="iconfont icon-calculator" aria-hidden="true" />
+          <span>计费规则</span>
+        </button>
+        <button type="button" className={activePanel === "model" ? "is-active" : ""} onClick={() => setActivePanel("model")}>
+          <span className="iconfont icon-robot-fill" aria-hidden="true" />
+          <span>模型选择</span>
+        </button>
+        <button type="button" className={activePanel === "version" ? "is-active" : ""} onClick={() => setActivePanel("version")}>
+          <span className="iconfont icon-setting" aria-hidden="true" />
+          <span>系统版本</span>
+        </button>
+        <button type="button" className={activePanel === "feedback" ? "is-active" : ""} onClick={() => setActivePanel("feedback")}>
+          <span className="iconfont icon-message" aria-hidden="true" />
+          <span>意见反馈</span>
+        </button>
+      </nav>
 
       <div className="personal-content-layout">
-        <aside className="personal-subnav" aria-label="个人中心二级导航">
-          <button type="button" className={activePanel === "wallet" ? "is-active" : ""} onClick={() => setActivePanel("wallet")}>
-            <span className="iconfont icon-wallet-fill" aria-hidden="true" /> 积分钱包
-          </button>
-          <button type="button" className={activePanel === "usage" ? "is-active" : ""} onClick={() => setActivePanel("usage")}>
-            <span className="iconfont icon-accountbook-fill" aria-hidden="true" /> 消费流水
-          </button>
-          <button type="button" className={activePanel === "pricing" ? "is-active" : ""} onClick={() => setActivePanel("pricing")}>
-            <span className="iconfont icon-calculator" aria-hidden="true" /> 计费规则
-          </button>
-          <button type="button" className={activePanel === "model" ? "is-active" : ""} onClick={() => setActivePanel("model")}>
-            <span className="iconfont icon-robot-fill" aria-hidden="true" /> 模型选择
-          </button>
-          <button type="button" className={activePanel === "version" ? "is-active" : ""} onClick={() => setActivePanel("version")}>
-            <span className="iconfont icon-setting" aria-hidden="true" /> 系统版本
-          </button>
-          <button type="button" className={activePanel === "feedback" ? "is-active" : ""} onClick={() => setActivePanel("feedback")}>
-            <span className="iconfont icon-message" aria-hidden="true" /> 意见反馈
-          </button>
-          <p>余额、费率与消费记录均由服务器账本实时校验。</p>
+        <aside className="personal-sidebar" aria-label="个人中心侧栏">
+          <div className="personal-profile">
+            <span className="personal-hero-glow" aria-hidden="true" />
+            <span className="personal-hero-glow is-two" aria-hidden="true" />
+            <div className="personal-profile-head">
+              <div className="personal-avatar" onClick={() => avatarSrc && setAvatarPreviewOpen(true)} title={avatarSrc ? "查看大图" : undefined}>
+                {avatarSrc ? (
+                  <img className="personal-avatar-img" src={avatarSrc} alt="用户头像" />
+                ) : (
+                  (account?.username || summary?.account.username || "U").slice(0, 1).toUpperCase()
+                )}
+              </div>
+              <div className="personal-profile-id">
+                <p>个人中心</p>
+                <h1>{account?.username || summary?.account.username || "当前用户"}</h1>
+              </div>
+              <button className="personal-password-entry" type="button" onClick={openPasswordDialog}>
+                <span className="iconfont icon-key" aria-hidden="true" />
+                <span>修改密码</span>
+              </button>
+            </div>
+
+            <div className="personal-profile-balance">
+              <div className="personal-balance-head">
+                <span className="personal-stat-title"><i className="iconfont icon-gold" aria-hidden="true" />可用积分</span>
+                <button
+                  type="button"
+                  className="personal-stats-refresh is-on-dark"
+                  onClick={() => refreshBalance()}
+                  disabled={balanceCooldownActive || loading}
+                  aria-label="刷新可用积分"
+                >
+                  {balanceCooldownActive
+                    ? `${balanceCooldownSeconds} 秒`
+                    : loading
+                      ? <><span className="personal-spinner" aria-hidden="true" />刷新中</>
+                      : <><span className="iconfont icon-refresh" aria-hidden="true" />刷新</>}
+                </button>
+              </div>
+              <div className="personal-stat-value">
+                <b>{animatedAvailablePoints === null ? "--" : animatedAvailablePoints.toLocaleString()}</b>
+                <span className="personal-stat-unit">积分</span>
+                {loading && <span className="personal-stat-spinner" aria-label="积分刷新中" />}
+              </div>
+              <div className="personal-stat-meta">
+                <div className="personal-stat-item">
+                  <span>总积分</span>
+                  <b>{animatedTotalPoints === null ? "--" : animatedTotalPoints.toLocaleString()}</b>
+                </div>
+                <div className="personal-stat-item">
+                  <span>冻结积分</span>
+                  <b>{summary?.wallet.frozen_points.toLocaleString() ?? "--"}</b>
+                </div>
+                <div className="personal-stat-item is-ratio">
+                  <span>换算比例</span>
+                  <b>{summary?.pricing.ratio_label ?? "1 元 = 100 积分"}</b>
+                </div>
+              </div>
+            </div>
+          </div>
         </aside>
 
         <div className="personal-panel-content">
+        <div className="personal-panel-anim" key={activePanel}>
         {activePanel === "wallet" ? <div className="personal-grid">
         <article className="personal-card topup-card">
           <div className="topup-header">
@@ -1174,6 +1221,7 @@ export function PersonalCenterPage() {
             )}
           </article>
         )}
+        </div>
         </div>
       </div>
     </section>

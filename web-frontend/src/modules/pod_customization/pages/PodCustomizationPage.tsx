@@ -349,8 +349,17 @@ export function PodCustomizationPage({ isActive = true }: Props) {
       try {
         const fresh = await podCustomizationApi.getBatch(activeBatch.id);
         if (stopped) return;
-        setActiveBatch(fresh);
-        setBatches((current) => sortBatches([toSummary(fresh), ...current.filter((batch) => batch.id !== fresh.id)]));
+        // 内容没变就保留旧引用：fresh 永远是新对象，无条件 set 会让整页
+        // 每 1.5s 白白重渲染一次（画廊几十款 × 4 图的协调开销很大）。
+        const freshJson = JSON.stringify(fresh);
+        setActiveBatch((current) => (current && JSON.stringify(current) === freshJson ? current : fresh));
+        const summary = toSummary(fresh);
+        setBatches((current) => {
+          const next = sortBatches([summary, ...current.filter((batch) => batch.id !== summary.id)]);
+          const unchanged = current.length === next.length
+            && current.every((batch, index) => batch === next[index] || JSON.stringify(batch) === JSON.stringify(next[index]));
+          return unchanged ? current : next;
+        });
       } catch (cause) {
         if (!stopped) setError(cause instanceof Error ? cause.message : String(cause));
       } finally {

@@ -5,38 +5,63 @@
   color: var(--theme-text-primary, #132238);
 }
 
-.personal-hero {
-  display: flex;
-  justify-content: space-between;
-  gap: 18px;
-  align-items: center;
-  padding: 22px;
-  border-radius: 24px;
-  background:
-    radial-gradient(circle at 12% 16%, rgba(var(--theme-module-primary-rgb, 0, 214, 255), 0.2), transparent 32%),
-    var(--theme-module-panel-gradient, linear-gradient(135deg, rgba(255, 255, 255, 0.96), rgba(236, 248, 255, 0.92)));
-  border: 1px solid var(--theme-module-border, rgba(99, 179, 237, 0.28));
-  box-shadow: 0 18px 46px rgba(34, 99, 150, 0.13);
+.personal-hero-glow {
+  position: absolute;
+  z-index: -1;
+  pointer-events: none;
+  border-radius: 50%;
+  filter: blur(42px);
+}
+
+.personal-hero-glow {
+  top: -42%;
+  right: -6%;
+  width: 46%;
+  aspect-ratio: 1;
+  background: var(--theme-hero-fluid-bg, radial-gradient(circle, rgba(111, 247, 225, 0.34), transparent 66%));
+  animation: personal-hero-glow-drift 14s ease-in-out infinite alternate;
+}
+
+.personal-hero-glow.is-two {
+  top: auto;
+  bottom: -58%;
+  right: 20%;
+  width: 38%;
+  background: radial-gradient(circle, rgba(255, 255, 255, 0.16), transparent 62%);
+  animation-duration: 19s;
+  animation-delay: -5s;
+}
+
+@keyframes personal-hero-glow-drift {
+  from { transform: translate3d(0, 0, 0) scale(1); }
+  to { transform: translate3d(-46px, 26px, 0) scale(1.2); }
 }
 
 .personal-avatar-card {
+  position: relative;
+  z-index: 1;
   display: flex;
   align-items: center;
   gap: 16px;
 }
 
 .personal-avatar {
-  width: 72px;
-  height: 72px;
-  border-radius: 24px;
+  width: 56px;
+  height: 56px;
+  border-radius: 18px;
   display: grid;
   place-items: center;
-  color: var(--theme-on-primary, #fff);
-  font-size: 34px;
+  color: #fff;
+  font-size: 26px;
   font-weight: 900;
+  flex: none;
   background: var(--theme-primary-button-gradient, linear-gradient(135deg, #0ea5ff, #19e2c4));
-  box-shadow: 0 16px 35px rgba(14, 165, 255, 0.28);
+  box-shadow:
+    0 0 0 3px rgba(255, 255, 255, 0.28),
+    0 0 0 6px rgba(255, 255, 255, 0.08),
+    0 16px 38px color-mix(in srgb, var(--theme-primary, #0ea5ff) 48%, transparent);
   overflow: hidden;
+  transition: transform 0.2s ease, box-shadow 0.2s ease;
 }
 
 .personal-avatar-img {
@@ -48,6 +73,11 @@
 
 .personal-avatar:hover {
   cursor: pointer;
+  transform: scale(1.05);
+  box-shadow:
+    0 0 0 3px rgba(255, 255, 255, 0.36),
+    0 0 0 6px rgba(255, 255, 255, 0.1),
+    0 20px 46px color-mix(in srgb, var(--theme-primary, #0ea5ff) 58%, transparent);
 }
 
 .personal-avatar-preview-layer {
@@ -109,13 +139,16 @@
 }
 
 .personal-avatar-card p {
-  color: var(--theme-text-secondary, #65758b);
-  font-size: 14px;
+  color: var(--theme-hero-eyebrow, #9edafa);
+  font-size: 13px;
+  font-weight: 700;
+  letter-spacing: 0.04em;
 }
 
 .personal-avatar-card h1 {
   margin-top: 4px;
   font-size: 28px;
+  color: #fff;
 }
 
 .personal-avatar-card span,
@@ -141,30 +174,32 @@
 }
 
 .personal-password-entry {
+  flex: none;
   display: inline-flex;
   align-items: center;
-  gap: 8px;
-  padding: 12px 16px;
-  border: 1px solid rgba(14, 165, 255, 0.22);
-  border-radius: 999px;
-  color: var(--theme-module-primary-strong, #075985);
-  background: var(--theme-module-surface-raised, rgba(255, 255, 255, 0.9));
-  box-shadow: 0 8px 20px rgba(34, 99, 150, 0.1);
-  font-weight: 850;
-  cursor: pointer;
+  gap: 6px;
+  padding: 8px 13px;
+  border: 1px solid rgba(255, 255, 255, 0.3);
+  border-radius: 10px;
+  color: #fff;
+  background: rgba(255, 255, 255, 0.12);
+  backdrop-filter: blur(8px);
+  font-size: 12px;
+  font-weight: 750;
   white-space: nowrap;
-  transition: transform 0.18s ease, border-color 0.18s ease, box-shadow 0.18s ease;
+  cursor: pointer;
+  transition: transform 0.18s ease, background 0.18s ease, border-color 0.18s ease;
 }
 
 .personal-password-entry:hover {
   transform: translateY(-1px);
-  border-color: rgba(14, 165, 255, 0.5);
-  box-shadow: 0 10px 24px rgba(34, 99, 150, 0.16);
+  border-color: rgba(255, 255, 255, 0.55);
+  background: rgba(255, 255, 255, 0.22);
 }
 
 .personal-password-entry .iconfont {
-  color: var(--theme-module-primary-strong, #0ea5e9);
-  font-size: 17px;
+  color: #fff;
+  font-size: 14px;
 }
 
 .personal-password-layer {
@@ -347,70 +382,50 @@
   border-color: #fecdd3;
 }
 
-/* ── 顶部积分概览：一整条信息条（左侧金色锚点 + 右侧三指标横排） ── */
+/* ── 顶部积分概览：深色发光资产卡（左侧可用积分 + 右侧三指标玻璃块） ── */
 .personal-stats {
-  display: grid;
-  grid-template-columns: minmax(240px, 0.95fr) minmax(0, 1.05fr);
-  gap: 14px;
-}
-
-.personal-stat {
-  display: grid;
-  gap: 6px;
-  padding: 18px 20px;
-  border-radius: 20px;
-  background: var(--theme-module-surface, rgba(255, 255, 255, 0.94));
-  border: 1px solid var(--theme-module-border, rgba(148, 163, 184, 0.2));
-  box-shadow: 0 12px 30px rgba(15, 23, 42, 0.06);
-}
-
-.personal-stat.is-balance {
   position: relative;
+  isolation: isolate;
+  display: grid;
+  grid-template-columns: minmax(300px, 1fr) minmax(0, 1.1fr);
+  gap: 0;
+  border-radius: 22px;
   overflow: hidden;
-  display: flex;
-  flex-direction: column;
-  align-items: flex-start;
-  justify-content: flex-start;
-  gap: 8px;
-  color: #fff;
-  border-color: transparent;
-  background:
-    radial-gradient(120% 170% at 10% -20%, rgba(255, 255, 255, 0.42), transparent 44%),
-    linear-gradient(135deg, #b87209 0%, #d49a1d 30%, #eab52e 60%, #f7d06a 100%);
-  box-shadow: 0 18px 38px rgba(212, 148, 25, 0.3);
+  border: 1px solid rgba(255, 255, 255, 0.14);
+  background: var(--theme-hero-gradient, linear-gradient(120deg, #083d71, #0c78bd 56%, #1ebfb3));
+  box-shadow: 0 24px 60px color-mix(in srgb, var(--theme-hero-shadow, rgba(8, 61, 113, 0.28)) 88%, transparent);
 }
 
-.personal-stat.is-balance::after {
-  content: "";
+.personal-stats-glow {
   position: absolute;
-  inset: 0;
+  z-index: 0;
+  left: -8%;
+  bottom: -60%;
+  width: 42%;
+  aspect-ratio: 1;
+  border-radius: 50%;
+  filter: blur(46px);
   pointer-events: none;
-  background: linear-gradient(105deg, transparent 32%, rgba(255, 255, 255, 0.22) 48%, transparent 64%);
-  animation: personal-gold-sheen 5s ease-in-out infinite;
+  background: var(--theme-hero-fluid-bg, radial-gradient(circle, rgba(111, 247, 225, 0.3), transparent 66%));
+  animation: personal-hero-glow-drift 16s ease-in-out infinite alternate-reverse;
 }
 
-@keyframes personal-gold-sheen {
-  0%, 58% { transform: translateX(-130%); }
-  100% { transform: translateX(130%); }
-}
-
-.personal-stat-value {
+/* 可用积分头部：label + 刷新按钮同行 */
+.personal-balance-head {
   display: flex;
   align-items: center;
-  gap: 10px;
-}
-
-.personal-stat span {
-  font-size: 12px;
-  font-weight: 700;
-  letter-spacing: 0.02em;
-  color: var(--theme-text-muted, #64748b);
+  justify-content: space-between;
+  gap: 8px;
 }
 
 .personal-stat-title {
   display: inline-flex;
   align-items: center;
   gap: 7px;
+  color: rgba(255, 255, 255, 0.92);
+  font-size: 12px;
+  font-weight: 700;
+  letter-spacing: 0.02em;
 }
 
 .personal-stat-title .iconfont {
@@ -419,97 +434,92 @@
   width: 22px;
   height: 22px;
   border-radius: 7px;
-  color: #7b4a00;
-  background: rgba(255, 248, 224, 0.85);
-  font-size: 0.95rem;
-  box-shadow: inset 0 0 0 1px rgba(210, 160, 50, 0.35);
-}
-
-.personal-stat.is-balance .personal-stat-title {
-  color: #fff7e0;
-}
-
-.personal-stat.is-balance .personal-stat-title .iconfont {
-  color: #a36d08;
-  background: rgba(255, 255, 255, 0.9);
-}
-
-.personal-stat.is-balance b {
-  position: relative;
-  z-index: 1;
   color: #fff;
-  text-shadow: 0 1px 8px rgba(120, 78, 4, 0.35);
+  background: rgba(255, 255, 255, 0.2);
+  font-size: 0.95rem;
+  box-shadow: inset 0 0 0 1px rgba(255, 255, 255, 0.28);
 }
 
-.personal-stat b {
-  font-size: 28px;
+.personal-stat-value {
+  display: flex;
+  align-items: baseline;
+  gap: 10px;
+}
+
+.personal-stat-value b {
+  font-size: 42px;
   letter-spacing: -0.03em;
-  color: var(--theme-text-primary, #0f172a);
+  color: #fff;
   font-variant-numeric: tabular-nums;
+  line-height: 1;
+  text-shadow: 0 2px 26px rgba(255, 255, 255, 0.4), 0 1px 10px color-mix(in srgb, var(--theme-primary, #0ea5ff) 45%, transparent);
 }
 
-/* 右侧三个指标横排的白色容器 */
+.personal-stat-unit {
+  font-size: 14px;
+  font-weight: 700;
+  color: rgba(255, 255, 255, 0.82);
+  letter-spacing: 0.02em;
+}
+
+/* 三个指标：竖排玻璃条（标签左、数字右），hover 微交互 */
 .personal-stat-meta {
   display: flex;
-  align-items: stretch;
-  padding: 14px 6px;
-  border-radius: 20px;
-  background: var(--theme-module-surface, rgba(255, 255, 255, 0.94));
-  border: 1px solid var(--theme-module-border, rgba(148, 163, 184, 0.2));
-  box-shadow: 0 12px 30px rgba(15, 23, 42, 0.06);
+  flex-direction: column;
+  gap: 8px;
+  padding: 0;
+  background: transparent;
 }
 
 .personal-stat-item {
-  flex: 1 1 0;
-  min-width: 0;
   display: flex;
-  flex-direction: column;
-  gap: 4px;
-  padding: 2px 18px;
-  position: relative;
+  flex-direction: row;
+  align-items: center;
+  justify-content: space-between;
+  gap: 12px;
+  padding: 11px 14px;
+  border-radius: 12px;
+  background: rgba(255, 255, 255, 0.1);
+  border: 1px solid rgba(255, 255, 255, 0.14);
+  backdrop-filter: blur(8px);
+  transition: background 0.16s ease, border-color 0.16s ease, transform 0.16s ease;
 }
 
-.personal-stat-item.is-ratio {
-  flex: 1.4 1 0;
+.personal-stat-item:hover {
+  background: rgba(255, 255, 255, 0.16);
+  border-color: rgba(255, 255, 255, 0.26);
+  transform: translateX(2px);
 }
 
 .personal-stat-item.is-ratio b {
-  font-size: 17px;
-}
-
-.personal-stat-item:not(:last-child)::after {
-  content: "";
-  position: absolute;
-  right: 0;
-  top: 8px;
-  bottom: 8px;
-  width: 1px;
-  background: rgba(148, 163, 184, 0.22);
+  font-size: 14px;
 }
 
 .personal-stat-item span {
   font-size: 12px;
   font-weight: 700;
   letter-spacing: 0.02em;
-  color: var(--theme-text-muted, #64748b);
+  color: var(--theme-hero-eyebrow, rgba(255, 255, 255, 0.72));
 }
 
 .personal-stat-item b {
-  font-size: 19px;
+  font-size: 17px;
   letter-spacing: -0.02em;
-  color: var(--theme-text-primary, #0f172a);
+  color: #fff;
   font-variant-numeric: tabular-nums;
   white-space: nowrap;
   overflow: hidden;
   text-overflow: ellipsis;
+  text-shadow: 0 1px 12px rgba(255, 255, 255, 0.28);
 }
 
 .personal-stats-refresh {
   position: relative;
   z-index: 1;
-  justify-self: start;
-  padding: 5px 12px;
-  margin-top: 2px;
+  display: inline-flex;
+  align-items: center;
+  gap: 5px;
+  padding: 5px 11px;
   border: 1px solid var(--theme-module-border, #dbe5ef);
   border-radius: 999px;
   color: var(--theme-text-muted, #64748b);
@@ -517,7 +527,7 @@
   font-size: 12px;
   font-weight: 750;
   cursor: pointer;
-  transition: border-color 0.16s ease, color 0.16s ease;
+  transition: border-color 0.16s ease, color 0.16s ease, background 0.16s ease;
 }
 
 .personal-stats-refresh:hover {
@@ -530,21 +540,30 @@
   opacity: 0.55;
 }
 
-/* 深色「可用积分」卡片内的刷新按钮 */
-.personal-stat.is-balance .personal-stats-refresh {
+/* 深色 profile 卡内的刷新按钮 */
+.personal-profile .personal-stats-refresh {
   color: #fff;
   background: rgba(255, 255, 255, 0.14);
-  border-color: rgba(255, 255, 255, 0.38);
+  border-color: rgba(255, 255, 255, 0.36);
 }
 
-.personal-stat.is-balance .personal-stats-refresh:hover:not(:disabled) {
+.personal-profile .personal-stats-refresh:hover:not(:disabled) {
   color: #fff;
-  border-color: rgba(255, 255, 255, 0.75);
+  border-color: rgba(255, 255, 255, 0.7);
   background: rgba(255, 255, 255, 0.22);
 }
 
-.personal-stat.is-balance .personal-stats-refresh:disabled {
+.personal-profile .personal-stats-refresh:disabled {
   opacity: 0.5;
+}
+
+.personal-profile .personal-stats-refresh .iconfont {
+  font-size: 13px;
+  transition: transform 0.4s ease;
+}
+
+.personal-profile .personal-stats-refresh:hover:not(:disabled) .iconfont {
+  transform: rotate(180deg);
 }
 
 /* 积分刷新加载动画：可用积分旁的转圈 + 按钮内小转圈 */
@@ -591,38 +610,108 @@
 
 .personal-content-layout {
   display: grid;
-  grid-template-columns: 200px minmax(0, 1fr);
-  gap: 18px;
+  grid-template-columns: minmax(0, 1fr) 300px;
+  gap: 20px;
   align-items: start;
 }
 
-.personal-subnav {
-  display: grid;
-  gap: 6px;
+.personal-sidebar {
+  grid-column: 2;
+  grid-row: 1;
+  display: flex;
+  flex-direction: column;
+  gap: 16px;
   position: sticky;
   top: 18px;
-  padding: 12px;
+  min-width: 0;
+}
+
+/* 深色 profile 卡：身份 + 积分概览竖排 */
+.personal-profile {
+  position: relative;
+  isolation: isolate;
+  display: flex;
+  flex-direction: column;
+  gap: 16px;
+  padding: 22px 20px;
+  border-radius: 22px;
+  overflow: hidden;
+  color: var(--theme-hero-text, #d6efff);
+  background: var(--theme-hero-gradient, linear-gradient(120deg, #083d71, #0c78bd 56%, #1ebfb3));
+  border: 1px solid rgba(255, 255, 255, 0.14);
+  box-shadow: 0 24px 60px color-mix(in srgb, var(--theme-hero-shadow, rgba(8, 61, 113, 0.28)) 88%, transparent);
+}
+
+.personal-profile-head {
+  position: relative;
+  z-index: 1;
+  display: flex;
+  align-items: center;
+  gap: 12px;
+}
+
+.personal-profile-id {
+  min-width: 0;
+  flex: 1 1 auto;
+}
+
+.personal-profile-id p {
+  margin: 0;
+  color: var(--theme-hero-eyebrow, #9edafa);
+  font-size: 12px;
+  font-weight: 700;
+  letter-spacing: 0.04em;
+}
+
+.personal-profile-id h1 {
+  margin: 3px 0 0;
+  font-size: 20px;
+  color: #fff;
+  line-height: 1.2;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.personal-profile-balance {
+  position: relative;
+  z-index: 1;
+  display: flex;
+  flex-direction: column;
+  gap: 14px;
+  padding-top: 16px;
+  border-top: 1px solid rgba(255, 255, 255, 0.16);
+}
+
+.personal-subnav {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 6px;
+  padding: 8px;
   border: 1px solid var(--theme-module-border, rgba(99, 179, 237, 0.25));
-  border-radius: 18px;
+  border-radius: 16px;
   background: var(--theme-module-surface-raised, rgba(255, 255, 255, 0.82));
   box-shadow: 0 12px 28px rgba(15, 23, 42, 0.07);
 }
 
 .personal-subnav button {
+  position: relative;
+  flex: 1 1 auto;
+  min-width: 0;
   display: flex;
   align-items: center;
-  gap: 10px;
-  width: 100%;
-  padding: 11px 13px;
+  justify-content: center;
+  gap: 8px;
+  padding: 10px 14px;
   border: 1px solid transparent;
-  border-radius: 12px;
+  border-radius: 10px;
   color: var(--theme-text-secondary, #465a73);
   background: transparent;
   font-size: 13px;
-  font-weight: 800;
+  font-weight: 700;
   cursor: pointer;
-  text-align: left;
-  transition: background 0.16s ease, border-color 0.16s ease, color 0.16s ease;
+  white-space: nowrap;
+  transition: background 0.16s ease, color 0.16s ease, box-shadow 0.16s ease;
 }
 
 .personal-subnav button:hover:not(.is-active) {
@@ -630,24 +719,48 @@
 }
 
 .personal-subnav button.is-active {
-  color: var(--theme-module-primary-strong, #075985);
-  border-color: rgba(14, 165, 233, 0.22);
-  background: linear-gradient(135deg, rgba(14, 165, 233, 0.12), rgba(45, 212, 191, 0.13));
-  box-shadow: 0 4px 12px rgba(14, 165, 233, 0.08);
+  color: #fff;
+  background: var(--theme-primary-button-gradient, linear-gradient(135deg, #0ea5ff, #20e0bd));
+  box-shadow: 0 6px 16px color-mix(in srgb, var(--theme-primary, #0ea5ff) 32%, transparent);
 }
 
 .personal-subnav button .iconfont {
-  font-size: 16px;
+  display: grid;
+  place-items: center;
+  width: 24px;
+  height: 24px;
+  border-radius: 7px;
+  background: var(--theme-module-surface-soft, #f1f5f9);
+  color: var(--theme-text-muted, #64748b);
+  font-size: 14px;
+  transition: background 0.16s ease, color 0.16s ease;
 }
 
-.personal-subnav p {
-  margin: 8px 4px 2px;
-  color: var(--theme-text-secondary, #718096);
-  font-size: 11px;
-  line-height: 1.55;
+.personal-subnav button.is-active .iconfont {
+  background: rgba(255, 255, 255, 0.24);
+  color: #fff;
 }
 
-.personal-panel-content { min-width: 0; }
+.personal-panel-content {
+  grid-column: 1;
+  grid-row: 1;
+  min-width: 0;
+}
+
+.personal-panel-anim {
+  animation: personal-panel-in 0.28s cubic-bezier(0.22, 1, 0.36, 1);
+}
+
+@keyframes personal-panel-in {
+  from { opacity: 0; transform: translateY(10px); }
+  to { opacity: 1; transform: translateY(0); }
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .personal-panel-anim {
+    animation: none;
+  }
+}
 
 .usage-card { min-height: 0; }
 .usage-card .personal-card-title > div { flex: 1; }
@@ -692,8 +805,8 @@
 
 @media (max-width: 900px) {
   .personal-content-layout { grid-template-columns: 1fr; }
-  .personal-subnav { position: static; grid-template-columns: 1fr 1fr; }
-  .personal-subnav p { grid-column: 1 / -1; }
+  .personal-sidebar { grid-column: auto; grid-row: auto; position: static; }
+  .personal-panel-content { grid-column: auto; grid-row: auto; }
 }
 
 .personal-card {
@@ -1071,26 +1184,8 @@
 }
 
 @media (max-width: 1080px) {
-  .personal-hero,
   .personal-grid {
     grid-template-columns: 1fr;
-  }
-
-  .personal-stats {
-    grid-template-columns: 1fr;
-  }
-
-  .personal-stat-meta {
-    flex-wrap: wrap;
-  }
-
-  .personal-stat-item {
-    flex-basis: calc(50% - 18px);
-    min-width: 0;
-  }
-
-  .personal-stat-item.is-ratio {
-    flex-basis: 100%;
   }
 
   .custom-topup {
@@ -1108,52 +1203,9 @@
     display: flex;
     flex-direction: column;
   }
-
-  .personal-hero {
-    align-items: stretch;
-    flex-direction: column;
-  }
-
-  .personal-hero-actions {
-    justify-content: flex-start;
-    flex-wrap: wrap;
-  }
 }
 
 @media (max-width: 620px) {
-  .personal-stats {
-    grid-template-columns: 1fr;
-  }
-
-  .personal-stat-meta {
-    flex-direction: column;
-    gap: 8px;
-    padding: 10px 14px;
-  }
-
-  .personal-stat-item {
-    flex-direction: row;
-    align-items: center;
-    justify-content: space-between;
-    gap: 12px;
-    padding: 6px 0;
-  }
-
-  .personal-stat-item:not(:last-child)::after {
-    right: 0;
-    top: auto;
-    bottom: -4px;
-    width: auto;
-    height: 1px;
-    left: 0;
-  }
-
-  .personal-stat.is-balance {
-    flex-direction: column;
-    align-items: flex-start;
-    gap: 14px;
-  }
-
   .topup-header {
     flex-direction: column;
     align-items: flex-start;
@@ -1169,11 +1221,6 @@
     align-items: flex-start;
     flex-wrap: wrap;
     border-radius: 16px;
-  }
-
-  .personal-password-entry {
-    justify-content: center;
-    width: 100%;
   }
 
   .personal-password-layer {
@@ -1194,69 +1241,27 @@
     gap: 10px;
   }
 
-  .personal-hero {
-    min-height: 84px;
-    padding: 12px 18px;
+  .personal-profile {
+    padding: 18px 16px;
     border-radius: 19px;
+    gap: 14px;
   }
 
-  .personal-avatar-card {
-    gap: 13px;
+  .personal-profile-id h1 {
+    font-size: 18px;
   }
 
-  .personal-avatar {
-    width: 56px;
-    height: 56px;
-    border-radius: 18px;
-    font-size: 27px;
-  }
-
-  .personal-avatar-card p {
-    font-size: 12px;
-  }
-
-  .personal-avatar-card h1 {
-    margin-top: 1px;
-    font-size: 23px;
-    line-height: 1.1;
-  }
-
-  .personal-avatar-card span,
-  .personal-security-pill span {
-    font-size: 12px;
-  }
-
-  .personal-security-pill,
   .personal-password-entry {
-    padding: 9px 13px;
+    padding: 7px 11px;
   }
 
-  .personal-stats {
-    gap: 10px;
-  }
-
-  .personal-stat {
-    min-height: 82px;
-    gap: 3px;
-    padding: 11px 16px;
-    border-radius: 16px;
-  }
-
-  .personal-stat.is-balance {
-    padding: 12px 16px;
-  }
-
-  .personal-stat b {
-    font-size: 22px;
-    line-height: 1.05;
-  }
-
-  .personal-stat-meta {
-    padding: 10px 4px;
+  .personal-stat-value b {
+    font-size: 34px;
+    line-height: 1;
   }
 
   .personal-stat-item {
-    padding: 2px 12px;
+    padding: 10px 12px;
   }
 
   .personal-stat-item b {
@@ -1270,9 +1275,9 @@
   }
 
   .personal-content-layout {
-    grid-template-columns: 174px minmax(0, 1fr);
+    grid-template-columns: minmax(0, 1fr) 280px;
     flex: 1 1 auto;
-    gap: 12px;
+    gap: 16px;
     min-height: 0;
   }
 
@@ -1287,40 +1292,14 @@
     padding: 9px 10px;
   }
 
-  .personal-subnav p {
-    margin-top: 2px;
-    font-size: 11px;
-    line-height: 1.4;
-  }
-
   .personal-grid {
     grid-template-columns: minmax(0, 1fr) minmax(0, 1fr);
     gap: 12px;
-    height: 100%;
-    align-items: stretch;
+    align-items: start;
   }
 
   .personal-panel-content {
     min-height: 0;
-    height: 100%;
-  }
-
-  .topup-card,
-  .orders-card {
-    height: 100%;
-  }
-
-  .topup-card {
-    display: flex;
-    flex-direction: column;
-  }
-
-  .topup-card .primary-topup {
-    margin-top: auto;
-  }
-
-  .personal-stack {
-    display: contents;
   }
 
   .personal-card {
