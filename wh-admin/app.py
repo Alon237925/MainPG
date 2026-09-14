@@ -8,6 +8,7 @@ from __future__ import annotations
 
 import base64
 import binascii
+import builtins
 import json
 import logging
 import os
@@ -15,19 +16,20 @@ import sqlite3
 import re
 import secrets
 import string
-import subprocess
 import sys
 import threading
 import time
+import traceback
 import webbrowser
 from datetime import datetime, timedelta, timezone
-from io import BytesIO
+from io import BytesIO, StringIO
 from pathlib import Path
 from typing import Any
 
 import paramiko
 import uvicorn
-from fastapi import FastAPI, Header, HTTPException, Request
+from fastapi import FastAPI, Header, HTTPException, Query, Request
+from fastapi.concurrency import run_in_threadpool
 from fastapi.responses import FileResponse, Response
 from openpyxl import Workbook
 from openpyxl.styles import Alignment, Font, PatternFill
@@ -41,15 +43,24 @@ from server_scripts import (
     SERVER_GENERATE_INVITATIONS_SCRIPT,
     SERVER_LIST_ADMINS_SCRIPT,
     SERVER_LIST_AUDIT_SCRIPT,
+    SERVER_COUNT_NEW_FEEDBACK_SCRIPT,
+    SERVER_DELETE_FEEDBACK_SCRIPT,
+    SERVER_GET_FEEDBACK_IMAGES_SCRIPT,
+    SERVER_LIST_FEEDBACK_SCRIPT,
+    SERVER_LIST_FEEDBACK_REPLIES_SCRIPT,
+    SERVER_SEND_FEEDBACK_REPLY_SCRIPT,
     SERVER_LIST_INVITATIONS_SCRIPT,
     SERVER_LIST_USERS_SCRIPT,
+    SERVER_LIST_USER_ACTIVITY_SCRIPT,
     SERVER_LOGIN_SCRIPT,
     SERVER_LOGOUT_SCRIPT,
+    SERVER_PURGE_AUDIT_SCRIPT,
     SERVER_RESET_ADMIN_PASSWORD_SCRIPT,
     SERVER_RESET_USER_PASSWORD_SCRIPT,
     SERVER_SCHEMA_SCRIPT,
     SERVER_SET_ADMIN_STATUS_SCRIPT,
     SERVER_SET_USER_STATUS_SCRIPT,
+    SERVER_UPDATE_FEEDBACK_SCRIPT,
     SERVER_VALIDATE_SESSION_SCRIPT,
     SERVER_VERIFY_ADMIN_PASSWORD_SCRIPT,
 )
@@ -194,8 +205,37 @@ def cfg_ok(config: dict[str, Any]) -> bool:
 
 
 # ---------------------------------------------------------------- SSH / 远端数据库
+def _run_local_script(script: str, args: list[Any]) -> str:
+    """在同一进程内执行服务器脚本片段，返回脚本 print 出来的内容。
+
+    这里以前是 subprocess.run 起一个新解释器，每个请求要多付约 140ms 的进程
+    启动成本；脚本之间不需要共享状态，所以改为同进程 exec。
+    捕获输出用「只给本次调用注入一个 print」，而不是替换 sys.stdout：app.py
+    的端点都是同步函数，FastAPI 会把它们放进线程池执行，替换全局 stdout 会让
+    并发请求的输出互相串写。
+    """
+    sink = StringIO()
+    local_builtins = dict(vars(builtins))
+    local_builtins["print"] = lambda *values, **options: print(
+        *values, **{**options, "file": sink}
+    )
+    scope: dict[str, Any] = {
+        "__name__": "__server_script__",
+        "__builtins__": local_builtins,
+        "A": args,
+    }
+    try:
+        exec(compile(script, "<server_script>", "exec"), scope)
+    except Exception as exc:
+        log.error("服务器本机脚本错误: %s", traceback.format_exc()[-2000:])
+        raise RuntimeError(f"服务器执行出错: {exc}") from exc
+    return sink.getvalue()
+
+
 def _ssh_exec(script: str, args: list[Any]) -> str:
     """在服务器本机或通过 SSH 执行 Python 片段并返回 stdout。"""
+    if LOCAL_MODE:
+        return _run_local_script(script, args)
     config = load_config()
     payload = base64.b64encode(
         json.dumps({"s": script, "a": args}, ensure_ascii=False).encode("utf-8")
@@ -206,18 +246,6 @@ def _ssh_exec(script: str, args: list[Any]) -> str:
         "globals()['A']=d['a'];"
         "exec(compile(d['s'],'<server_script>','exec'),globals())"
     )
-    if LOCAL_MODE:
-        result = subprocess.run(
-            [sys.executable, "-c", runner, payload],
-            text=True,
-            capture_output=True,
-            timeout=60,
-        )
-        if result.returncode or result.stderr.strip():
-            error = result.stderr.strip() or f"本机脚本退出码 {result.returncode}"
-            log.error("服务器本机脚本错误: %s", error[-2000:])
-            raise RuntimeError(f"服务器执行出错: {error[-500:]}")
-        return result.stdout
     command = f'python3 -c "{runner}" {payload}'
     client = paramiko.SSHClient()
     client.set_missing_host_key_policy(paramiko.AutoAddPolicy())
@@ -339,7 +367,34 @@ def gen_password(length: int = 14) -> str:
     return "".join(password)
 
 
+_AUDIT_PURGE_INTERVAL_SECONDS = 6 * 60 * 60
+_audit_purge_lock = threading.Lock()
+_audit_purged_at = 0.0
+
+
+def _maybe_purge_audit_logs() -> None:
+    """按间隔触发一次操作日志保留清理。
+
+    这段清理原来挂在每个脚本内部的 _db() 里，等于每个请求都要对
+    admin_operation_logs 做一次全表扫描并抢写锁，连只读接口也在写库。
+    挪到这里按小时级间隔执行即可；清理失败不影响本次业务请求。
+    """
+    global _audit_purged_at
+    if time.monotonic() - _audit_purged_at < _AUDIT_PURGE_INTERVAL_SECONDS:
+        return
+    with _audit_purge_lock:
+        if time.monotonic() - _audit_purged_at < _AUDIT_PURGE_INTERVAL_SECONDS:
+            return
+        try:
+            _remote(SERVER_PURGE_AUDIT_SCRIPT, [])
+        except Exception as exc:
+            log.warning("操作日志保留清理失败: %s", exc)
+        finally:
+            _audit_purged_at = time.monotonic()
+
+
 def _run_remote(script: str, args: list[Any], operation: str) -> dict[str, Any]:
+    _maybe_purge_audit_logs()
     try:
         result = _remote(script, args)
     except HTTPException:
@@ -520,10 +575,17 @@ def _announce_db() -> sqlite3.Connection:
             published_at TEXT,
             active INTEGER NOT NULL DEFAULT 0,
             created_at TEXT NOT NULL,
-            updated_at TEXT NOT NULL
+            updated_at TEXT NOT NULL,
+            target_account_ids TEXT NOT NULL DEFAULT ''
         )
         """
     )
+    # 旧库迁移：定向发送列缺失时补列（空串 = 全员可见）。
+    cols = {row[1] for row in con.execute("PRAGMA table_info(announcements)")}
+    if "target_account_ids" not in cols:
+        con.execute(
+            "ALTER TABLE announcements ADD COLUMN target_account_ids TEXT NOT NULL DEFAULT ''"
+        )
     con.commit()
     return con
 
@@ -533,8 +595,29 @@ def _now_beijing() -> str:
     return datetime.now(timezone(timedelta(hours=8))).isoformat(timespec="seconds")
 
 
+def _normalize_target_account_ids(payload: dict[str, Any]) -> list[str]:
+    """校验并规范化定向收件人：仅接受非空字符串列表，去重并限量。"""
+    raw = payload.get("target_account_ids")
+    if raw is None:
+        return []
+    if not isinstance(raw, list):
+        raise HTTPException(status_code=400, detail="target_account_ids must be a list")
+    cleaned: list[str] = []
+    for item in raw[:1000]:
+        value = str(item or "").strip()
+        if value and value not in cleaned:
+            cleaned.append(value)
+    return cleaned
+
+
 def _serialize_announcement(row) -> dict[str, Any]:
     r = dict(row)
+    try:
+        targets = json.loads(r.get("target_account_ids") or "[]")
+        if not isinstance(targets, list):
+            targets = []
+    except json.JSONDecodeError:
+        targets = []
     return {
         "id": r["id"],
         "title": r["title"],
@@ -543,17 +626,28 @@ def _serialize_announcement(row) -> dict[str, Any]:
         "active": bool(r["active"]),
         "created_at": r["created_at"],
         "updated_at": r["updated_at"],
+        "target_account_ids": targets,
     }
 
 
 @app.get("/api/announcements/public")
-def public_announcements() -> dict[str, Any]:
+def public_announcements(account_id: str = Query(default="")) -> dict[str, Any]:
     # 免登录：客户端工作台轮询拉取。仅返回 active=1 的公告，下线/删除的会被客户端撤回。
+    # 定向发送：客户端携带自己的账号 ID 时，额外返回发给它的公告；不带则只给全员公告。
+    account_id = (account_id or "").strip()
     con = _announce_db()
     try:
-        rows = con.execute(
-            "SELECT * FROM announcements WHERE active=1 ORDER BY id DESC"
-        ).fetchall()
+        if account_id:
+            like = f'%"{account_id}"%'
+            rows = con.execute(
+                "SELECT * FROM announcements WHERE active=1 AND (target_account_ids='' OR target_account_ids LIKE ?) "
+                "ORDER BY id DESC",
+                (like,),
+            ).fetchall()
+        else:
+            rows = con.execute(
+                "SELECT * FROM announcements WHERE active=1 AND target_account_ids='' ORDER BY id DESC"
+            ).fetchall()
     finally:
         con.close()
     return {"announcements": [_serialize_announcement(r) for r in rows]}
@@ -579,12 +673,14 @@ def create_announcement(payload: dict[str, Any], x_auth_token: str | None = Head
     if not title:
         raise HTTPException(status_code=400, detail="公告标题不能为空")
     content = (payload.get("content") or "").strip()
+    targets = _normalize_target_account_ids(payload)
     now = _now_beijing()
     con = _announce_db()
     try:
         cur = con.execute(
-            "INSERT INTO announcements(title, content, published_at, active, created_at, updated_at) VALUES(?,?,?,?,?,?)",
-            (title, content, now, 1, now, now),
+            "INSERT INTO announcements(title, content, published_at, active, created_at, updated_at, target_account_ids) "
+            "VALUES(?,?,?,?,?,?,?)",
+            (title, content, now, 1, now, now, json.dumps(targets, ensure_ascii=False)),
         )
         con.commit()
         new_id = cur.lastrowid
@@ -601,12 +697,13 @@ def update_announcement(announcement_id: int, payload: dict[str, Any], x_auth_to
     if not title:
         raise HTTPException(status_code=400, detail="公告标题不能为空")
     content = (payload.get("content") or "").strip()
+    targets = _normalize_target_account_ids(payload)
     now = _now_beijing()
     con = _announce_db()
     try:
         cur = con.execute(
-            "UPDATE announcements SET title=?, content=?, updated_at=? WHERE id=?",
-            (title, content, now, announcement_id),
+            "UPDATE announcements SET title=?, content=?, updated_at=?, target_account_ids=? WHERE id=?",
+            (title, content, now, json.dumps(targets, ensure_ascii=False), announcement_id),
         )
         con.commit()
         if cur.rowcount == 0:
@@ -844,6 +941,113 @@ def audit_logs(
     return _run_remote(SERVER_LIST_AUDIT_SCRIPT, [limit, offset], "读取操作日志")
 
 
+@app.get("/api/user-activity")
+def user_activity(
+    limit: int = 200,
+    offset: int = 0,
+    x_auth_token: str | None = Header(default=None),
+) -> dict[str, Any]:
+    _check_auth(x_auth_token)
+    limit = max(1, min(limit, 500))
+    offset = max(0, offset)
+    return _run_remote(SERVER_LIST_USER_ACTIVITY_SCRIPT, [limit, offset], "读取用户活动")
+
+
+@app.get("/api/feedback/unread-count")
+def feedback_unread_count(
+    x_auth_token: str | None = Header(default=None),
+) -> dict[str, Any]:
+    _check_auth(x_auth_token)
+    return _run_remote(SERVER_COUNT_NEW_FEEDBACK_SCRIPT, [], "读取新反馈数量")
+
+
+@app.get("/api/feedback")
+def feedback_list(
+    limit: int = 200,
+    offset: int = 0,
+    x_auth_token: str | None = Header(default=None),
+) -> dict[str, Any]:
+    _check_auth(x_auth_token)
+    limit = max(1, min(limit, 500))
+    offset = max(0, offset)
+    return _run_remote(SERVER_LIST_FEEDBACK_SCRIPT, [limit, offset], "读取用户反馈")
+
+
+@app.patch("/api/feedback/{feedback_id}/status")
+def feedback_status(
+    feedback_id: str,
+    payload: dict[str, Any],
+    x_auth_token: str | None = Header(default=None),
+) -> dict[str, Any]:
+    _check_auth(x_auth_token)
+    status = str(payload.get("status") or "")
+    if status not in ("new", "processing", "resolved"):
+        raise HTTPException(status_code=400, detail="无效的反馈状态")
+    admin_note = str(payload.get("admin_note") or "").strip()[:2000]
+    return _run_remote(
+        SERVER_UPDATE_FEEDBACK_SCRIPT,
+        [(x_auth_token or "").strip(), feedback_id, status, admin_note],
+        "更新反馈状态",
+    )
+
+
+@app.get("/api/feedback/{feedback_id}/images")
+def feedback_images(
+    feedback_id: str,
+    x_auth_token: str | None = Header(default=None),
+) -> dict[str, Any]:
+    _check_auth(x_auth_token)
+    return _run_remote(
+        SERVER_GET_FEEDBACK_IMAGES_SCRIPT,
+        [(x_auth_token or "").strip(), feedback_id],
+        "读取反馈图片",
+    )
+
+
+@app.delete("/api/feedback/{feedback_id}")
+def feedback_delete(
+    feedback_id: str,
+    request: Request,
+    x_auth_token: str | None = Header(default=None),
+) -> dict[str, Any]:
+    _check_auth(x_auth_token)
+    return _run_remote(
+        SERVER_DELETE_FEEDBACK_SCRIPT,
+        [(x_auth_token or "").strip(), feedback_id, _client_ip(request)],
+        "删除反馈",
+    )
+
+
+@app.post("/api/feedback/{feedback_id}/send-reply")
+def feedback_send_reply(
+    feedback_id: str,
+    payload: dict[str, Any],
+    x_auth_token: str | None = Header(default=None),
+) -> dict[str, Any]:
+    _check_auth(x_auth_token)
+    reply = str(payload.get("reply") or "").strip()
+    if not reply:
+        raise HTTPException(status_code=400, detail="回复内容不能为空")
+    status = str(payload.get("status") or "processing")
+    if status not in ("new", "processing", "resolved"):
+        status = "processing"
+    return _run_remote(
+        SERVER_SEND_FEEDBACK_REPLY_SCRIPT,
+        [(x_auth_token or "").strip(), feedback_id, reply[:2000], status],
+        "发送反馈回复",
+    )
+
+
+@app.get("/api/feedback-replies/public")
+def public_feedback_replies(account_id: str = Query(default="")) -> dict[str, Any]:
+    # 免登录：客户端工作台轮询拉取发给当前账号的反馈回复。
+    account_id = (account_id or "").strip()
+    result = _run_remote(
+        SERVER_LIST_FEEDBACK_REPLIES_SCRIPT, [account_id], "读取反馈回复"
+    )
+    return {"announcements": result.get("replies", [])}
+
+
 # ---------------------------------------------------------------- Excel 导出
 @app.get("/api/credentials")
 def credentials(x_auth_token: str | None = Header(default=None)) -> dict[str, Any]:
@@ -1033,6 +1237,88 @@ def static_file(filename: str) -> FileResponse:
     return FileResponse(path)
 
 
+# ---------------------------------------------------------------- 更新发布代理
+try:  # pragma: no cover - 部署脚本会安装 httpx
+    import httpx
+except ImportError:  # pragma: no cover
+    httpx = None  # type: ignore[assignment]
+
+UPDATE_ADMIN_BASE = os.environ.get("WH_UPDATE_ADMIN_BASE", "http://127.0.0.1:8013").rstrip("/")
+UPDATE_ADMIN_PROXY_SECRET = os.environ.get("UPDATE_ADMIN_PROXY_SECRET", "").strip()
+
+_RELEASE_PROXY_DROP_HEADERS = {
+    "connection", "keep-alive", "proxy-authenticate", "proxy-authorization",
+    "te", "trailer", "transfer-encoding", "upgrade",
+    "content-length", "content-encoding",
+    "x-auth-token", "x-update-admin-proxy-secret", "cookie",
+    # update-admin 以 --proxy-headers --forwarded-allow-ips=127.0.0.1 运行，
+    # 任何 X-Forwarded-* 都会覆盖它看到的对端地址，使回环信任校验失效。
+    "x-forwarded-for", "x-forwarded-proto", "x-forwarded-host",
+    "x-real-ip", "forwarded",
+}
+
+# 真实客户端 IP 走专用头透传，仅供回环地址上的 update-admin 记录审计日志。
+RELEASE_PROXY_CLIENT_IP_HEADER = "x-update-admin-client-ip"
+
+
+@app.api_route(
+    "/api/release/{path:path}",
+    methods=["GET", "POST", "PUT", "PATCH", "DELETE"],
+)
+async def release_proxy(
+    path: str,
+    request: Request,
+    x_auth_token: str | None = Header(default=None),
+) -> Response:
+    """把 /api/release/* 透传给只监听回环地址的更新发布后台（8013）。
+
+    登录态由 wh-admin 自己校验；转发时附带共享密钥头，
+    update-admin 侧只接受来自 127.0.0.1 且密钥匹配的请求。
+    """
+    await run_in_threadpool(_check_auth, x_auth_token)
+    if httpx is None:
+        raise HTTPException(status_code=503, detail="服务器缺少 httpx 依赖，无法转发更新发布请求")
+    if not UPDATE_ADMIN_PROXY_SECRET:
+        raise HTTPException(status_code=503, detail="更新发布代理未配置共享密钥")
+
+    headers = {
+        key: value
+        for key, value in request.headers.items()
+        if key.lower() not in _RELEASE_PROXY_DROP_HEADERS
+    }
+    headers["x-update-admin-proxy-secret"] = UPDATE_ADMIN_PROXY_SECRET
+    client_ip = _client_ip(request)
+    if client_ip:
+        headers[RELEASE_PROXY_CLIENT_IP_HEADER] = client_ip
+
+    target = f"{UPDATE_ADMIN_BASE}/api/{path}"
+    if request.url.query:
+        target = f"{target}?{request.url.query}"
+
+    try:
+        async with httpx.AsyncClient(timeout=httpx.Timeout(1800.0, connect=10.0)) as client:
+            upstream = await client.request(
+                request.method,
+                target,
+                headers=headers,
+                content=request.stream(),
+            )
+    except httpx.HTTPError as exc:
+        log.error("转发更新发布请求失败: %s", exc)
+        raise HTTPException(status_code=502, detail=f"更新发布服务不可用: {exc}") from exc
+
+    response_headers = {
+        key: value
+        for key, value in upstream.headers.items()
+        if key.lower() not in _RELEASE_PROXY_DROP_HEADERS
+    }
+    return Response(
+        content=upstream.content,
+        status_code=upstream.status_code,
+        headers=response_headers,
+    )
+
+
 PORT_FILE = BASE_DIR / "port.txt"
 
 
@@ -1131,6 +1417,22 @@ def _batch_freezes_has_task_id(db_path: str) -> bool:
     return _BATCH_TASK_ID_CACHE[key]
 
 
+def _table_has_column(db_path: Any, table: str, column: str) -> bool:
+    """表是否已有指定列（不缓存）。
+
+    服务器 customer-auth 库可能落后于 MainPG schema（部分列由服务端迁移补加）。
+    缺列时查询退化为 '' 占位，避免整页 500；不做缓存是为了让服务端加列后
+    无需重启本服务即可自动生效。
+    """
+    try:
+        import sqlite3
+        with sqlite3.connect(str(db_path)) as conn:
+            cols = {row[1] for row in conn.execute(f"PRAGMA table_info({table})")}
+        return column in cols
+    except Exception:
+        return False
+
+
 @app.get("/api/billing")
 def billing_records(limit: int = 200, x_auth_token: str | None = Header(default=None)) -> dict[str, Any]:
     _check_auth(x_auth_token)
@@ -1189,6 +1491,9 @@ def billing_usage_records(
     import sqlite3
     db_path = load_config()["database_path"]
     scale = _billing_point_scale(db_path)
+    # 版本列由 MainPG 服务端迁移补加，服务器可能尚未升级；缺列时退化占位，避免整页 500。
+    ev_appver = "u.app_version" if _table_has_column(db_path, "billing_ai_usage_events", "app_version") else "'' AS app_version"
+    bf_appver = "f.app_version" if _table_has_column(db_path, "billing_batch_freezes", "app_version") else "'' AS app_version"
     limit = max(1, min(int(limit), 200))
     cur = _usage_decode_cursor(cursor)
     q = (q or "").strip()
@@ -1219,7 +1524,7 @@ def billing_usage_records(
             f"u.charged_points,u.refunded_points,u.provider,u.provider_task_id,u.model,u.status,u.error_message,"
             f"u.created_at,u.settled_at,COALESCE(w.points_balance,0) AS points_balance,"
             f"COALESCE(w.locked_points,0) AS locked_points,COALESCE(w.manual_frozen_points,0) AS manual_frozen_points,"
-            f"u.metadata_json FROM billing_ai_usage_events u LEFT JOIN auth_accounts a ON a.account_id=u.account_id "
+            f"{ev_appver},u.metadata_json FROM billing_ai_usage_events u LEFT JOIN auth_accounts a ON a.account_id=u.account_id "
             f"LEFT JOIN billing_wallets w ON w.account_id=u.account_id {ev_where} "
             f"ORDER BY u.created_at DESC,u.usage_id DESC LIMIT ?",
             (*ev_params, limit + 1),
@@ -1246,7 +1551,7 @@ def billing_usage_records(
         batch = conn.execute(
             f"SELECT ('batch:'||f.freeze_id) AS usage_id,f.freeze_id,f.account_id,COALESCE(a.username,'') AS username,"
             f"f.billing_profile,{task_col},f.link_count,f.frozen_points,f.charged_points,f.refunded_points,f.status,"
-            f"f.rule_version,f.created_at,f.settled_at,COALESCE(w.points_balance,0) AS points_balance,"
+            f"f.rule_version,{bf_appver},f.created_at,f.settled_at,COALESCE(w.points_balance,0) AS points_balance,"
             f"COALESCE(w.locked_points,0) AS locked_points,COALESCE(w.manual_frozen_points,0) AS manual_frozen_points "
             f"FROM billing_batch_freezes f LEFT JOIN auth_accounts a ON a.account_id=f.account_id "
             f"LEFT JOIN billing_wallets w ON w.account_id=f.account_id {bf_where} "
@@ -1293,6 +1598,7 @@ def billing_usage_records(
             "manual_frozen_points": _display_points(int(row["manual_frozen_points"] or 0), scale),
             "metadata_json": "",
             "rule_version": int(row["rule_version"] or 0),
+            "app_version": str(row["app_version"] or ""),
         }
         items.append(item)
 
@@ -1699,6 +2005,7 @@ def billing_summary(x_auth_token: str | None = Header(default=None)) -> dict[str
     _cache.cache_set("admin:billing:summary", payload, ttl=30)
     return payload
 
+
 @app.get("/api/billing/multipliers")
 def billing_multipliers(x_auth_token: str | None = Header(default=None)) -> dict[str, Any]:
     """价格倍率页数据：当前倍率/单条价值 + 审计历史 + 定价基准预览。"""
@@ -1749,6 +2056,7 @@ def update_billing_multipliers(
         "multipliers": updated,
         "changelog": multiplier_changelog(db_path, limit=200),
     }
+
 
 @app.post("/api/billing/{account_id}/adjust")
 def adjust_billing_points(account_id: str, payload: dict[str, Any], request: Request, x_auth_token: str | None = Header(default=None)) -> dict[str, Any]:
