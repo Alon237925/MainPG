@@ -38,7 +38,12 @@ class RecordingBillingClient:
         self.reserved.append((token, payload))
         if self.fail_reserve_at and len(self.reserved) == self.fail_reserve_at:
             raise RuntimeError("reserve rejected")
-        kind = "text" if payload["feature_key"].endswith(".text") else "image"
+        if payload["feature_key"].endswith(".vision"):
+            kind = "vision"
+        elif payload["feature_key"].endswith(".text"):
+            kind = "text"
+        else:
+            kind = "image"
         return {
             "usage": {
                 "usage_id": f"use-{kind}",
@@ -139,20 +144,26 @@ def test_item_usage_reserves_selected_features_and_settles_success(
 
     usage_ids = service._reserve_product_processing_item_usage(7, 11, settings)
 
-    assert usage_ids == {"text": "use-text", "image_grid": "use-image"}
+    assert usage_ids == {
+        "text": "use-text",
+        "image_grid": "use-image",
+        "vision": "use-vision",
+    }
     assert [call[1]["feature_key"] for call in remote.reserved] == [
         "product_processing.text",
         "product_processing.image_grid_2k",
+        "product_processing.vision",
     ]
     service._settle_product_processing_item_success(7, 11, settings, {"ai_notes": ["ok"]})
     assert remote.succeeded == [
         ("remote-token", "use-text"),
         ("remote-token", "use-image"),
+        ("remote-token", "use-vision"),
     ]
     assert service._reserved_usage_ids(7, 11) == {}
 
 
-def test_exact_text_cache_hit_releases_text_usage_but_charges_generated_image(
+def test_exact_cache_hit_releases_text_and_vision_usage_but_charges_generated_image(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
     service = _service(tmp_path)
@@ -168,7 +179,7 @@ def test_exact_text_cache_hit_releases_text_usage_but_charges_generated_image(
         settings,
         {
             "ai_notes": ["subject_identity:cache-hit", "structured_text:cache-hit"],
-            "billing_skipped_kinds": ["text"],
+            "billing_skipped_kinds": ["text", "vision"],
         },
     )
 
@@ -177,7 +188,12 @@ def test_exact_text_cache_hit_releases_text_usage_but_charges_generated_image(
             "remote-token",
             "use-text",
             "exact AI stage cache hit; provider was not called",
-        )
+        ),
+        (
+            "remote-token",
+            "use-vision",
+            "exact AI stage cache hit; provider was not called",
+        ),
     ]
     assert remote.succeeded == [("remote-token", "use-image")]
     assert service._reserved_usage_ids(7, 11) == {}
@@ -186,8 +202,9 @@ def test_exact_text_cache_hit_releases_text_usage_but_charges_generated_image(
 @pytest.mark.parametrize(
     ("scope", "expected"),
     [
-        (["title"], {"text": "use-text"}),
-        (["four_grid"], {"image_grid": "use-image"}),
+        (["title"], {"text": "use-text", "vision": "use-vision"}),
+        (["four_grid"], {"image_grid": "use-image", "vision": "use-vision"}),
+        ([], {}),
     ],
 )
 def test_item_usage_reserves_only_enabled_feature(
@@ -782,7 +799,7 @@ def test_crash_after_remote_reserve_reuses_durable_attempt_key(
         task["id"], item["item_id"], task["settings"]
     )
 
-    assert usage == {"text": "use-text"}
+    assert usage == {"text": "use-text", "vision": "use-vision"}
     assert remote.reserved[0][1]["idempotency_key"] == attempt["idempotency_key"]
     persisted = restarted.repository.product_billing_attempts(task_id=task["id"])
     assert persisted[0]["usage_id"] == "use-text"
@@ -943,7 +960,7 @@ def test_settlement_requires_exact_usage_id_and_preserves_pending_evidence(
     usage_ids = service._reserve_product_processing_item_usage(
         task["id"], item["item_id"], task["settings"]
     )
-    assert usage_ids == {"text": "use-text"}
+    assert usage_ids == {"text": "use-text", "vision": "use-vision"}
 
     with pytest.raises(CustomerBillingProtocolError):
         if entrypoint == "success":
@@ -965,7 +982,8 @@ def test_settlement_requires_exact_usage_id_and_preserves_pending_evidence(
     assert attempts[0]["settlement_state"] == "settlement_pending"
     assert attempts[0]["last_error"] == "remote billing service returned an invalid response"
     assert service._reserved_usage_ids(task["id"], item["item_id"]) == {
-        "text": "use-text"
+        "text": "use-text",
+        "vision": "use-vision",
     }
 
 
@@ -1083,15 +1101,23 @@ def test_same_process_reconcile_forgets_exact_old_usage_before_retry(
         def __init__(self) -> None:
             super().__init__()
             self.failure_calls = 0
+            self.kind_counts: dict[str, int] = {}
 
         def reserve_ai_usage(self, token: str, payload: dict[str, Any]) -> dict[str, Any]:
             self.reserved.append((token, payload))
-            ordinal = len(self.reserved)
+            feature_key = payload["feature_key"]
+            if feature_key.endswith(".vision"):
+                kind = "vision"
+            elif feature_key.endswith(".text"):
+                kind = "text"
+            else:
+                kind = "image"
+            self.kind_counts[kind] = self.kind_counts.get(kind, 0) + 1
             return {
                 "usage": {
-                    "usage_id": f"use-text-{ordinal}",
+                    "usage_id": f"use-{kind}-{self.kind_counts[kind]}",
                     "status": "reserved",
-                    "feature_key": payload["feature_key"],
+                    "feature_key": feature_key,
                 }
             }
 
@@ -1112,7 +1138,7 @@ def test_same_process_reconcile_forgets_exact_old_usage_before_retry(
     first_usage = service._reserve_product_processing_item_usage(
         task["id"], item["item_id"], task["settings"]
     )
-    assert first_usage == {"text": "use-text-1"}
+    assert first_usage == {"text": "use-text-1", "vision": "use-vision-1"}
     with pytest.raises(CustomerAuthUnavailable):
         service._settle_product_processing_item_failure_for_item(
             task["id"], item["item_id"], {"reason": "business failure"}
@@ -1132,14 +1158,16 @@ def test_same_process_reconcile_forgets_exact_old_usage_before_retry(
         task["id"], item["item_id"], task["settings"]
     )
 
-    assert next_usage == {"text": "use-text-2"}
+    assert next_usage == {"text": "use-text-2", "vision": "use-vision-2"}
     attempts = service.repository.product_billing_attempts(
         task_id=task["id"], item_id=item["item_id"]
     )
-    assert [row["attempt_ordinal"] for row in attempts] == [1, 2]
+    assert [row["kind"] for row in attempts] == ["text", "text", "vision", "vision"]
+    assert [row["attempt_ordinal"] for row in attempts] == [1, 2, 1, 2]
     assert attempts[0]["settlement_state"] == "settled_failed"
     assert service._reserved_usage_ids(task["id"], item["item_id"]) == {
-        "text": "use-text-2"
+        "text": "use-text-2",
+        "vision": "use-vision-2",
     }
     with server_ai_context("fresh-token", next_usage):
         assert usage_id("text") == "use-text-2"

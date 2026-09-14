@@ -43,7 +43,7 @@ class _Session:
         self.responses = list(responses)
         self.requests: list[dict] = []
 
-    def post(self, url, *, headers, json, timeout, allow_redirects):
+    def post(self, url, *, headers, json, timeout, allow_redirects, verify=None):
         self.requests.append(
             {
                 "url": url,
@@ -51,6 +51,7 @@ class _Session:
                 "json": json,
                 "timeout": timeout,
                 "allow_redirects": allow_redirects,
+                "verify": verify,
             }
         )
         response = self.responses.pop(0)
@@ -162,19 +163,27 @@ def test_recognize_subject_rejects_missing_original_title(monkeypatch) -> None:
         json.dumps({**VALID_ANALYSIS, "explicit_measurements": {"weight_g": "heavy"}}),
     ],
 )
-def test_invalid_contract_is_rejected_without_retry(monkeypatch, content: str) -> None:
-    session = _Session([_Response({"choices": [{"message": {"content": content}}]})])
+def test_invalid_contract_is_retried_within_budget_then_rejected(
+    monkeypatch, content: str
+) -> None:
+    # 视觉输出是随机的：契约内的坏输出在三次预算内重试（见 doubao_vision 的注释），
+    # 只有预算耗尽后才把 invalid_response 抛给调用方。坏输出必须每次都复现才能证明
+    # 这一路径，因此这里给足三份相同响应。
+    session = _Session(
+        [_Response({"choices": [{"message": {"content": content}}]}) for _ in range(3)]
+    )
     monkeypatch.setenv("ARK_API_KEY", "ark-secret-key")
     monkeypatch.setattr(doubao_ark, "_HTTP_SESSION", session)
+    monkeypatch.setattr(doubao_vision.time, "sleep", lambda _seconds: None)
 
+    client = doubao_vision.DoubaoVisionClient()
     with pytest.raises(doubao_vision.DoubaoVisionError) as captured:
-        doubao_vision.DoubaoVisionClient().recognize_subject(
-            "data:image/jpeg;base64,dGVzdA==", SOURCE_TITLE
-        )
+        client.recognize_subject("data:image/jpeg;base64,dGVzdA==", SOURCE_TITLE)
 
-    assert captured.value.retryable is False
     assert captured.value.error_kind == "invalid_response"
-    assert len(session.requests) == 1
+    assert captured.value.attempt_count == 3
+    assert client.last_attempt_count == 3
+    assert len(session.requests) == 3
 
 
 def test_provider_error_does_not_expose_key_or_response_body(monkeypatch) -> None:
@@ -261,13 +270,16 @@ def test_instruction_like_subject_content_is_rejected(
     monkeypatch, field: str, value: str | list[str]
 ) -> None:
     analysis = {**VALID_ANALYSIS, field: value}
-    session = _Session([_success_response(analysis)])
+    # 与上面的契约失败一样：prompt 注入类坏输出也在三次预算内重试后才抛出。
+    session = _Session([_success_response(analysis) for _ in range(3)])
     monkeypatch.setenv("ARK_API_KEY", "ark-secret-key")
     monkeypatch.setattr(doubao_ark, "_HTTP_SESSION", session)
+    monkeypatch.setattr(doubao_vision.time, "sleep", lambda _seconds: None)
 
+    client = doubao_vision.DoubaoVisionClient()
     with pytest.raises(doubao_vision.DoubaoVisionError) as captured:
-        doubao_vision.DoubaoVisionClient().recognize_subject(
-            "data:image/jpeg;base64,dGVzdA==", SOURCE_TITLE
-        )
+        client.recognize_subject("data:image/jpeg;base64,dGVzdA==", SOURCE_TITLE)
 
     assert captured.value.error_kind == "invalid_response"
+    assert captured.value.attempt_count == 3
+    assert len(session.requests) == 3

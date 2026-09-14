@@ -197,7 +197,7 @@ def _http_urls(values: Any) -> list[str]:
     return [str(value).strip() for value in (values or []) if _is_http_url(value)]
 
 
-def _variant_export_key(record: Mapping[str, Any]) -> str:
+def variant_export_key(record: Mapping[str, Any]) -> str:
     """变种在导出侧的稳定标识，与预检前端 variantKey 保持同口径。
 
     前端取 ``String(sku_id || source_sku_id || 属性值拼接)``；这里保持一致，
@@ -232,7 +232,7 @@ def _variant_image_override_url(
     """
     if variant is None:
         return ""
-    key = _variant_export_key(variant)
+    key = variant_export_key(variant)
     if not key:
         return ""
     preview_overrides = row.get("preview_overrides") or {}
@@ -357,7 +357,7 @@ def _dxm_export_rows(row: dict[str, Any]) -> list[list[Any]]:
     exported: list[list[Any]] = []
     seen: set[tuple[Any, Any, Any, Any]] = set()
     for record in records:
-        if excluded and _variant_export_key(record) in excluded:
+        if excluded and variant_export_key(record) in excluded:
             continue
         values = _dxm_single_export_row(row, record)
         # 变种属性名一/值一 + 属性名二/值二（export 行第 4~7 列）
@@ -971,7 +971,7 @@ def _miaoshou_row_values(row: dict[str, Any], kind: str) -> list[dict[int, Any]]
     exported: list[dict[int, Any]] = []
     seen: set[tuple[Any, Any, Any, Any]] = set()
     for variant in targets:
-        if variant is not None and excluded and _variant_export_key(variant) in excluded:
+        if variant is not None and excluded and variant_export_key(variant) in excluded:
             continue
         dxm_row = _dxm_single_export_row(row, variant)
         # 与店小秘一致：按「规格名1/值1 + 规格名2/值2」组合去重，避免同规格多价行

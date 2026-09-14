@@ -165,6 +165,8 @@ GATEWAY_DISTINCT_REQUEST_LIMITS = {
     # one core response plus several 20-value translation batches/repairs.
     "product_processing.text": 16,
     "product_processing.image_grid_2k": 13,
+    # 视觉主体识别：每件商品一次识别，重试与多图分批合并计算。
+    "product_processing.vision": 13,
 }
 # Text transport errors retry an identical upstream request at most three times;
 # contract-repair retries use the distinct-request allowance above.  The image
@@ -173,11 +175,15 @@ GATEWAY_DISTINCT_REQUEST_LIMITS = {
 GATEWAY_SAME_REQUEST_ATTEMPT_LIMITS = {
     "product_processing.text": 3,
     "product_processing.image_grid_2k": 5,
+    "product_processing.vision": 3,
 }
 GATEWAY_LEASE_SECONDS = {
     "product_processing.text": 600,
     "product_processing.image_grid_2k": 900,
+    "product_processing.vision": 600,
 }
+# 在途 409 的 Retry-After 上限：只是建议客户端多久回来查一次，不必等于整段租约。
+GATEWAY_IN_PROGRESS_MAX_RETRY_AFTER_SECONDS = 30
 GATEWAY_IMAGE_FEATURE_KEYS = {"product_processing.image_grid_2k"}
 DEFAULT_ALIPAY_LOCAL_RETURN_URL = "http://127.0.0.1:8010/?module=personal_center&payment=success"
 
@@ -2357,7 +2363,14 @@ def _claim_gateway_request(
                 return _GatewayRequestClaim(cached_response=cached)
             if status == "in_progress":
                 if _gateway_claim_is_fresh(existing, feature_key):
-                    raise HTTPException(status_code=409, detail="identical gateway request is already in progress")
+                    # 在途请求不是失败：同一 usage+request 的调用方应当等待后重发（完成后
+                    # 直接回放缓存结果），而不是把它当成错误反复重试。Retry-After 告诉
+                    # 客户端该等多久再来查。
+                    raise HTTPException(
+                        status_code=409,
+                        detail="identical gateway request is already in progress",
+                        headers={"Retry-After": str(_gateway_in_progress_retry_after(existing))},
+                    )
                 provider_task_id = str(existing["provider_task_id"] or "").strip()
                 lease_expires_at = _new_gateway_lease(feature_key)
                 if provider_task_id:
@@ -2426,6 +2439,22 @@ def _claim_gateway_request(
 def _new_gateway_lease(feature_key: str) -> str:
     seconds = GATEWAY_LEASE_SECONDS[feature_key]
     return (datetime.now(timezone.utc) + timedelta(seconds=seconds)).isoformat(timespec="seconds")
+
+
+def _gateway_in_progress_retry_after(row: Any) -> int:
+    """Advise how long to wait before re-polling a still-fresh in-progress request."""
+    fallback = 5
+    raw_expiry = str(row["lease_expires_at"] or "").strip()
+    if not raw_expiry:
+        return fallback
+    try:
+        expiry = datetime.fromisoformat(raw_expiry.replace("Z", "+00:00"))
+    except ValueError:
+        return fallback
+    if expiry.tzinfo is None:
+        expiry = expiry.replace(tzinfo=timezone.utc)
+    remaining = (expiry - datetime.now(timezone.utc)).total_seconds()
+    return max(1, min(int(remaining), GATEWAY_IN_PROGRESS_MAX_RETRY_AFTER_SECONDS))
 
 
 def _gateway_claim_is_fresh(row: Any, feature_key: str) -> bool:

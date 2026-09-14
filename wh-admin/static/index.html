@@ -4,155 +4,34 @@
 <meta charset="UTF-8">
 <meta name="viewport" content="width=device-width, initial-scale=1.0">
 <title>电商工作台 · 后台管理系统</title>
+<link rel="stylesheet" href="static/shadcn.css">
+
 <style>
-  :root {
-    --nav: #17233d; --nav-hover: #223253; --primary: #356df3;
-    --success: #21a366; --danger: #e05252; --warning: #d98b20;
-    --text: #24324a; --muted: #7d8799; --line: #e7eaf0; --bg: #f4f6fa;
-  }
-  * { box-sizing: border-box; }
-  body { margin: 0; font-family: "Microsoft YaHei", "PingFang SC", sans-serif; color: var(--text); background: var(--bg); }
-  button, input, select { font: inherit; }
-  .hidden { display: none !important; }
-  .btn { height: 36px; border: 0; border-radius: 7px; padding: 0 16px; cursor: pointer; transition: .15s; }
-  .btn:disabled { opacity: .55; cursor: not-allowed; }
-  .btn-primary { color: #fff; background: var(--primary); }
-  .btn-primary:hover { background: #285ddb; }
-  .btn-danger { color: #fff; background: var(--danger); }
-  .btn-success { color: #fff; background: var(--success); }
-  .btn-ghost { color: #526077; background: #fff; border: 1px solid #d9deea; }
-  .btn-sm { height: 30px; padding: 0 10px; font-size: 12px; }
-  .input { width: 100%; height: 38px; border: 1px solid #d9deea; border-radius: 7px; padding: 0 11px; outline: 0; background: #fff; }
-  .input:focus { border-color: var(--primary); box-shadow: 0 0 0 3px rgba(53,109,243,.09); }
-  label { display: block; color: #536078; font-size: 13px; }
-  label .input { margin-top: 6px; }
-
-  #auth-view { min-height: 100vh; display: grid; place-items: center; padding: 24px; background: radial-gradient(circle at 30% 20%, #e8efff, #f6f8fc 48%, #eef1f7); }
-  .auth-card { width: 400px; max-width: 100%; padding: 34px 38px; border-radius: 14px; background: rgba(255,255,255,.96); box-shadow: 0 18px 55px rgba(30,47,82,.13); }
-  .brand-mark { width: 48px; height: 48px; margin: 0 auto 14px; display: grid; place-items: center; border-radius: 13px; color: #fff; background: linear-gradient(145deg, #3b75ff, #244fc2); font-weight: 700; }
-  .auth-card h1 { margin: 0; text-align: center; font-size: 21px; }
-  .auth-card .sub { margin: 8px 0 24px; color: var(--muted); text-align: center; font-size: 13px; }
-  .auth-card label { margin-top: 14px; }
-  .auth-card .btn { width: 100%; margin-top: 22px; }
-  .form-error { min-height: 19px; margin-top: 10px; color: var(--danger); text-align: center; font-size: 13px; }
-
-  #main-view { min-height: 100vh; }
-  .sidebar { position: fixed; inset: 0 auto 0 0; z-index: 20; width: 224px; color: #d9e2f2; background: var(--nav); }
-  .sidebar-brand { height: 68px; padding: 0 22px; display: flex; align-items: center; gap: 11px; border-bottom: 1px solid rgba(255,255,255,.08); font-weight: 600; }
-  .sidebar-logo { width: 32px; height: 32px; border-radius: 8px; display: grid; place-items: center; color: #fff; background: var(--primary); font-size: 12px; }
-  .nav { padding: 14px 10px; }
-  .nav-item { width: 100%; height: 44px; margin-bottom: 5px; padding: 0 14px; border: 0; border-radius: 8px; display: flex; align-items: center; gap: 11px; color: #bfc9da; background: transparent; cursor: pointer; text-align: left; font-size: 14px; }
-  .nav-item:hover { background: var(--nav-hover); color: #fff; }
-  .nav-item.active { color: #fff; background: var(--primary); box-shadow: 0 5px 14px rgba(34,80,195,.3); }
-  .nav-group { margin: 2px 0 8px; }
-  .nav-group-title { padding: 9px 14px 6px; color: #8290a8; font-size: 12px; letter-spacing: .5px; }
-  .nav-subitem { height: 40px; margin-bottom: 3px; padding-left: 30px; font-size: 14px; }
-  .nav-icon { width: 24px; text-align: center; font-size: 16px; flex: none; }
-  .main-shell { margin-left: 224px; min-height: 100vh; }
-  .topbar { height: 68px; padding: 0 26px; display: flex; align-items: center; justify-content: space-between; background: #fff; border-bottom: 1px solid var(--line); }
-  .page-title { font-size: 18px; font-weight: 600; }
-  .top-actions { display: flex; align-items: center; gap: 10px; }
-  .admin-chip { padding-right: 12px; color: #5e6a7f; font-size: 13px; }
-  .content { padding: 24px 26px 40px; }
-  .section { display: none; }
-  .section.active { display: block; }
-  .section-head { margin-bottom: 16px; display: flex; align-items: flex-end; justify-content: space-between; gap: 14px; }
-  .section-head h2 { margin: 0 0 5px; font-size: 18px; }
-  .section-head p { margin: 0; color: var(--muted); font-size: 13px; }
-  .card { background: #fff; border: 1px solid #edf0f5; border-radius: 11px; box-shadow: 0 3px 13px rgba(31,49,82,.045); }
-  .filters { margin-bottom: 14px; padding: 14px; display: flex; align-items: center; gap: 10px; flex-wrap: wrap; }
-  .filters .input { width: 210px; }
-  .count { margin-left: auto; color: var(--muted); font-size: 13px; }
-  .stats-grid { margin-bottom: 14px; display: grid; grid-template-columns: repeat(auto-fit, minmax(180px, 1fr)); gap: 12px; }
-  .stat-card { padding: 15px 17px; border: 1px solid #edf0f5; border-radius: 11px; background: #fff; box-shadow: 0 3px 13px rgba(31,49,82,.045); }
-  .stat-card .stat-label { color: var(--muted); font-size: 12px; }
-  .stat-card .stat-value { margin-top: 6px; font: 700 22px Consolas, "SFMono-Regular", monospace; color: var(--text); }
-  .stat-card .stat-sub { margin-top: 4px; color: var(--muted); font-size: 12px; }
-  .stat-card.is-accent .stat-value { color: var(--primary); }
-  .stat-card.is-success .stat-value { color: var(--success); }
-  .chart-card { margin-bottom: 14px; padding: 16px 18px; }
-  .chart-card h3 { margin: 0 0 4px; font-size: 15px; }
-  .chart-card .chart-sub { margin: 0 0 12px; color: var(--muted); font-size: 12px; }
-  .chart-wrap { position: relative; height: 300px; }
-  .chart-wrap-sm { height: 240px; max-width: 420px; margin: 0 auto; }
-  .dash-grid-2 { display: grid; grid-template-columns: minmax(300px, 380px) 1fr; gap: 14px; align-items: start; }
-  @media (max-width: 1100px) { .dash-grid-2 { grid-template-columns: 1fr; } }
-  .revenue-locked { cursor: pointer; user-select: none; }
-  .revenue-locked:hover { color: var(--primary); }
-  .billing-rank-card { margin-bottom: 14px; }
-  .billing-rank-card table { min-width: 720px; }
-  .table-wrap { overflow: auto; }
-  table { width: 100%; min-width: 950px; border-collapse: collapse; font-size: 13px; }
-  th { padding: 12px 13px; color: #667187; background: #f8f9fc; text-align: left; font-weight: 600; white-space: nowrap; }
-  td { padding: 12px 13px; border-top: 1px solid #f0f2f6; white-space: nowrap; }
-  tbody tr:hover { background: #fafbfe; }
-  .empty { height: 100px; color: var(--muted); text-align: center; }
-  .badge { display: inline-flex; align-items: center; padding: 3px 9px; border-radius: 12px; font-size: 12px; }
-  .badge-success { color: #17834f; background: #eaf8f1; }
-  .badge-danger { color: #c33e3e; background: #fff0f0; }
-  .badge-warning { color: #ad6c10; background: #fff6e8; }
-  .badge-muted { color: #6d7789; background: #f0f2f5; }
-  .link-btn { padding: 3px 6px; border: 0; color: var(--primary); background: transparent; cursor: pointer; }
-  .link-btn.red { color: var(--danger); }
-  .link-btn.green { color: var(--success); }
-  .mono { font-family: Consolas, "SFMono-Regular", monospace; }
-
-  .form-card { margin-bottom: 16px; padding: 18px; }
-  .form-card h3 { margin: 0 0 15px; font-size: 15px; }
-  .inline-form { display: grid; grid-template-columns: repeat(3, minmax(150px, 1fr)) auto; align-items: end; gap: 12px; }
-  .form-note { margin-top: 10px; color: var(--muted); font-size: 12px; }
-  .result-box { margin-top: 14px; padding: 13px; border: 1px dashed #9ab4f4; border-radius: 8px; background: #f5f8ff; }
-  .result-head { display: flex; justify-content: space-between; align-items: center; margin-bottom: 8px; }
-  .code-list { display: flex; flex-wrap: wrap; gap: 8px; }
-  .code-pill { padding: 7px 10px; border-radius: 6px; background: #fff; border: 1px solid #dbe3f6; user-select: all; }
-  .details { max-width: 360px; overflow: hidden; text-overflow: ellipsis; color: #687489; }
-  /* ---- 公告模块：正文文本框随内容自动增高 ---- */
-  .announcement-textarea {
-    height: auto; min-height: 76px; max-height: 340px;
-    padding: 9px 11px; line-height: 1.55; font-family: inherit;
-    resize: vertical; overflow-y: hidden;
-  }
-  .announcement-form-actions { display: flex; gap: 10px; align-items: center; margin-top: 2px; }
-  .announcement-form-actions .btn { height: 34px; padding: 0 16px; }
-  /* ---- 公告模块：记录列表正文超出可折叠 ---- */
-  .announcement-content-cell { max-width: 460px; }
-  .announcement-body-clamp {
-    white-space: pre-wrap; word-break: break-word; line-height: 1.55;
-    display: -webkit-box; -webkit-box-orient: vertical; -webkit-line-clamp: 3; overflow: hidden;
-  }
-  .announcement-body-clamp.expanded { display: block; -webkit-line-clamp: unset; }
-  .announcement-toggle {
-    margin-top: 6px; padding: 0; border: 0; background: transparent; color: var(--primary);
-    cursor: pointer; font-size: 12px; font-weight: 600;
-  }
-  .announcement-toggle:hover { text-decoration: underline; }
-
-  .mask { position: fixed; inset: 0; z-index: 100; padding: 20px; overflow-y: auto; display: grid; place-items: center; background: rgba(14,24,43,.52); }
-  .modal { width: 440px; max-width: 100%; max-height: calc(100vh - 40px); overflow-y: auto; padding: 23px; border-radius: 12px; background: #fff; box-shadow: 0 20px 60px rgba(0,0,0,.18); }
-  .modal.modal-wide { width: 760px; }
-  .modal h3 { margin: 0 0 10px; font-size: 17px; }
-  .modal .msg { margin: 0 0 17px; color: #687489; font-size: 14px; line-height: 1.7; }
-  .modal label { margin: 12px 0; }
-  .modal-actions { margin-top: 18px; display: flex; justify-content: flex-end; gap: 9px; }
-  .secret-box { padding: 14px; border: 1px dashed #72bb95; border-radius: 8px; color: #193d2b; background: #effaf4; text-align: center; font: 600 18px Consolas, monospace; word-break: break-all; user-select: all; }
-  .log-content { margin: 0; max-height: 60vh; overflow: auto; padding: 14px; border-radius: 8px; background: #10151f; color: #c9d3e0; font: 12px/1.6 Consolas, monospace; white-space: pre-wrap; word-break: break-all; }
-  #toast { position: fixed; z-index: 200; top: 18px; left: 50%; transform: translateX(-50%); display: grid; gap: 8px; }
-  .toast { padding: 10px 18px; border-radius: 7px; color: #fff; background: #354054; box-shadow: 0 5px 18px rgba(0,0,0,.18); font-size: 13px; }
-  .toast.success { background: var(--success); }
-  .toast.error { background: var(--danger); }
-
-  @media (max-width: 820px) {
-    .sidebar { width: 72px; }
-    .sidebar-brand { padding: 0 20px; }
-    .sidebar-brand span:last-child, .nav-label { display: none; }
-    .nav-item { justify-content: center; padding: 0; }
-    .main-shell { margin-left: 72px; }
-    .inline-form { grid-template-columns: 1fr; }
-    .topbar { padding: 0 14px; }
-    .content { padding: 18px 14px; }
-    .admin-chip { display: none; }
-  }
+/* 侧边栏「用户反馈」新反馈红点徽章 */
+.nav-badge {
+  margin-left: auto;
+  min-width: 18px;
+  height: 18px;
+  padding: 0 5px;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  border-radius: 999px;
+  background: #ef4444;
+  color: #fff;
+  font-size: 11px;
+  font-weight: 600;
+  line-height: 1;
+  flex: none;
+}
+.nav-badge[hidden] { display: none; }
 </style>
+
+<!-- 旧自研样式已移除，样式全部来自 static/shadcn.css -->
+
+
+
+
 </head>
 <body>
 <div id="auth-view">
@@ -184,16 +63,19 @@
   <aside class="sidebar">
     <div class="sidebar-brand"><span class="sidebar-logo">WH</span><span>后台管理系统</span></div>
     <nav class="nav">
-      <button class="nav-item active" data-section="dashboard"><span class="nav-icon">📊</span><span class="nav-label">数据看板</span></button>
-      <button class="nav-item" data-section="users"><span class="nav-icon">👥</span><span class="nav-label">账号状态管理</span></button>
-      <div class="nav-group"><div class="nav-group-title">💰 积分与消费</div><button class="nav-item nav-subitem" data-section="billing-wallet"><span class="nav-icon">💳</span><span class="nav-label">积分管理</span></button><button class="nav-item nav-subitem" data-section="billing-usage"><span class="nav-icon">🧾</span><span class="nav-label">用户消费流水</span></button><button class="nav-item nav-subitem" data-section="multipliers"><span class="nav-icon">🎚️</span><span class="nav-label">价格倍率</span></button></div>
-      <button class="nav-item" data-section="credentials"><span class="nav-icon">🔑</span><span class="nav-label">密钥管理</span></button>
-      <div class="nav-group"><div class="nav-group-title">🎟️ 邀请码</div><button class="nav-item nav-subitem" data-section="invitations"><span class="nav-icon">📩</span><span class="nav-label">邀请码生成</span></button><button class="nav-item nav-subitem" data-section="invite-profit"><span class="nav-icon">💵</span><span class="nav-label">邀请码利润明细</span></button></div>
-      <button class="nav-item" data-section="admins"><span class="nav-icon">🛡️</span><span class="nav-label">管理员账号管理</span></button>
-      <button class="nav-item" data-section="announcements"><span class="nav-icon">📢</span><span class="nav-label">公告管理</span></button>
-      <button class="nav-item" data-section="logs"><span class="nav-icon">📝</span><span class="nav-label">操作日志</span></button>
-      <button class="nav-item" data-section="failure-logs"><span class="nav-icon">⚠️</span><span class="nav-label">失败日志</span></button>
-      <button class="nav-item" data-section="log-uploads"><span class="nav-icon">📤</span><span class="nav-label">用户日志上传</span></button>
+      <button class="nav-item active" data-section="dashboard"><svg class="nav-icon" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><rect width="7" height="9" x="3" y="3" rx="1"/><rect width="7" height="5" x="14" y="3" rx="1"/><rect width="7" height="9" x="14" y="12" rx="1"/><rect width="7" height="5" x="3" y="16" rx="1"/></svg><span class="nav-label">数据看板</span></button>
+      <button class="nav-item" data-section="users"><svg class="nav-icon" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M16 21v-2a4 4 0 0 0-4-4H6a4 4 0 0 0-4 4v2"/><path d="M16 3.128a4 4 0 0 1 0 7.744"/><path d="M22 21v-2a4 4 0 0 0-3-3.87"/><circle cx="9" cy="7" r="4"/></svg><span class="nav-label">账号状态管理</span></button>
+      <div class="nav-group"><div class="nav-group-title">积分与消费</div><button class="nav-item nav-subitem" data-section="billing-wallet"><svg class="nav-icon" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M19 7V4a1 1 0 0 0-1-1H5a2 2 0 0 0 0 4h15a1 1 0 0 1 1 1v4h-3a2 2 0 0 0 0 4h3a1 1 0 0 0 1-1v-2a1 1 0 0 0-1-1"/><path d="M3 5v14a2 2 0 0 0 2 2h15a1 1 0 0 0 1-1v-4"/></svg><span class="nav-label">积分管理</span></button><button class="nav-item nav-subitem" data-section="billing-usage"><svg class="nav-icon" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M13 16H8"/><path d="M14 8H8"/><path d="M16 12H8"/><path d="M4 3a1 1 0 0 1 1-1 1.3 1.3 0 0 1 .7.2l.933.6a1.3 1.3 0 0 0 1.4 0l.934-.6a1.3 1.3 0 0 1 1.4 0l.933.6a1.3 1.3 0 0 0 1.4 0l.933-.6a1.3 1.3 0 0 1 1.4 0l.934.6a1.3 1.3 0 0 0 1.4 0l.933-.6A1.3 1.3 0 0 1 19 2a1 1 0 0 1 1 1v18a1 1 0 0 1-1 1 1.3 1.3 0 0 1-.7-.2l-.933-.6a1.3 1.3 0 0 0-1.4 0l-.934.6a1.3 1.3 0 0 1-1.4 0l-.933-.6a1.3 1.3 0 0 0-1.4 0l-.933.6a1.3 1.3 0 0 1-1.4 0l-.934-.6a1.3 1.3 0 0 0-1.4 0l-.933.6a1.3 1.3 0 0 1-.7.2 1 1 0 0 1-1-1z"/></svg><span class="nav-label">用户消费流水</span></button><button class="nav-item nav-subitem" data-section="multipliers"><svg class="nav-icon" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><line x1="21" x2="14" y1="4" y2="4"/><line x1="10" x2="3" y1="4" y2="4"/><line x1="21" x2="12" y1="12" y2="12"/><line x1="8" x2="3" y1="12" y2="12"/><line x1="21" x2="16" y1="20" y2="20"/><line x1="12" x2="3" y1="20" y2="20"/><line x1="14" x2="14" y1="2" y2="6"/><line x1="8" x2="8" y1="10" y2="14"/><line x1="16" x2="16" y1="18" y2="22"/></svg><span class="nav-label">价格倍率</span></button></div>
+      <button class="nav-item" data-section="credentials"><svg class="nav-icon" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M2.586 17.414A2 2 0 0 0 2 18.828V21a1 1 0 0 0 1 1h3a1 1 0 0 0 1-1v-1a1 1 0 0 1 1-1h1a1 1 0 0 0 1-1v-1a1 1 0 0 1 1-1h.172a2 2 0 0 0 1.414-.586l.814-.814a6.5 6.5 0 1 0-4-4z"/><circle cx="16.5" cy="7.5" r=".5" fill="currentColor"/></svg><span class="nav-label">密钥管理</span></button>
+      <div class="nav-group"><div class="nav-group-title">邀请码</div><button class="nav-item nav-subitem" data-section="invitations"><svg class="nav-icon" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M2 9a3 3 0 0 1 0 6v2a2 2 0 0 0 2 2h16a2 2 0 0 0 2-2v-2a3 3 0 0 1 0-6V7a2 2 0 0 0-2-2H4a2 2 0 0 0-2 2Z"/><path d="M13 5v2"/><path d="M13 17v2"/><path d="M13 11v2"/></svg><span class="nav-label">邀请码生成</span></button><button class="nav-item nav-subitem" data-section="invite-profit"><svg class="nav-icon" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M16 7h6v6"/><path d="m22 7-8.5 8.5-5-5L2 17"/></svg><span class="nav-label">邀请码利润明细</span></button></div>
+      <button class="nav-item" data-section="admins"><svg class="nav-icon" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M20 13c0 5-3.5 7.5-7.66 8.95a1 1 0 0 1-.67-.01C7.5 20.5 4 18 4 13V6a1 1 0 0 1 1-1c2 0 4.5-1.2 6.24-2.72a1.17 1.17 0 0 1 1.52 0C14.51 3.81 17 5 19 5a1 1 0 0 1 1 1z"/><path d="m9 12 2 2 4-4"/></svg><span class="nav-label">管理员账号管理</span></button>
+      <button class="nav-item" data-section="announcements"><svg class="nav-icon" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M11 6a13 13 0 0 0 8.4-2.8A1 1 0 0 1 21 4v12a1 1 0 0 1-1.6.8A13 13 0 0 0 11 14H5a2 2 0 0 1-2-2V8a2 2 0 0 1 2-2z"/><path d="M6 14a12 12 0 0 0 2.4 7.2 2 2 0 0 0 3.2-2.4A8 8 0 0 1 10 14"/><path d="M8 6v8"/></svg><span class="nav-label">公告管理</span></button>
+      <button class="nav-item" data-section="logs"><svg class="nav-icon" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M15 12h-5"/><path d="M15 8h-5"/><path d="M19 17V5a2 2 0 0 0-2-2H4"/><path d="M8 21h12a2 2 0 0 0 2-2v-1a1 1 0 0 0-1-1H11a1 1 0 0 0-1 1v1a2 2 0 1 1-4 0V5a2 2 0 1 0-4 0v2a1 1 0 0 0 1 1h3"/></svg><span class="nav-label">操作日志</span></button>
+      <button class="nav-item" data-section="user-activity"><svg class="nav-icon" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M22 12h-2.48a2 2 0 0 0-1.93 1.46l-2.35 8.36a.25.25 0 0 1-.48 0L9.24 2.18a.25.25 0 0 0-.48 0l-2.35 8.36A2 2 0 0 1 4.49 12H2"/></svg><span class="nav-label">用户活动</span></button>
+      <button class="nav-item" data-section="feedback"><svg class="nav-icon" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M22 17a2 2 0 0 1-2 2H6.828a2 2 0 0 0-1.414.586l-2.202 2.202A.71.71 0 0 1 2 21.286V5a2 2 0 0 1 2-2h16a2 2 0 0 1 2 2z"/></svg><span class="nav-label">用户反馈</span><span id="fb-badge" class="nav-badge" hidden>0</span></button>
+      <button class="nav-item" data-section="failure-logs"><svg class="nav-icon" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="m21.73 18-8-14a2 2 0 0 0-3.48 0l-8 14A2 2 0 0 0 4 21h16a2 2 0 0 0 1.73-3"/><path d="M12 9v4"/><path d="M12 17h.01"/></svg><span class="nav-label">失败日志</span></button>
+      <button class="nav-item" data-section="log-uploads"><svg class="nav-icon" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M12 3v12"/><path d="m17 8-5-5-5 5"/><path d="M21 15v4a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2v-4"/></svg><span class="nav-label">用户日志上传</span></button>
+      <div class="nav-group"><div class="nav-group-title">软件更新发布</div><button class="nav-item nav-subitem" data-section="release-publish"><svg class="nav-icon" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M4.5 16.5c-1.5 1.26-2 5-2 5s3.74-.5 5-2c.71-.84.7-2.13-.09-2.91a2.18 2.18 0 0 0-2.91-.09z"/><path d="m12 15-3-3a22 22 0 0 1 2-3.95A12.88 12.88 0 0 1 22 2c0 2.72-.78 7.5-6 11a22.35 22.35 0 0 1-4 2z"/><path d="M9 12H4s.55-3.03 2-4c1.62-1.08 5 0 5 0"/><path d="M12 15v5s3.03-.55 4-2c1.08-1.62 0-5 0-5"/></svg><span class="nav-label">发布新版本</span></button><button class="nav-item nav-subitem" data-section="release-history"><svg class="nav-icon" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M3 12a9 9 0 1 0 9-9 9.75 9.75 0 0 0-6.74 2.74L3 8"/><path d="M3 3v5h5"/><path d="M12 7v5l4 2"/></svg><span class="nav-label">发布记录</span></button><button class="nav-item nav-subitem" data-section="release-logs"><svg class="nav-icon" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><rect width="8" height="4" x="8" y="2" rx="1" ry="1"/><path d="M16 4h2a2 2 0 0 1 2 2v14a2 2 0 0 1-2 2H6a2 2 0 0 1-2-2V6a2 2 0 0 1 2-2h2"/><path d="M12 11h4"/><path d="M12 16h4"/><path d="M8 11h.01"/><path d="M8 16h.01"/></svg><span class="nav-label">操作记录</span></button></div>
     </nav>
   </aside>
 
@@ -260,22 +142,11 @@
       <section id="section-billing-usage" class="section">
         <div class="section-head"><div><h2>&#x7528;&#x6237; AI &#x6D88;&#x8D39;&#x6D41;&#x6C34;</h2><p>&#x6BCF;&#x7B14;&#x4E0E;&#x7528;&#x6237;&#x3001;&#x529F;&#x80FD;&#x3001;&#x79EF;&#x5206;&#x7ED3;&#x7B97;&#x53CA;&#x4E0A;&#x6E38;&#x4EFB;&#x52A1;&#x7ED1;&#x5B9A;&#x3002;&#x4F59;&#x989D;&#x4E3A;&#x67E5;&#x770B;&#x65F6;&#x7684;&#x5F53;&#x524D;&#x4F59;&#x989D;&#x3002;</p></div></div>
         <div class="card filters"><input id="billing-usage-search" class="input" placeholder="&#x641C;&#x7D22;&#x7528;&#x6237;&#x540D; / &#x8D26;&#x6237; ID / &#x529F;&#x80FD;"><label>&#x5F00;&#x59CB;&#x65F6;&#x95F4;<input id="billing-usage-from" class="input" type="datetime-local"></label><label>&#x7ED3;&#x675F;&#x65F6;&#x95F4;<input id="billing-usage-to" class="input" type="datetime-local"></label><button id="billing-usage-reset" class="btn btn-ghost btn-sm">&#x6E05;&#x7A7A;&#x7B5B;&#x9009;</button><span id="billing-usage-count" class="count"></span></div>
-        <div class="card table-wrap"><table><thead><tr><th>&#x6D88;&#x8D39;&#x65F6;&#x95F4;</th><th>&#x7528;&#x6237;</th><th>&#x5F53;&#x524D;&#x4F59;&#x989D;</th><th>&#x529F;&#x80FD;</th><th>&#x72B6;&#x6001;</th><th>&#x51BB;&#x7ED3; / &#x6263;&#x9664; / &#x91CA;&#x653E;</th><th>&#x6A21;&#x578B;</th><th>&#x4E0A;&#x6E38;&#x4EFB;&#x52A1; ID</th></tr></thead><tbody id="billing-usage-body"></tbody></table></div>
+        <div class="card table-wrap"><table><thead><tr><th>&#x6D88;&#x8D39;&#x65F6;&#x95F4;</th><th>&#x7528;&#x6237;</th><th>&#x5F53;&#x524D;&#x4F59;&#x989D;</th><th>&#x529F;&#x80FD;</th><th>&#x72B6;&#x6001;</th><th>&#x51BB;&#x7ED3; / &#x6263;&#x9664; / &#x91CA;&#x653E;</th><th>&#x6A21;&#x578B;</th><th>&#x4E0A;&#x6E38;&#x4EFB;&#x52A1; ID</th><th>&#x7248;&#x672C;</th></tr></thead><tbody id="billing-usage-body"></tbody></table></div>
         <div class="card" id="billing-usage-more-wrap" style="display:none;text-align:center;"><button id="billing-usage-more" class="btn">&#x52A0;&#x8F7D;&#x66F4;&#x591A;</button></div>
       </section>
 
       <section id="section-multipliers" class="section">
-        <style>
-          .multiplier-ctrl { display: flex; flex-wrap: wrap; gap: 8px; align-items: center; margin-top: 14px; }
-          .multiplier-input { width: 190px; }
-          .multiplier-unit { font-size: 13px; color: #8895a7; font-weight: 500; }
-          .preview-sum { padding: 10px 14px; margin-bottom: 12px; background: #f2f7ff; border: 1px solid #dbe7ff; border-radius: 10px; font-size: 14px; }
-          .preview-actual { color: #0b5cff; }
-          #multiplier-preview-ai-body table, #multiplier-preview-pod-body table { width: 100%; }
-          #multiplier-preview-ai-body th, #multiplier-preview-ai-body td,
-          #multiplier-preview-pod-body th, #multiplier-preview-pod-body td { padding: 8px 10px; text-align: left; border-bottom: 1px solid #eef2f7; font-size: 13px; }
-          #multiplier-cards .stat-card { padding: 20px 22px; }
-        </style>
         <div class="section-head"><div><h2>价格倍率调整</h2><p>两套计费口径：AI 处理（单条商品链接）与 POD 定制（单款式）。设置「单条价值」后，服务器按基础定价的派生倍率计费；已冻结任务按冻结时快照结算，不受中途调价影响。</p></div></div>
         <div class="stats-grid" id="multiplier-cards"></div>
         <div class="card chart-card">
@@ -354,20 +225,46 @@
           <div class="inline-form" id="announcement-form-grid" style="grid-template-columns:1fr; align-items:start; gap:14px">
             <label>标题<input id="announcement-title" class="input" maxlength="120" placeholder="公告标题"></label>
             <label>正文（支持多行）<textarea id="announcement-content" class="input announcement-textarea" rows="3" placeholder="公告内容"></textarea></label>
+            <div>
+              <div class="label-text">发送范围</div>
+              <div class="announcement-form-actions" style="margin-top:6px">
+                <label style="display:flex;align-items:center;gap:6px;font-weight:normal"><input type="radio" name="ann-target" id="ann-target-all" checked> 全部用户</label>
+                <label style="display:flex;align-items:center;gap:6px;font-weight:normal"><input type="radio" name="ann-target" id="ann-target-custom"> 指定用户</label>
+              </div>
+              <div id="ann-target-picker" class="card hidden" style="margin-top:10px;padding:12px">
+                <input id="ann-user-search" class="input" placeholder="搜索用户名 / 账号 ID">
+                <div id="ann-user-list" style="max-height:190px;overflow:auto;margin-top:8px;font-size:13px"></div>
+                <div id="ann-target-count" style="margin-top:8px;color:#6d7789;font-size:12px"></div>
+              </div>
+            </div>
             <div class="announcement-form-actions">
               <button id="announcement-save-btn" class="btn btn-primary">发布公告</button>
               <button id="announcement-cancel-btn" class="btn btn-ghost hidden">取消编辑</button>
             </div>
           </div>
         </div>
-        <div class="card table-wrap"><table><thead><tr><th>状态</th><th>标题</th><th>正文</th><th>发布时间（北京时间）</th><th>操作</th></tr></thead><tbody id="announcements-body"></tbody></table></div>
+        <div class="card table-wrap"><table><thead><tr><th>状态</th><th>标题</th><th>正文</th><th>范围</th><th>发布时间（北京时间）</th><th>操作</th></tr></thead><tbody id="announcements-body"></tbody></table></div>
       </section>
 
       <section id="section-logs" class="section">
-        <div class="section-head"><div><h2>操作日志</h2><p>仅记录关键业务操作，按北京时间显示；服务器自动保留最近三个月</p></div></div>
+        <div class="section-head"><div><h2>操作日志</h2><p>记录管理员在后台的关键操作，按北京时间显示；服务器自动保留最近三个月</p></div></div>
         <div class="card filters"><input id="log-search" class="input" placeholder="搜索管理员 / 动作 / 目标 / 操作 ID"><span id="log-count" class="count"></span></div>
         <div class="card table-wrap"><table><thead><tr><th>时间（北京时间）</th><th>操作 ID</th><th>管理员</th><th>管理员 ID</th><th>操作</th><th>目标</th><th>结果</th><th>IP</th><th>详情</th></tr></thead><tbody id="logs-body"></tbody></table></div>
         <div class="card" id="logs-more-wrap" style="display:none;text-align:center;"><button id="logs-more" class="btn">加载更多</button></div>
+      </section>
+
+      <section id="section-user-activity" class="section">
+        <div class="section-head"><div><h2>用户活动</h2><p>汇总用户登录、安全事件、AI 请求与计费冻结，按北京时间显示；服务器自动保留最近三个月</p></div></div>
+        <div class="card filters"><input id="ua-search" class="input" placeholder="搜索账号 / 动作 / 目标 / 类型"><span id="ua-count" class="count"></span></div>
+        <div class="card table-wrap"><table><thead><tr><th>时间（北京时间）</th><th>类型</th><th>账号</th><th>账号 ID</th><th>动作</th><th>目标</th><th>结果</th><th>IP</th><th>详情</th></tr></thead><tbody id="ua-body"></tbody></table></div>
+        <div class="card" id="ua-more-wrap" style="display:none;text-align:center;"><button id="ua-more" class="btn">加载更多</button></div>
+      </section>
+
+      <section id="section-feedback" class="section">
+        <div class="section-head"><div><h2>用户反馈</h2><p>个人中心提交的意见反馈（文字 + 图片），按北京时间显示；服务器自动保留最近 14 天</p></div></div>
+        <div class="card filters"><input id="fb-search" class="input" placeholder="搜索账号 / 内容 / 联系方式 / 反馈 ID"><span id="fb-count" class="count"></span></div>
+        <div class="card table-wrap"><table><thead><tr><th>时间（北京时间）</th><th>账号</th><th>类别</th><th>状态</th><th>内容 / 回复</th><th>图片</th><th>版本</th><th>处理</th></tr></thead><tbody id="fb-body"></tbody></table></div>
+        <div class="card" id="fb-more-wrap" style="display:none;text-align:center;"><button id="fb-more" class="btn">加载更多</button></div>
       </section>
 
       <section id="section-failure-logs" class="section">
@@ -400,6 +297,68 @@
         </div>
         <div class="card table-wrap"><table><thead><tr><th>上传时间（北京时间）</th><th>账号</th><th>版本</th><th>平台</th><th>日志</th><th>大小</th><th>上传人 IP</th><th>操作</th></tr></thead><tbody id="logup-logs-body"></tbody></table></div>
         <div class="card" id="logup-more-wrap" style="display:none;text-align:center;"><button id="logup-more" class="btn">加载更多</button></div>
+      </section>
+
+      <section id="section-release-publish" class="section">
+        <div class="section-head"><div><h2>发布新版本</h2><p>上传安装包并完成 EV Sign 签名、Authenticode 验证与清单签名；发布过程实时回传进度</p></div><button id="release-env-refresh" class="btn btn-ghost btn-sm">刷新环境状态</button></div>
+        <div class="release-grid-2">
+          <div class="card form-card">
+            <h3>版本信息</h3>
+            <div class="release-form">
+              <label>版本号<input id="release-version" class="input" placeholder="例如：1.3.4"></label>
+              <label>安装包（.exe）<input id="release-installer" class="input" type="file" accept=".exe,application/octet-stream"></label>
+              <label>更新说明<textarea id="release-notes" class="input announcement-textarea" rows="5" maxlength="10000" placeholder="填写本次更新的主要内容"></textarea></label>
+              <label class="release-checkbox"><input id="release-mandatory" type="checkbox"><span>设为强制更新</span></label>
+            </div>
+            <div class="release-actions">
+              <button id="release-submit-internal" class="btn btn-primary" data-channel="internal">发布内测版</button>
+              <button id="release-submit-public" class="btn btn-success" data-channel="public">发布公共版</button>
+              <button id="release-submit-update-only" class="btn btn-ghost" data-channel="update_only">仅更新通道</button>
+            </div>
+            <div class="form-note">内测版 / 公共版会同步官网固定下载地址；「仅更新通道」只更新在线更新清单，不改动官网下载。</div>
+          </div>
+          <div>
+            <div class="card form-card hidden" id="release-progress-card">
+              <div class="progress-head"><div><strong id="release-progress-version">发布任务</strong><span class="progress-phase" id="release-progress-phase"></span></div><span class="progress-percent" id="release-progress-percent">0%</span></div>
+              <div class="progress-track"><span id="release-progress-bar"></span></div>
+              <div class="progress-detail"><span id="release-progress-bytes">等待安装包</span><span id="release-progress-message"></span></div>
+              <ol class="progress-steps" id="release-progress-steps">
+                <li data-phase="uploading">上传安装包</li>
+                <li data-phase="evsign">EV Sign 签名</li>
+                <li data-phase="authenticode">Authenticode 验证</li>
+                <li data-phase="patching">增量补丁</li>
+                <li data-phase="publishing">发布文件</li>
+                <li data-phase="completed">清单签名</li>
+              </ol>
+            </div>
+            <div class="card form-card">
+              <h3>签名环境</h3>
+              <div id="release-env-list" class="form-note">加载中…</div>
+            </div>
+          </div>
+        </div>
+      </section>
+
+      <section id="section-release-history" class="section">
+        <div class="section-head"><div><h2>发布记录</h2><p>历史发布的版本、渠道、安装包与签名校验信息（按北京时间显示）</p></div><button id="release-history-refresh" class="btn btn-ghost btn-sm">刷新</button></div>
+        <div class="card table-wrap">
+          <table>
+            <thead><tr><th>版本</th><th>渠道</th><th>发布人</th><th>发布时间（北京时间）</th><th>完整安装包</th><th>增量补丁</th><th>代码签名</th></tr></thead>
+            <tbody id="release-history-body"></tbody>
+          </table>
+        </div>
+        <nav class="card pagination" id="release-history-pagination"></nav>
+      </section>
+
+      <section id="section-release-logs" class="section">
+        <div class="section-head"><div><h2>操作记录</h2><p>发布后台的登录、发布、撤销等关键操作审计（按北京时间显示）</p></div><button id="release-logs-refresh" class="btn btn-ghost btn-sm">刷新</button></div>
+        <div class="card table-wrap">
+          <table style="min-width:720px;">
+            <thead><tr><th>时间（北京时间）</th><th>管理员</th><th>操作</th><th>目标</th><th>IP</th></tr></thead>
+            <tbody id="release-logs-body"></tbody>
+          </table>
+        </div>
+        <nav class="card pagination" id="release-logs-pagination"></nav>
       </section>
     </main>
   </div>
@@ -483,6 +442,7 @@ function showMain() {
   $('auth-view').classList.add('hidden');
   $('main-view').classList.remove('hidden');
   $('admin-chip').textContent = `${CURRENT_ADMIN.username} · ${CURRENT_ADMIN.admin_id}`;
+  startFeedbackBadgePolling();
 }
 
 async function init() {
@@ -540,13 +500,13 @@ $('setup-btn').onclick = async () => {
   finally { $('setup-btn').disabled = false; }
 };
 
-const sectionTitles = { dashboard: '数据看板', 'billing-wallet': '积分管理', 'billing-usage': '用户消费流水', multipliers: '价格倍率', credentials: '密钥管理', users: '账号状态管理', invitations: '邀请码生成', 'invite-profit': '邀请码利润明细', admins: '管理员账号管理', announcements: '公告管理', logs: '操作日志', 'failure-logs': '失败日志', 'log-uploads': '用户日志上传' };
+const sectionTitles = { dashboard: '数据看板', 'billing-wallet': '积分管理', 'billing-usage': '用户消费流水', credentials: '密钥管理', users: '账号状态管理', invitations: '邀请码生成', 'invite-profit': '邀请码利润明细', admins: '管理员账号管理', announcements: '公告管理', logs: '操作日志', 'user-activity': '用户活动', feedback: '用户反馈', 'failure-logs': '失败日志', 'log-uploads': '用户日志上传', multipliers: '价格倍率', 'release-publish': '发布新版本', 'release-history': '发布记录', 'release-logs': '发布操作记录' };
 async function activateSection(name) {
   ACTIVE_SECTION = name;
   document.querySelectorAll('.nav-item').forEach(item => item.classList.toggle('active', item.dataset.section === name));
   document.querySelectorAll('.section').forEach(item => item.classList.toggle('active', item.id === `section-${name}`));
   $('page-title').textContent = sectionTitles[name];
-  await ({ dashboard: loadDashboard, users: loadUsers, 'billing-wallet': loadBilling, 'billing-usage': () => { loadBilling(); loadBillingUsage(true); }, multipliers: loadMultipliers, credentials: loadCredentials, invitations: loadInvitations, 'invite-profit': loadInvitationProfit, admins: loadAdmins, announcements: loadAnnouncements, logs: loadLogs, 'failure-logs': loadFailureLogs, 'log-uploads': loadLogUploads })[name]();
+  await ({ dashboard: loadDashboard, users: loadUsers, 'billing-wallet': loadBilling, 'billing-usage': () => { loadBilling(); loadBillingUsage(true); }, credentials: loadCredentials, invitations: loadInvitations, 'invite-profit': loadInvitationProfit, admins: loadAdmins, announcements: loadAnnouncements, logs: loadLogs, 'user-activity': loadUserActivity, feedback: loadFeedback, 'failure-logs': loadFailureLogs, 'log-uploads': loadLogUploads, multipliers: loadMultipliers, 'release-publish': loadReleaseEnv, 'release-history': () => loadReleaseHistory(1), 'release-logs': () => loadReleaseLogs(1) })[name]();
 }
 document.querySelectorAll('.nav-item').forEach(item => item.onclick = () => activateSection(item.dataset.section));
 $('refresh-btn').onclick = () => activateSection(ACTIVE_SECTION);
@@ -560,122 +520,8 @@ async function loadBillingUsage(reset=true){if(reset){BILLING_USAGE=[];BILLING_U
 async function loadBillingSummary(){try{BILLING_SUMMARY=await api('/api/billing/summary');renderBillingSummary();}catch(error){if(error.message!=='__AUTH__')toast(error.message,'error');}}
 function renderBillingSummary(){const s=BILLING_SUMMARY;if(!s)return;const w=s.wallet||{},c=s.consumed||{},t=s.topup||{},u=s.users||{};const cards=[{label:'全平台总积分',value:Number(w.total_points||0).toLocaleString(),sub:`${Number(w.funded_accounts||0).toLocaleString()} 个账户有余额`,accent:true},{label:'可用积分',value:Number(w.available_points||0).toLocaleString(),sub:`任务冻结 ${Number(w.task_locked_points||0).toLocaleString()} · 人工冻结 ${Number(w.manual_frozen_points||0).toLocaleString()}`},{label:'已消耗积分',value:Number(c.charged_points||0).toLocaleString(),sub:`今日消耗 ${Number(c.today_charged_points||0).toLocaleString()} · ${Number(c.charged_accounts||0)} 个账户产生消耗`},{label:'充值总额',value:`¥${Number(t.amount_cny||0).toLocaleString()}`,sub:`${Number(t.orders||0)} 笔已支付订单 · ${Number(t.accounts||0)} 个账户充值`},{label:'用户数',value:Number(u.total||0).toLocaleString(),sub:`活跃 ${Number(u.active||0).toLocaleString()} · 在线 ${Number(u.online||0).toLocaleString()}`}];$('billing-stats').innerHTML=cards.map(x=>`<div class="stat-card${x.accent?' is-accent':''}"><div class="stat-label">${x.label}</div><div class="stat-value">${x.value}</div><div class="stat-sub">${x.sub||''}</div></div>`).join('');const rows=s.ranking||[];$('billing-ranking-body').innerHTML=rows.length?rows.map((r,i)=>`<tr><td>${i+1}</td><td><b>${esc(r.username||'-')}</b><br><span class="mono">${esc(r.account_id)}</span></td><td>${Number(r.points_balance||0).toLocaleString()}</td><td>${Number(r.available_points||0).toLocaleString()}</td><td>${Number(r.locked_points||0).toLocaleString()}</td><td>${Number(r.manual_frozen_points||0).toLocaleString()}</td><td>${Number(r.charged_points||0).toLocaleString()}</td></tr>`).join(''):'<tr><td class="empty" colspan="7">暂无账户</td></tr>';}
 function renderBillingWallets(){const query=($('billing-search').value||'').trim().toLowerCase();const rows=BILLING.filter(item=>!query||`${item.username||''} ${item.account_id||''} ${item.email||''}`.toLowerCase().includes(query));$('billing-count').textContent=`共 ${rows.length} / ${BILLING.length} 个账户`;$('billing-body').innerHTML=rows.length?rows.map(item=>{const balance=Number(item.points_balance||0),taskLocked=Number(item.locked_points||0),manualFrozen=Number(item.manual_frozen_points||0),available=balance-taskLocked-manualFrozen;return `<tr><td><b>${esc(item.username||'-')}</b><br><span class="mono">${esc(item.account_id)}</span></td><td>${balance.toLocaleString()}</td><td>${available.toLocaleString()}</td><td>${taskLocked.toLocaleString()}</td><td>${manualFrozen.toLocaleString()}</td><td>${Number(item.success_usage||0).toLocaleString()}</td><td>${Number(item.charged_points||0).toLocaleString()}</td><td>${fmtTime(item.updated_at)}</td><td><button class="link-btn green" data-billing-action="adjust" data-id="${esc(item.account_id)}" data-name="${esc(item.username||item.account_id)}">调账</button><button class="link-btn red" data-billing-action="freeze" data-id="${esc(item.account_id)}" data-name="${esc(item.username||item.account_id)}" data-frozen="${manualFrozen}" data-max-freeze="${Math.max(0,balance-taskLocked)}">冻结</button>${manualFrozen>0?`<button class="link-btn" data-billing-action="release" data-id="${esc(item.account_id)}" data-name="${esc(item.username||item.account_id)}" data-frozen="${manualFrozen}">释放</button>`:''}${taskLocked>0?`<button class="link-btn" data-billing-action="task-release" data-id="${esc(item.account_id)}" data-name="${esc(item.username||item.account_id)}" data-frozen="${taskLocked}">释放任务冻结</button>`:''}</td></tr>`;}).join(''):'<tr><td class="empty" colspan="9">暂无积分钱包</td></tr>';}
-function renderBillingUsage(){const rows=BILLING_USAGE;const loaded=rows.length;const hasMore=BILLING_USAGE_MORE;$('billing-usage-count').textContent=`已加载 ${loaded} 条${hasMore?' · 还有更多，可点击「加载更多」':''}`; $('billing-usage-more-wrap').style.display=hasMore&&loaded?'':'none'; $('billing-usage-body').innerHTML=rows.length?rows.map(item=>{const available=Number(item.points_balance||0)-Number(item.locked_points||0)-Number(item.manual_frozen_points||0);const status=item.status==='succeeded'?'成功':item.status==='failed'?'已释放':'冻结中';const statusClass=item.status==='succeeded'?'badge-success':item.status==='failed'?'badge-muted':'badge-warning';const isBatchFrozen=(item.feature_key||'').indexOf('.batch')>-1&&(item.status==='frozen');const releaseBtn=isBatchFrozen?`<button class="link-btn" data-batch-release="${esc(String(item.usage_id||'').replace(/^batch:/,''))}" data-name="${esc(item.username||item.account_id)}">释放</button>`:'';return `<tr><td>${fmtTime(item.created_at)}</td><td><b>${esc(item.username||'-')}</b><br><span class="mono">${esc(item.account_id)}</span></td><td>${available.toLocaleString()} / ${Number(item.points_balance||0).toLocaleString()}</td><td>${esc(item.feature_key)}</td><td><span class="badge ${statusClass}">${status}</span></td><td>${Number(item.reserved_points||0)} / ${Number(item.charged_points||0)} / ${Number(item.refunded_points||0)}</td><td>${esc(item.model||item.provider||'-')}</td><td class="mono">${esc(item.provider_task_id||'-')}</td><td>${releaseBtn}</td></tr>`;}).join(''):'<tr><td class="empty" colspan="9">当前筛选下暂无 AI 消费记录</td></tr>';}
-$('billing-usage-body').onclick=event=>{const button=event.target.closest('[data-batch-release]');if(!button)return;const name=button.dataset.name||'';const freezeId=button.dataset.batchRelease;const reason=prompt(`为 ${name} 释放任务冻结（整批归还）？填写释放原因（会写入服务器账本）`,'管理员释放任务冻结');if(reason===null)return;askConfirm('确认释放任务冻结',`将释放该任务批次（${freezeId}）的全部冻结积分。`,async()=>{await api(`/api/billing/batch/${freezeId}/release`,{method:'POST',body:JSON.stringify({reason})});toast('任务冻结已释放','success');await loadBilling();await loadBillingUsage(true);});};$('billing-usage-search').oninput=()=>loadBillingUsage(true);$('billing-usage-from').onchange=()=>loadBillingUsage(true);$('billing-usage-to').onchange=()=>loadBillingUsage(true);$('billing-usage-reset').onclick=()=>{$('billing-usage-search').value='';$('billing-usage-from').value='';$('billing-usage-to').value='';loadBillingUsage(true);};$('billing-usage-more').onclick=()=>loadBillingUsage(false);$('billing-body').onclick=event=>{const button=event.target.closest('[data-billing-action]');if(!button)return;const name=button.dataset.name||button.dataset.id;if(button.dataset.billingAction==='adjust'){const raw=prompt(`为 ${name} 调整积分（正数充值，负数扣减）`,'');if(raw===null)return;const delta=Number.parseInt(raw,10);if(!Number.isInteger(delta)||delta===0){toast('请输入非零整数','error');return;}const reason=prompt('填写调账原因（会写入服务器账本）','管理员调账');if(reason===null)return;askConfirm('确认调账',`将为 ${name} 调整 ${delta>0?'+':''}${delta.toLocaleString()} 积分\n原因：${reason}`,async()=>{await api(`/api/billing/${button.dataset.id}/adjust`,{method:'POST',body:JSON.stringify({points_delta:delta,reason})});toast('积分已调整','success');await loadBilling();});return;}if(button.dataset.billingAction==='release'){const raw=prompt(`为 ${name} 释放人工冻结积分（可释放数量：${Number(button.dataset.frozen).toLocaleString()}）`,'');if(raw===null)return;const release=Number.parseInt(raw,10);if(!Number.isInteger(release)||release<1){toast('请输入正整数','error');return;}if(release>Number(button.dataset.frozen)){toast('释放数量不能超过当前人工冻结','error');return;}const reason=prompt('填写释放原因（会写入服务器账本）','管理员释放冻结');if(reason===null)return;askConfirm('确认释放冻结',`将为 ${name} 释放 ${release.toLocaleString()} 积分（人工冻结）。`,async()=>{await api(`/api/billing/${button.dataset.id}/release`,{method:'POST',body:JSON.stringify({release_points:release,reason})});toast(`已释放 ${release.toLocaleString()} 积分`,'success');await loadBilling();});return;}if(button.dataset.billingAction==='task-release'){const raw=prompt(`为 ${name} 释放任务冻结积分（可释放数量：${Number(button.dataset.frozen).toLocaleString()}）`,'');if(raw===null)return;const release=Number.parseInt(raw,10);if(!Number.isInteger(release)||release<1){toast('请输入正整数','error');return;}if(release>Number(button.dataset.frozen)){toast('释放数量不能超过当前任务冻结','error');return;}const reason=prompt('填写释放原因（会写入服务器账本）','管理员释放任务冻结');if(reason===null)return;askConfirm('确认释放任务冻结',`将为 ${name} 释放 ${release.toLocaleString()} 积分（任务冻结）。\n该数额将从旧到新抵扣对应冻结批次。`,async()=>{await api(`/api/billing/${button.dataset.id}/task-release`,{method:'POST',body:JSON.stringify({release_points:release,reason})});toast(`已释放 ${release.toLocaleString()} 积分`,'success');await loadBilling();});return;}const raw=prompt(`为 ${name} 设置管理员冻结积分（0 为全部解冻；最多 ${Number(button.dataset.maxFreeze).toLocaleString()}）`,button.dataset.frozen||'0');if(raw===null)return;const frozen=Number.parseInt(raw,10);if(!Number.isInteger(frozen)||frozen<0||frozen>Number(button.dataset.maxFreeze)){toast('冻结积分超出可设置范围','error');return;}const reason=prompt('填写冻结或解冻原因（会写入服务器账本）',frozen?'管理员风险冻结':'管理员解除冻结');if(reason===null)return;askConfirm('确认设置冻结积分',`将 ${name} 的管理员冻结积分设置为 ${frozen.toLocaleString()}。`,async()=>{await api(`/api/billing/${button.dataset.id}/freeze`,{method:'POST',body:JSON.stringify({frozen_points:frozen,reason})});toast(frozen?'积分已冻结':'积分已全部解冻','success');await loadBilling();});};
-
-let MULTIPLIERS = null; let MULTIPLIER_LOG = []; let MULTIPLIER_PRICING = {}; let MULTIPLIER_CHART = null;
-const MULTIPLIER_META = { ai: { name: 'AI 处理', unit: '商品链接', icon: '🤖' }, pod: { name: 'POD 定制', unit: '款式', icon: '🖼️' } };
-async function loadMultipliers() {
-  try {
-    const data = await api('/api/billing/multipliers');
-    MULTIPLIERS = data.multipliers || {}; MULTIPLIER_LOG = data.changelog || []; MULTIPLIER_PRICING = data.pricing || {};
-    renderMultipliers();
-  } catch (error) { if (error.message !== '__AUTH__') toast(error.message, 'error'); }
-}
-function multiplierCard(category) {
-  const m = MULTIPLIERS[category]; if (!m) return '';
-  const meta = MULTIPLIER_META[category];
-  const effective = Number(m.effective_points_per_unit || 0), base = Number(m.base_points_per_unit || 0), percent = Number(m.multiplier_percent || 100);
-  const valueBadge = m.auto_pricing ? '<span class="badge badge-muted">基础定价</span>' : '<span class="badge badge-success">固定单条价值</span>';
-  const updated = m.updated_at ? fmtTime(m.updated_at) : '—';
-  return `<div class="stat-card is-accent">
-    <div class="stat-label">${meta.icon} ${meta.name} · 单条${meta.unit}价值</div>
-    <div class="stat-value">${effective}<small class="multiplier-unit"> 积分 / ${meta.unit}</small></div>
-    <div class="stat-sub">基准 ${base} 积分 · 倍率 <b>${percent}%</b> ${valueBadge}</div>
-    <div class="stat-sub mono">${updated} · ${esc(m.updated_by || 'system')}${m.change_reason ? ' · ' + esc(m.change_reason) : ''}</div>
-    <div class="multiplier-ctrl">
-      <input id="multiplier-input-${category}" class="input multiplier-input" type="number" min="1" max="500" step="1" placeholder="目标单条价值（积分）" value="${m.auto_pricing ? '' : effective}">
-      <button class="btn btn-sm" data-mult-preset="${category}" data-pct="80">80%</button>
-      <button class="btn btn-sm" data-mult-preset="${category}" data-pct="90">90%</button>
-      <button class="btn btn-sm" data-mult-preset="${category}" data-pct="100">100%</button>
-      <button class="btn btn-sm" data-mult-preset="${category}" data-pct="110">110%</button>
-      <button class="btn btn-sm" data-mult-preset="${category}" data-pct="120">120%</button>
-      <button class="btn btn-primary btn-sm" data-mult-apply="${category}">应用</button>
-      <button class="link-btn" data-mult-reset="${category}">恢复基础定价</button>
-    </div>
-  </div>`;
-}
-async function submitMultiplier(category, body) {
-  const reason = prompt(`调整「${MULTIPLIER_META[category].name}」计费：请填写调整原因（会写入审计记录）`, '');
-  if (reason === null) return;
-  if (!String(reason).trim()) { toast('请填写调整原因', 'error'); return; }
-  body.change_reason = String(reason).trim();
-  try {
-    const data = await api('/api/billing/multipliers', { method: 'POST', body: JSON.stringify(body) });
-    toast(`${MULTIPLIER_META[category].name} 单条价值已更新`, 'success');
-    MULTIPLIERS = data.multipliers || {}; MULTIPLIER_LOG = data.changelog || [];
-    renderMultipliers();
-  } catch (error) { if (error.message !== '__AUTH__') toast(error.message, 'error'); }
-}
-function renderMultiplierPreview() {
-  const ai = MULTIPLIER_PRICING.ai || {}, pod = MULTIPLIER_PRICING.pod || {};
-  const mA = MULTIPLIERS.ai || {}, mP = MULTIPLIERS.pod || {};
-  const items = ai.items || {};
-  const aiRows = Object.keys(items).map(key => `<tr><td class="mono">${esc(key)}</td><td>${Number(items[key].charge_points)}</td><td>${Number(items[key].charge_points)}</td></tr>`).join('');
-  const aiBase = Number(ai.max_charge_per_link || 0);
-  const aiActual = mA.points_per_unit != null ? Number(mA.points_per_unit) : Math.round(aiBase * Number(mA.multiplier_percent || 100) / 100);
-  $('#multiplier-preview-ai-body').innerHTML = `<div class="preview-sum">单条链接基准 <b>${aiBase}</b> 积分 → 实际 <b class="preview-actual">${aiActual}</b> 积分（<b>${Number(mA.multiplier_percent || 100)}%</b>）</div>
-    <table><thead><tr><th>子项</th><th>基准（积分）</th><th>实际（积分）</th></tr></thead><tbody>${aiRows || '<tr><td class="empty" colspan="3">暂无子项定价</td></tr>'}</tbody></table>`;
-  const podImage = pod.items ? pod.items['pod.image'] : null;
-  const podBase = Number((podImage && podImage.charge_points) || 45);
-  const podActual = mP.points_per_unit != null ? Number(mP.points_per_unit) : null;
-  $('#multiplier-preview-pod-body').innerHTML = `<div class="preview-sum">基准单款式 <b>${podBase}</b> 积分（默认随机 40-50） → 实际 <b class="preview-actual">${podActual != null ? podActual : '40-50（随款式随机）'}</b>（<b>${Number(mP.multiplier_percent || 100)}%</b>）</div>
-    <table><thead><tr><th>说明</th><th>默认</th><th>当前</th></tr></thead><tbody>
-    <tr><td>标题（辅助）</td><td>免费</td><td>免费</td></tr>
-    <tr><td>四宫格图片</td><td>40-50 随机</td><td>${podActual != null ? podActual + ' 固定' : '40-50 随机'}</td></tr>
-    <tr><td>付费重试</td><td>按款式价</td><td>按款式价</td></tr></tbody></table>`;
-}
-function renderMultiplierLog() {
-  const rows = MULTIPLIER_LOG.map(e => `<tr><td>${e.created_at ? fmtTime(e.created_at) : '—'}</td><td>${MULTIPLIER_META[e.category] ? MULTIPLIER_META[e.category].name : esc(e.category)}</td><td>${e.before_points == null ? '基础定价' : esc(e.before_points)} → ${e.after_points == null ? '基础定价' : esc(e.after_points)}</td><td>${e.before_percent}% → ${e.after_percent}%</td><td>${esc(e.changed_by || '-')}</td><td>${esc(e.change_reason || '-')}</td></tr>`).join('');
-  $('#multiplier-log-body').innerHTML = rows || '<tr><td class="empty" colspan="6">暂无调整记录</td></tr>';
-}
-function renderMultiplierChart() {
-  const canvas = $('chart-multiplier'); if (!canvas) return;
-  if (MULTIPLIER_CHART) { MULTIPLIER_CHART.destroy(); MULTIPLIER_CHART = null; }
-  const timeline = []; const seen = new Set();
-  [...MULTIPLIER_LOG].reverse().forEach(e => { const key = e.created_at; if (key && !seen.has(key)) { seen.add(key); timeline.push(key); } });
-  if (!timeline.length || !window.Chart) return;
-  const fmtT = t => { const d = new Date(String(t).replace(' ', 'T')); return `${String(d.getMonth() + 1).padStart(2, '0')}-${String(d.getDate()).padStart(2, '0')} ${String(d.getHours()).padStart(2, '0')}:${String(d.getMinutes()).padStart(2, '0')}`; };
-  const labels = timeline.map(fmtT);
-  const series = ['ai', 'pod'].map(cat => {
-    const meta = MULTIPLIER_META[cat];
-    const data = timeline.map(t => { const hit = MULTIPLIER_LOG.find(e => e.category === cat && e.created_at === t); return hit ? Number(hit.after_percent) : null; });
-    return { label: meta.name, data, borderColor: cat === 'ai' ? '#0b5cff' : '#f59e0b', backgroundColor: cat === 'ai' ? '#0b5cff' : '#f59e0b', tension: 0.3, spanGaps: true, pointRadius: 3, pointBackgroundColor: cat === 'ai' ? '#0b5cff' : '#f59e0b' };
-  });
-  MULTIPLIER_CHART = new Chart(canvas, { type: 'line', data: { labels, datasets: series }, options: { responsive: true, maintainAspectRatio: false, interaction: { mode: 'nearest', intersect: false }, scales: { x: { ticks: { maxTicksLimit: 10 } }, y: { min: 50, max: 200, title: { display: true, text: '倍率（%）' } } }, plugins: { legend: { position: 'top' } } } });
-}
-function renderMultipliers() {
-  $('#multiplier-cards').innerHTML = ['ai', 'pod'].map(multiplierCard).join('');
-  renderMultiplierPreview(); renderMultiplierLog(); renderMultiplierChart();
-}
-$('multiplier-cards').onclick = event => {
-  const preset = event.target.closest('[data-mult-preset]');
-  if (preset) {
-    const category = preset.dataset.multPreset, m = MULTIPLIERS[category];
-    if (!m) return;
-    const percent = Number(preset.dataset.pct); const base = Number(m.base_points_per_unit || 0);
-    const target = Math.max(1, Math.round(base * percent / 100));
-    $('multiplier-input-' + category).value = target;
-    submitMultiplier(category, { [`${category}_multiplier_percent`]: percent });
-    return;
-  }
-  const applyBtn = event.target.closest('[data-mult-apply]');
-  if (applyBtn) {
-    const category = applyBtn.dataset.multApply, input = $('multiplier-input-' + category);
-    const raw = (input.value || '').trim();
-    if (!raw) { toast('请输入目标单条价值（积分）', 'error'); return; }
-    const points = Number.parseInt(raw, 10);
-    if (!Number.isInteger(points) || points < 1 || points > 500) { toast('单条价值应为 1-500 的整数积分', 'error'); return; }
-    submitMultiplier(category, { [`${category}_points_per_unit`]: points });
-    return;
-  }
-  const resetBtn = event.target.closest('[data-mult-reset]');
-  if (resetBtn) {
-    const category = resetBtn.dataset.multReset;
-    if (!window.confirm(`确认恢复「${MULTIPLIER_META[category].name}」为基础定价？`)) return;
-    submitMultiplier(category, { [`reset_${category}`]: true });
-  }
-};
+function renderBillingUsage(){const rows=BILLING_USAGE;const loaded=rows.length;const hasMore=BILLING_USAGE_MORE;$('billing-usage-count').textContent=`已加载 ${loaded} 条${hasMore?' · 还有更多，可点击「加载更多」':''}`; $('billing-usage-more-wrap').style.display=hasMore&&loaded?'':'none'; $('billing-usage-body').innerHTML=rows.length?rows.map(item=>{const available=Number(item.points_balance||0)-Number(item.locked_points||0)-Number(item.manual_frozen_points||0);const status=item.status==='succeeded'?'成功':item.status==='failed'?'已释放':'冻结中';const statusClass=item.status==='succeeded'?'badge-success':item.status==='failed'?'badge-muted':'badge-warning';const isBatchFrozen=(item.feature_key||'').indexOf('.batch')>-1&&(item.status==='frozen');const releaseBtn=isBatchFrozen?`<button class="link-btn" data-batch-release="${esc(String(item.usage_id||'').replace(/^batch:/,''))}" data-name="${esc(item.username||item.account_id)}">释放</button>`:'';return `<tr><td>${fmtTime(item.created_at)}</td><td><b>${esc(item.username||'-')}</b><br><span class="mono">${esc(item.account_id)}</span></td><td>${available.toLocaleString()} / ${Number(item.points_balance||0).toLocaleString()}</td><td>${esc(item.feature_key)}</td><td><span class="badge ${statusClass}">${status}</span></td><td>${Number(item.reserved_points||0)} / ${Number(item.charged_points||0)} / ${Number(item.refunded_points||0)}</td><td>${esc(item.model||item.provider||'-')}</td><td class="mono">${esc(item.provider_task_id||'-')}</td><td>${esc(item.app_version||'-')}</td><td>${releaseBtn}</td></tr>`;}).join(''):'<tr><td class="empty" colspan="10">当前筛选下暂无 AI 消费记录</td></tr>';}
+$('billing-search').oninput=()=>renderBillingWallets();$('billing-usage-body').onclick=event=>{const button=event.target.closest('[data-batch-release]');if(!button)return;const name=button.dataset.name||'';const freezeId=button.dataset.batchRelease;const reason=prompt(`为 ${name} 释放任务冻结（整批归还）？填写释放原因（会写入服务器账本）`,'管理员释放任务冻结');if(reason===null)return;askConfirm('确认释放任务冻结',`将释放该任务批次（${freezeId}）的全部冻结积分。`,async()=>{await api(`/api/billing/batch/${freezeId}/release`,{method:'POST',body:JSON.stringify({reason})});toast('任务冻结已释放','success');await loadBilling();await loadBillingUsage(true);});};$('billing-usage-search').oninput=()=>loadBillingUsage(true);$('billing-usage-from').onchange=()=>loadBillingUsage(true);$('billing-usage-to').onchange=()=>loadBillingUsage(true);$('billing-usage-reset').onclick=()=>{$('billing-usage-search').value='';$('billing-usage-from').value='';$('billing-usage-to').value='';loadBillingUsage(true);};$('billing-usage-more').onclick=()=>loadBillingUsage(false);$('billing-body').onclick=event=>{const button=event.target.closest('[data-billing-action]');if(!button)return;const name=button.dataset.name||button.dataset.id;if(button.dataset.billingAction==='adjust'){const raw=prompt(`为 ${name} 调整积分（正数充值，负数扣减）`,'');if(raw===null)return;const delta=Number.parseInt(raw,10);if(!Number.isInteger(delta)||delta===0){toast('请输入非零整数','error');return;}const reason=prompt('填写调账原因（会写入服务器账本）','管理员调账');if(reason===null)return;askConfirm('确认调账',`将为 ${name} 调整 ${delta>0?'+':''}${delta.toLocaleString()} 积分\n原因：${reason}`,async()=>{await api(`/api/billing/${button.dataset.id}/adjust`,{method:'POST',body:JSON.stringify({points_delta:delta,reason})});toast('积分已调整','success');await loadBilling();});return;}if(button.dataset.billingAction==='release'){const raw=prompt(`为 ${name} 释放人工冻结积分（可释放数量：${Number(button.dataset.frozen).toLocaleString()}）`,'');if(raw===null)return;const release=Number.parseInt(raw,10);if(!Number.isInteger(release)||release<1){toast('请输入正整数','error');return;}if(release>Number(button.dataset.frozen)){toast('释放数量不能超过当前人工冻结','error');return;}const reason=prompt('填写释放原因（会写入服务器账本）','管理员释放冻结');if(reason===null)return;askConfirm('确认释放冻结',`将为 ${name} 释放 ${release.toLocaleString()} 积分（人工冻结）。`,async()=>{await api(`/api/billing/${button.dataset.id}/release`,{method:'POST',body:JSON.stringify({release_points:release,reason})});toast(`已释放 ${release.toLocaleString()} 积分`,'success');await loadBilling();});return;}if(button.dataset.billingAction==='task-release'){const raw=prompt(`为 ${name} 释放任务冻结积分（可释放数量：${Number(button.dataset.frozen).toLocaleString()}）`,'');if(raw===null)return;const release=Number.parseInt(raw,10);if(!Number.isInteger(release)||release<1){toast('请输入正整数','error');return;}if(release>Number(button.dataset.frozen)){toast('释放数量不能超过当前任务冻结','error');return;}const reason=prompt('填写释放原因（会写入服务器账本）','管理员释放任务冻结');if(reason===null)return;askConfirm('确认释放任务冻结',`将为 ${name} 释放 ${release.toLocaleString()} 积分（任务冻结）。\n该数额将从旧到新抵扣对应冻结批次。`,async()=>{await api(`/api/billing/${button.dataset.id}/task-release`,{method:'POST',body:JSON.stringify({release_points:release,reason})});toast(`已释放 ${release.toLocaleString()} 积分`,'success');await loadBilling();});return;}const raw=prompt(`为 ${name} 设置管理员冻结积分（0 为全部解冻；最多 ${Number(button.dataset.maxFreeze).toLocaleString()}）`,button.dataset.frozen||'0');if(raw===null)return;const frozen=Number.parseInt(raw,10);if(!Number.isInteger(frozen)||frozen<0||frozen>Number(button.dataset.maxFreeze)){toast('冻结积分超出可设置范围','error');return;}const reason=prompt('填写冻结或解冻原因（会写入服务器账本）',frozen?'管理员风险冻结':'管理员解除冻结');if(reason===null)return;askConfirm('确认设置冻结积分',`将 ${name} 的管理员冻结积分设置为 ${frozen.toLocaleString()}。`,async()=>{await api(`/api/billing/${button.dataset.id}/freeze`,{method:'POST',body:JSON.stringify({frozen_points:frozen,reason})});toast(frozen?'积分已冻结':'积分已全部解冻','success');await loadBilling();});};
 
 let CREDENTIALS=[];
 async function loadCredentials(){try{const data=await api('/api/credentials');CREDENTIALS=data.credentials||[];renderCredentials();}catch(error){if(error.message!=='__AUTH__')toast(error.message,'error');}}
@@ -866,6 +712,46 @@ $('admins-body').onclick = event => {
 // ---- 公告管理 ----
 let ANNOUNCEMENTS = [];
 let ANNOUNCEMENT_EDITING_ID = null;
+let ANNOUNCE_TARGET = [];          // 当前表单选中的定向账号 ID
+let ANNOUNCE_USERS = [];           // /api/users 缓存
+let ANNOUNCE_USERS_LOADED = false;
+async function loadAnnounceUsers() {
+  if (ANNOUNCE_USERS_LOADED) return;
+  try {
+    const data = await api('/api/users?limit=500');
+    ANNOUNCE_USERS = (data.users || []).map(u => ({ account_id: String(u.account_id || u.user_id || ''), username: String(u.username || '-') })).filter(u => u.account_id);
+    ANNOUNCE_USERS_LOADED = true;
+  } catch (error) { if (error.message !== '__AUTH__') toast(error.message, 'error'); }
+}
+function renderAnnounceUserPicker() {
+  const query = $('ann-user-search').value.trim().toLowerCase();
+  const rows = ANNOUNCE_USERS.filter(u => !query || u.username.toLowerCase().includes(query) || u.account_id.toLowerCase().includes(query)).slice(0, 200);
+  $('ann-user-list').innerHTML = rows.length ? rows.map(u => {
+    const checked = ANNOUNCE_TARGET.includes(u.account_id);
+    return `<label style="display:flex;align-items:center;gap:8px;padding:4px 2px;font-weight:normal"><input type="checkbox" data-ann-user="${esc(u.account_id)}" ${checked ? 'checked' : ''}> <span>${esc(u.username)}</span> <span class="mono" style="color:#6d7789;font-size:12px">${esc(u.account_id)}</span></label>`;
+  }).join('') : '<div style="color:#6d7789">没有匹配的用户</div>';
+  $('ann-target-count').textContent = `已选择 ${ANNOUNCE_TARGET.length} 个用户`;
+}
+function setAnnounceTargetMode(custom) {
+  $('ann-target-all').checked = !custom;
+  $('ann-target-custom').checked = custom;
+  $('ann-target-picker').classList.toggle('hidden', !custom);
+  if (custom) { loadAnnounceUsers().then(renderAnnounceUserPicker); }
+}
+$('ann-target-all').onchange = () => setAnnounceTargetMode(false);
+$('ann-target-custom').onchange = () => setAnnounceTargetMode(true);
+$('ann-user-search').oninput = renderAnnounceUserPicker;
+$('ann-user-list').onchange = event => {
+  const box = event.target.closest('input[data-ann-user]');
+  if (!box) return;
+  const accountId = box.dataset.annUser;
+  if (box.checked) { if (!ANNOUNCE_TARGET.includes(accountId)) ANNOUNCE_TARGET.push(accountId); }
+  else { ANNOUNCE_TARGET = ANNOUNCE_TARGET.filter(x => x !== accountId); }
+  renderAnnounceUserPicker();
+};
+function currentAnnounceTargets() {
+  return $('ann-target-custom').checked ? ANNOUNCE_TARGET : [];
+}
 function autoGrowAnnouncementTextarea() {
   const el = $('announcement-content');
   if (!el) return;
@@ -880,6 +766,9 @@ function resetAnnouncementForm() {
   $('announcement-cancel-btn').classList.add('hidden');
   $('announcement-title').value = '';
   $('announcement-content').value = '';
+  ANNOUNCE_TARGET = [];
+  $('ann-user-search').value = '';
+  setAnnounceTargetMode(false);
   autoGrowAnnouncementTextarea();
 }
 function fillAnnouncementForm(item) {
@@ -889,6 +778,10 @@ function fillAnnouncementForm(item) {
   $('announcement-cancel-btn').classList.remove('hidden');
   $('announcement-title').value = item.title;
   $('announcement-content').value = item.content || '';
+  ANNOUNCE_TARGET = Array.isArray(item.target_account_ids) ? item.target_account_ids.slice() : [];
+  $('ann-user-search').value = '';
+  setAnnounceTargetMode(ANNOUNCE_TARGET.length > 0);
+  renderAnnounceUserPicker();
   autoGrowAnnouncementTextarea();
 }
 async function loadAnnouncements() {
@@ -903,6 +796,8 @@ function renderAnnouncements() {
     const on = !!item.active;
     const content = item.content || '';
     const isLong = content.length > 100 || (content.match(/\n/g) || []).length >= 3;
+    const targets = Array.isArray(item.target_account_ids) ? item.target_account_ids : [];
+    const scope = targets.length ? `<span class="badge badge-warning">指定 ${targets.length} 人</span>` : '<span class="badge badge-muted">全部用户</span>';
     return `<tr>
       <td>${on ? '<span class="badge badge-success">已上线</span>' : '<span class="badge badge-muted">已下线</span>'}</td>
       <td><b>${esc(item.title)}</b></td>
@@ -910,6 +805,7 @@ function renderAnnouncements() {
         <div class="announcement-body-clamp" data-ann-content data-id="${item.id}">${esc(content || '-')}</div>
         ${isLong ? `<button class="announcement-toggle" data-ann-toggle data-id="${item.id}">展开</button>` : ''}
       </td>
+      <td>${scope}</td>
       <td>${fmtTime(item.published_at)}</td>
       <td>
         <button class="link-btn" data-announcement-action="edit" data-id="${item.id}" data-title="${esc(item.title)}" data-content="${esc(item.content || '')}">编辑</button>
@@ -917,7 +813,7 @@ function renderAnnouncements() {
         <button class="link-btn red" data-announcement-action="delete" data-id="${item.id}" data-title="${esc(item.title)}">删除</button>
       </td>
     </tr>`;
-  }).join('') : '<tr><td class="empty" colspan="5">暂无公告，发布第一条吧</td></tr>';
+  }).join('') : '<tr><td class="empty" colspan="6">暂无公告，发布第一条吧</td></tr>';
 }
 resetAnnouncementForm();
 $('announcement-save-btn').onclick = async () => {
@@ -926,11 +822,12 @@ $('announcement-save-btn').onclick = async () => {
   if (!title) { toast('请输入公告标题', 'error'); return; }
   $('announcement-save-btn').disabled = true;
   try {
+    const targets = currentAnnounceTargets();
     if (ANNOUNCEMENT_EDITING_ID == null) {
-      await api('/api/announcements', { method: 'POST', body: JSON.stringify({ title, content }) });
+      await api('/api/announcements', { method: 'POST', body: JSON.stringify({ title, content, target_account_ids: targets }) });
       toast('公告已发布', 'success');
     } else {
-      await api(`/api/announcements/${ANNOUNCEMENT_EDITING_ID}`, { method: 'PATCH', body: JSON.stringify({ title, content }) });
+      await api(`/api/announcements/${ANNOUNCEMENT_EDITING_ID}`, { method: 'PATCH', body: JSON.stringify({ title, content, target_account_ids: targets }) });
       toast('公告已保存', 'success');
     }
     resetAnnouncementForm();
@@ -974,7 +871,8 @@ $('announcements-body').onclick = event => {
   }
 };
 
-const actionNames = {'admin.bootstrap_create':'初始化管理员','admin.create':'创建管理员','admin.set_status':'修改管理员状态','admin.reset_password':'重置管理员密码','user.set_status':'修改用户状态','user.reset_password':'重置用户密码','user.force_logout':'强制用户下线','invitation.generate':'生成邀请码'};
+const actionNames = {'admin.bootstrap_create':'初始化管理员','admin.create':'创建管理员','admin.set_status':'修改管理员状态','admin.reset_password':'重置管理员密码','user.set_status':'修改用户状态','user.reset_password':'重置用户密码','user.force_logout':'强制用户下线','invitation.generate':'生成邀请码','auth.login_success':'登录成功','auth.login_fail':'登录失败','change_password':'修改密码','forgot_password':'申请重置密码','reset_password':'重置密码','password_reset_direct':'直接重置密码','collect_key_issued':'下发采集密钥','pricing.update':'修改计费定价','billing.freeze':'冻结积分'};
+const typeLabels = {admin:'管理员',login:'登录',security:'安全事件',pricing:'改价',ai:'AI 请求',freeze:'计费冻结'};
 const LOGS_PAGE = 100;
 async function loadLogs(reset = true) {
   if (reset) { LOGS = []; LOGS_OFFSET = 0; LOGS_MORE = false; }
@@ -997,6 +895,167 @@ function renderLogs(){
 }
 $('log-search').oninput=renderLogs;
 $('logs-more').onclick = () => loadLogs(false);
+
+// ---------------- 用户活动 ----------------
+const UA_PAGE = 100;
+let UACT = []; let UACT_OFFSET = 0; let UACT_MORE = false; let UACT_TOTAL = 0;
+async function loadUserActivity(reset = true) {
+  if (reset) { UACT = []; UACT_OFFSET = 0; UACT_MORE = false; }
+  try {
+    const data = await api(`/api/user-activity?limit=${UA_PAGE}&offset=${UACT_OFFSET}`);
+    const rows = data.logs || [];
+    UACT = reset ? rows : UACT.concat(rows);
+    UACT_TOTAL = Number(data.total) || UACT.length;
+    UACT_OFFSET = rows.length ? UACT_OFFSET + rows.length : UACT_OFFSET;
+    UACT_MORE = !!data.has_more;
+    renderUserActivity();
+  } catch (error) { if (error.message !== '__AUTH__') toast(error.message, 'error'); }
+}
+function renderUserActivity(){
+  const query=$('ua-search').value.trim().toLowerCase();
+  const rows=UACT.filter(item=>!query||`${item.operation_id} ${item.actor_username} ${item.actor_admin_id} ${item.action} ${item.target_id} ${item.target_type} ${item.type} ${typeLabels[item.type]||''}`.toLowerCase().includes(query));
+  $('ua-count').textContent=`显示 ${rows.length} / ${UACT_TOTAL} 条${UACT_MORE ? ' · 还有更多，可点击「加载更多」' : ''}`;
+  $('ua-body').innerHTML=rows.length?rows.map(item=>{let details=item.details_json||'{}';try{const parsed=JSON.parse(details);details=Object.entries(parsed).map(([k,v])=>`${k}: ${Array.isArray(v)?v.join(', '):v}`).join('；')||'-';}catch{}const actionLabel=actionNames[item.action]||(String(item.action||'').startsWith('ai.')?'AI 调用':item.action);return `<tr><td>${fmtTime(item.created_at)}</td><td><span class="badge badge-muted">${esc(typeLabels[item.type]||item.type||'其他')}</span></td><td>${esc(item.actor_username||'-')}</td><td class="mono">${esc(item.actor_admin_id||'-')}</td><td>${esc(actionLabel)}</td><td>${esc(item.target_type)} · ${esc(item.target_id||'-')}</td><td><span class="badge ${item.success?'badge-success':'badge-danger'}">${item.success?'成功':'失败'}</span></td><td>${esc(item.client_ip||'-')}</td><td class="details" title="${esc(details)}">${esc(details)}</td></tr>`;}).join(''):'<tr><td class="empty" colspan="9">暂无用户活动</td></tr>';
+  $('ua-more-wrap').style.display = UACT_MORE && rows.length ? '' : 'none';
+}
+$('ua-search').oninput=renderUserActivity;
+$('ua-more').onclick = () => loadUserActivity(false);
+
+// ---- 用户反馈 ----
+let FEEDBACKS = []; let FEEDBACK_OFFSET = 0; let FEEDBACK_MORE = false; let FEEDBACK_TOTAL = 0;
+const FB_PAGE = 100;
+const feedbackCategoryNames = { bug: '问题反馈', suggestion: '功能建议', other: '其他' };
+const feedbackStatusNames = { new: '待处理', processing: '处理中', resolved: '已解决' };
+let FEEDBACK_BADGE_TIMER = null;
+async function refreshFeedbackBadge() {
+  try {
+    const data = await api('/api/feedback/unread-count', { noAuth: true });
+    const count = Number(data.new_count) || 0;
+    const badge = $('fb-badge');
+    if (!badge) return;
+    if (count > 0) {
+      badge.textContent = count > 99 ? '99+' : String(count);
+      badge.hidden = false;
+    } else {
+      badge.hidden = true;
+    }
+  } catch (error) { /* 静默：未配置/未登录时不打扰 */ }
+}
+function startFeedbackBadgePolling() {
+  if (FEEDBACK_BADGE_TIMER) clearInterval(FEEDBACK_BADGE_TIMER);
+  refreshFeedbackBadge();
+  FEEDBACK_BADGE_TIMER = setInterval(refreshFeedbackBadge, 30000);
+}
+async function loadFeedback(reset = true) {
+  if (reset) { FEEDBACKS = []; FEEDBACK_OFFSET = 0; FEEDBACK_MORE = false; }
+  try {
+    const data = await api(`/api/feedback?limit=${FB_PAGE}&offset=${FEEDBACK_OFFSET}`);
+    const rows = data.feedback || [];
+    FEEDBACKS = reset ? rows : FEEDBACKS.concat(rows);
+    FEEDBACK_TOTAL = Number(data.total) || FEEDBACKS.length;
+    FEEDBACK_OFFSET = rows.length ? FEEDBACK_OFFSET + rows.length : FEEDBACK_OFFSET;
+    FEEDBACK_MORE = !!data.has_more;
+    renderFeedback();
+    // 进入反馈页即视为已查看：隐藏新反馈红点。
+    const badge = $('fb-badge');
+    if (badge) badge.hidden = true;
+  } catch (error) { if (error.message !== '__AUTH__') toast(error.message, 'error'); }
+}
+async function openFeedbackImages(feedbackId) {
+  let imgs = [];
+  try {
+    const data = await api(`/api/feedback/${feedbackId}/images`);
+    imgs = Array.isArray(JSON.parse(data.images_json || '[]')) ? JSON.parse(data.images_json || '[]') : [];
+  } catch (error) {
+    if (error.message === '__AUTH__') return;
+    toast(error.message || '图片加载失败', 'error');
+    return;
+  }
+  if (!imgs.length) { toast('该反馈没有图片', 'error'); return; }
+  const item = FEEDBACKS.find((x) => x.feedback_id === feedbackId);
+  let index = 0;
+  const mask = document.createElement('div');
+  mask.className = 'fb-lightbox-mask';
+  mask.innerHTML = `<div class="fb-lightbox"><div class="fb-lightbox-head"><span>${esc((item && item.username) || '-')} 的反馈图片（${imgs.length} 张）</span><button class="fb-lightbox-close">×</button></div><img class="fb-lightbox-img" alt="反馈图片"><div class="fb-lightbox-foot"><button class="fb-lightbox-prev">上一张</button><span class="fb-lightbox-pos"></span><button class="fb-lightbox-next">下一张</button></div></div>`;
+  document.body.appendChild(mask);
+  const imgEl = mask.querySelector('.fb-lightbox-img');
+  const posEl = mask.querySelector('.fb-lightbox-pos');
+  const show = () => {
+    const im = imgs[index];
+    imgEl.src = `data:${im.mime || 'image/png'};base64,${im.data_b64 || ''}`;
+    posEl.textContent = `${index + 1} / ${imgs.length}`;
+  };
+  show();
+  mask.onclick = (e) => { if (e.target === mask) mask.remove(); };
+  mask.querySelector('.fb-lightbox-close').onclick = () => mask.remove();
+  mask.querySelector('.fb-lightbox-prev').onclick = () => { index = (index - 1 + imgs.length) % imgs.length; show(); };
+  mask.querySelector('.fb-lightbox-next').onclick = () => { index = (index + 1) % imgs.length; show(); };
+}
+function renderFeedback() {
+  const query = $('fb-search').value.trim().toLowerCase();
+  const rows = FEEDBACKS.filter((item) => !query || `${item.feedback_id} ${item.username} ${item.account_id} ${item.content} ${item.contact}`.toLowerCase().includes(query));
+  $('fb-count').textContent = `显示 ${rows.length} / ${FEEDBACK_TOTAL} 条${FEEDBACK_MORE ? ' · 还有更多，可点击「加载更多」' : ''}`;
+  $('fb-body').innerHTML = rows.length ? rows.map((item) => {
+    const imgsMeta = Array.isArray(item.images_meta) ? item.images_meta : [];
+    const statusBadge = item.status === 'resolved' ? 'badge-success' : item.status === 'processing' ? 'badge-warning' : 'badge-info';
+    return `<tr>
+      <td>${fmtTime(item.created_at)}</td>
+      <td>${esc(item.username || '-')}<br><small class="mono">${esc(item.account_id || '')}</small></td>
+      <td><span class="badge badge-muted">${esc(feedbackCategoryNames[item.category] || item.category)}</span></td>
+      <td><span class="badge ${statusBadge}">${esc(feedbackStatusNames[item.status] || item.status)}</span></td>
+      <td class="details">${esc(item.content || '-')}${item.contact ? `<br><small>联系方式：${esc(item.contact)}</small>` : ''}${item.admin_note ? `<br><small class="fb-note">回复：${esc(item.admin_note)}</small>` : ''}</td>
+      <td>${imgsMeta.length ? `<button class="link-btn" data-fb-view="${esc(item.feedback_id)}">查看 ${imgsMeta.length} 张图</button>` : '—'}</td>
+      <td>${esc(item.app_version || '-')}${item.platform ? `<br><small>${esc(item.platform)}</small>` : ''}</td>
+      <td class="fb-actions">
+        <select class="input fb-status-select" data-fb-status="${esc(item.feedback_id)}">
+          <option value="new"${item.status === 'new' ? ' selected' : ''}>待处理</option>
+          <option value="processing"${item.status === 'processing' ? ' selected' : ''}>处理中</option>
+          <option value="resolved"${item.status === 'resolved' ? ' selected' : ''}>已解决</option>
+        </select>
+        <input class="input fb-note-input" data-fb-note="${esc(item.feedback_id)}" placeholder="回复备注（用户可见）" value="${esc(item.admin_note || '')}">
+        <div class="fb-row-btns">
+          <button class="btn fb-save-btn" data-fb-save="${esc(item.feedback_id)}">保存</button>
+          <button class="btn fb-del-btn" data-fb-del="${esc(item.feedback_id)}">删除</button>
+        </div>
+      </td>
+    </tr>`;
+  }).join('') : '<tr><td class="empty" colspan="8">暂无用户反馈</td></tr>';
+  document.querySelectorAll('[data-fb-save]').forEach((btn) => {
+    btn.onclick = async () => {
+      const id = btn.dataset.fbSave;
+      const sel = document.querySelector(`[data-fb-status="${id}"]`);
+      const input = document.querySelector(`[data-fb-note="${id}"]`);
+      btn.disabled = true;
+      try {
+        await api(`/api/feedback/${id}/status`, { method: 'PATCH', body: JSON.stringify({ status: sel.value, admin_note: input.value }) });
+        toast('已保存，用户可在个人中心看到状态与回复', 'success');
+        const item = FEEDBACKS.find((x) => x.feedback_id === id);
+        if (item) { item.status = sel.value; item.admin_note = input.value.trim(); }
+        renderFeedback();
+      } catch (error) { if (error.message !== '__AUTH__') toast(error.message, 'error'); btn.disabled = false; }
+    };
+  });
+  document.querySelectorAll('[data-fb-view]').forEach((btn) => {
+    btn.onclick = () => openFeedbackImages(btn.dataset.fbView);
+  });
+  document.querySelectorAll('[data-fb-del]').forEach((btn) => {
+    btn.onclick = () => {
+      const id = btn.dataset.fbDel;
+      const item = FEEDBACKS.find((x) => x.feedback_id === id);
+      askConfirm(
+        '删除反馈',
+        `确定删除 ${item ? `${item.username}（${item.account_id}）` : ''} 的这条反馈吗？删除后用户个人中心也不再显示，且不可恢复。`,
+        async () => {
+          await api(`/api/feedback/${id}`, { method: 'DELETE' });
+          toast('反馈已删除', 'success');
+          await loadFeedback(true);
+        },
+      );
+    };
+  });
+}
+$('fb-search').oninput = renderFeedback;
+$('fb-more').onclick = () => loadFeedback(false);
 
 function askConfirm(title,message,action){$('confirm-title').textContent=title;$('confirm-message').textContent=message;confirmAction=action;$('confirm-mask').classList.remove('hidden');}
 $('confirm-cancel').onclick=()=>{$('confirm-mask').classList.add('hidden');confirmAction=null;};
@@ -1470,6 +1529,449 @@ $('logup-export-btn').onclick = async () => {
     toast('日志上传已导出', 'success');
   } catch (error) { toast(error.message, 'error'); }
 };
+
+let MULTIPLIERS = null; let MULTIPLIER_LOG = []; let MULTIPLIER_PRICING = {}; let MULTIPLIER_CHART = null;
+const MULTIPLIER_META = { ai: { name: 'AI 处理', unit: '商品链接', icon: '🤖' }, pod: { name: 'POD 定制', unit: '款式', icon: '🖼️' } };
+async function loadMultipliers() {
+  try {
+    const data = await api('/api/billing/multipliers');
+    MULTIPLIERS = data.multipliers || {}; MULTIPLIER_LOG = data.changelog || []; MULTIPLIER_PRICING = data.pricing || {};
+    renderMultipliers();
+  } catch (error) { if (error.message !== '__AUTH__') toast(error.message, 'error'); }
+}
+function multiplierCard(category) {
+  const m = MULTIPLIERS[category]; if (!m) return '';
+  const meta = MULTIPLIER_META[category];
+  const effective = Number(m.effective_points_per_unit || 0), base = Number(m.base_points_per_unit || 0), percent = Number(m.multiplier_percent || 100);
+  const valueBadge = m.auto_pricing ? '<span class="badge badge-muted">基础定价</span>' : '<span class="badge badge-success">固定单条价值</span>';
+  const updated = m.updated_at ? fmtTime(m.updated_at) : '—';
+  return `<div class="stat-card is-accent">
+    <div class="stat-label">${meta.icon} ${meta.name} · 单条${meta.unit}价值</div>
+    <div class="stat-value">${effective}<small class="multiplier-unit"> 积分 / ${meta.unit}</small></div>
+    <div class="stat-sub">基准 ${base} 积分 · 倍率 <b>${percent}%</b> ${valueBadge}</div>
+    <div class="stat-sub mono">${updated} · ${esc(m.updated_by || 'system')}${m.change_reason ? ' · ' + esc(m.change_reason) : ''}</div>
+    <div class="multiplier-ctrl">
+      <input id="multiplier-input-${category}" class="input multiplier-input" type="number" min="1" max="500" step="1" placeholder="目标单条价值（积分）" value="${m.auto_pricing ? '' : effective}">
+      <button class="btn btn-sm" data-mult-preset="${category}" data-pct="80">80%</button>
+      <button class="btn btn-sm" data-mult-preset="${category}" data-pct="90">90%</button>
+      <button class="btn btn-sm" data-mult-preset="${category}" data-pct="100">100%</button>
+      <button class="btn btn-sm" data-mult-preset="${category}" data-pct="110">110%</button>
+      <button class="btn btn-sm" data-mult-preset="${category}" data-pct="120">120%</button>
+      <button class="btn btn-primary btn-sm" data-mult-apply="${category}">应用</button>
+      <button class="link-btn" data-mult-reset="${category}">恢复基础定价</button>
+    </div>
+  </div>`;
+}
+async function submitMultiplier(category, body) {
+  const reason = prompt(`调整「${MULTIPLIER_META[category].name}」计费：请填写调整原因（会写入审计记录）`, '');
+  if (reason === null) return;
+  if (!String(reason).trim()) { toast('请填写调整原因', 'error'); return; }
+  body.change_reason = String(reason).trim();
+  try {
+    const data = await api('/api/billing/multipliers', { method: 'POST', body: JSON.stringify(body) });
+    toast(`${MULTIPLIER_META[category].name} 单条价值已更新`, 'success');
+    MULTIPLIERS = data.multipliers || {}; MULTIPLIER_LOG = data.changelog || [];
+    renderMultipliers();
+  } catch (error) { if (error.message !== '__AUTH__') toast(error.message, 'error'); }
+}
+function renderMultiplierPreview() {
+  const ai = MULTIPLIER_PRICING.ai || {}, pod = MULTIPLIER_PRICING.pod || {};
+  const mA = MULTIPLIERS.ai || {}, mP = MULTIPLIERS.pod || {};
+  const items = ai.items || {};
+  const aiRows = Object.keys(items).map(key => `<tr><td class="mono">${esc(key)}</td><td>${Number(items[key].charge_points)}</td><td>${Number(items[key].charge_points)}</td></tr>`).join('');
+  const aiBase = Number(ai.max_charge_per_link || 0);
+  const aiActual = mA.points_per_unit != null ? Number(mA.points_per_unit) : Math.round(aiBase * Number(mA.multiplier_percent || 100) / 100);
+  $('multiplier-preview-ai-body').innerHTML = `<div class="preview-sum">单条链接基准 <b>${aiBase}</b> 积分 → 实际 <b class="preview-actual">${aiActual}</b> 积分（<b>${Number(mA.multiplier_percent || 100)}%</b>）</div>
+    <table><thead><tr><th>子项</th><th>基准（积分）</th><th>实际（积分）</th></tr></thead><tbody>${aiRows || '<tr><td class="empty" colspan="3">暂无子项定价</td></tr>'}</tbody></table>`;
+  const podImage = pod.items ? pod.items['pod.image'] : null;
+  const podBase = Number((podImage && podImage.charge_points) || 45);
+  const podActual = mP.points_per_unit != null ? Number(mP.points_per_unit) : null;
+  $('multiplier-preview-pod-body').innerHTML = `<div class="preview-sum">基准单款式 <b>${podBase}</b> 积分（默认随机 40-50） → 实际 <b class="preview-actual">${podActual != null ? podActual : '40-50（随款式随机）'}</b>（<b>${Number(mP.multiplier_percent || 100)}%</b>）</div>
+    <table><thead><tr><th>说明</th><th>默认</th><th>当前</th></tr></thead><tbody>
+    <tr><td>标题（辅助）</td><td>免费</td><td>免费</td></tr>
+    <tr><td>四宫格图片</td><td>40-50 随机</td><td>${podActual != null ? podActual + ' 固定' : '40-50 随机'}</td></tr>
+    <tr><td>付费重试</td><td>按款式价</td><td>按款式价</td></tr></tbody></table>`;
+}
+function renderMultiplierLog() {
+  const rows = MULTIPLIER_LOG.map(e => `<tr><td>${e.created_at ? fmtTime(e.created_at) : '—'}</td><td>${MULTIPLIER_META[e.category] ? MULTIPLIER_META[e.category].name : esc(e.category)}</td><td>${e.before_points == null ? '基础定价' : esc(e.before_points)} → ${e.after_points == null ? '基础定价' : esc(e.after_points)}</td><td>${e.before_percent}% → ${e.after_percent}%</td><td>${esc(e.changed_by || '-')}</td><td>${esc(e.change_reason || '-')}</td></tr>`).join('');
+  $('multiplier-log-body').innerHTML = rows || '<tr><td class="empty" colspan="6">暂无调整记录</td></tr>';
+}
+function renderMultiplierChart() {
+  const canvas = $('chart-multiplier'); if (!canvas) return;
+  if (MULTIPLIER_CHART) { MULTIPLIER_CHART.destroy(); MULTIPLIER_CHART = null; }
+  const timeline = []; const seen = new Set();
+  [...MULTIPLIER_LOG].reverse().forEach(e => { const key = e.created_at; if (key && !seen.has(key)) { seen.add(key); timeline.push(key); } });
+  if (!timeline.length || !window.Chart) return;
+  const fmtT = t => { const d = new Date(String(t).replace(' ', 'T')); return `${String(d.getMonth() + 1).padStart(2, '0')}-${String(d.getDate()).padStart(2, '0')} ${String(d.getHours()).padStart(2, '0')}:${String(d.getMinutes()).padStart(2, '0')}`; };
+  const labels = timeline.map(fmtT);
+  const series = ['ai', 'pod'].map(cat => {
+    const meta = MULTIPLIER_META[cat];
+    const data = timeline.map(t => { const hit = MULTIPLIER_LOG.find(e => e.category === cat && e.created_at === t); return hit ? Number(hit.after_percent) : null; });
+    return { label: meta.name, data, borderColor: cat === 'ai' ? '#0b5cff' : '#f59e0b', backgroundColor: cat === 'ai' ? '#0b5cff' : '#f59e0b', tension: 0.3, spanGaps: true, pointRadius: 3, pointBackgroundColor: cat === 'ai' ? '#0b5cff' : '#f59e0b' };
+  });
+  MULTIPLIER_CHART = new Chart(canvas, { type: 'line', data: { labels, datasets: series }, options: { responsive: true, maintainAspectRatio: false, interaction: { mode: 'nearest', intersect: false }, scales: { x: { ticks: { maxTicksLimit: 10 } }, y: { min: 50, max: 200, title: { display: true, text: '倍率（%）' } } }, plugins: { legend: { position: 'top' } } } });
+}
+function renderMultipliers() {
+  $('multiplier-cards').innerHTML = ['ai', 'pod'].map(multiplierCard).join('');
+  renderMultiplierPreview(); renderMultiplierLog(); renderMultiplierChart();
+}
+$('multiplier-cards').onclick = event => {
+  const preset = event.target.closest('[data-mult-preset]');
+  if (preset) {
+    const category = preset.dataset.multPreset, m = MULTIPLIERS[category];
+    if (!m) return;
+    const percent = Number(preset.dataset.pct); const base = Number(m.base_points_per_unit || 0);
+    const target = Math.max(1, Math.round(base * percent / 100));
+    $('multiplier-input-' + category).value = target;
+    submitMultiplier(category, { [`${category}_multiplier_percent`]: percent });
+    return;
+  }
+  const applyBtn = event.target.closest('[data-mult-apply]');
+  if (applyBtn) {
+    const category = applyBtn.dataset.multApply, input = $('multiplier-input-' + category);
+    const raw = (input.value || '').trim();
+    if (!raw) { toast('请输入目标单条价值（积分）', 'error'); return; }
+    const points = Number.parseInt(raw, 10);
+    if (!Number.isInteger(points) || points < 1 || points > 500) { toast('单条价值应为 1-500 的整数积分', 'error'); return; }
+    submitMultiplier(category, { [`${category}_points_per_unit`]: points });
+    return;
+  }
+  const resetBtn = event.target.closest('[data-mult-reset]');
+  if (resetBtn) {
+    const category = resetBtn.dataset.multReset;
+    if (!window.confirm(`确认恢复「${MULTIPLIER_META[category].name}」为基础定价？`)) return;
+    submitMultiplier(category, { [`reset_${category}`]: true });
+  }
+};
+
+/* ---- 软件更新发布（代理转发到 update-admin） ---- */
+const RELEASE_PHASES = ['uploading', 'evsign', 'authenticode', 'patching', 'publishing', 'completed'];
+const RELEASE_PHASE_LABELS = { uploading: '正在上传', evsign: 'EV Sign 签名中', authenticode: 'Authenticode 验证中', patching: '增量补丁生成中', publishing: '更新文件发布中', completed: '清单签名完成', failed: '发布失败' };
+const RELEASE_PHASE_PERCENT = { evsign: 28, authenticode: 44, patching: 62, publishing: 82, completed: 100, failed: 100 };
+const RELEASE_POLL_MS = 1500;
+const RELEASE_CHANNEL_LABELS = { public: '发布公共版', internal: '发布内测版', update_only: '仅更新通道' };
+let RELEASE_HISTORY_PAGE = 1;
+let RELEASE_LOGS_PAGE = 1;
+let RELEASE_SUBMITTING = false;
+
+function releaseChannelLabel(channel) {
+  if (channel === 'public') return '公共版';
+  if (channel === 'internal') return '内测版';
+  return '仅更新通道';
+}
+
+async function releaseApi(path, options = {}) {
+  const headers = { ...(options.headers || {}) };
+  if (options.body !== undefined) headers['Content-Type'] = 'application/json';
+  if (TOKEN) headers['X-Auth-Token'] = TOKEN;
+  const response = await fetch(apiPath(`/api/release/${path}`), { ...options, headers });
+  const data = await response.json().catch(() => ({}));
+  if (response.status === 401 && !options.noAuth) { showAuth(); throw new Error('__AUTH__'); }
+  if (!response.ok) {
+    const detail = data.detail;
+    const error = new Error(typeof detail === 'string' ? detail : (detail && detail.message) || `请求失败 ${response.status}`);
+    error.status = response.status;
+    error.code = (detail && detail.code) || '';
+    throw error;
+  }
+  return data;
+}
+
+function releaseSize(bytes) {
+  const value = Number(bytes);
+  if (!Number.isFinite(value)) return '--';
+  if (value < 1024 * 1024) return `${(value / 1024).toFixed(1)} KB`;
+  return `${(value / 1024 / 1024).toFixed(1)} MB`;
+}
+
+function releasePercent(job) {
+  if (job.phase === 'uploading') {
+    const total = Number(job.total_bytes || 0);
+    const uploaded = Number(job.uploaded_bytes || 0);
+    return total > 0 ? Math.min(20, Math.max(0, (uploaded / total) * 20)) : 0;
+  }
+  return RELEASE_PHASE_PERCENT[job.phase] ?? 0;
+}
+
+function renderReleaseJob(job) {
+  const card = $('release-progress-card');
+  if (!job) { card.classList.add('hidden'); return; }
+  const percent = releasePercent(job);
+  const failed = job.phase === 'failed';
+  const activeIndex = RELEASE_PHASES.indexOf(failed ? (job.failed_phase || 'uploading') : job.phase);
+  card.classList.remove('hidden');
+  card.classList.toggle('is-error', failed);
+  $('release-progress-version').textContent = `版本 ${job.version} · ${releaseChannelLabel(job.channel)}`;
+  $('release-progress-phase').textContent = RELEASE_PHASE_LABELS[job.phase] || job.phase;
+  $('release-progress-percent').textContent = `总进度 ${Math.round(percent)}%`;
+  $('release-progress-bar').style.width = `${percent}%`;
+  $('release-progress-bytes').textContent = Number(job.total_bytes || 0) > 0
+    ? `${releaseSize(job.uploaded_bytes)} / ${releaseSize(job.total_bytes)}`
+    : '等待安装包';
+  $('release-progress-message').textContent = failed ? (job.error || job.message || '发布失败') : (job.message || '');
+  $('release-progress-steps').querySelectorAll('li').forEach((item, index) => {
+    item.classList.remove('is-done', 'is-active', 'is-error');
+    if (failed) {
+      if (index < Math.max(activeIndex, 0)) item.classList.add('is-done');
+      else if (index === Math.max(activeIndex, 0)) item.classList.add('is-error');
+      return;
+    }
+    if (job.phase === 'completed' || index < activeIndex) item.classList.add('is-done');
+    else if (index === activeIndex) item.classList.add('is-active');
+  });
+}
+
+function renderReleasePagination(containerId, payload, onPageChange) {
+  const container = $(containerId);
+  const page = Number(payload.page || 1);
+  const pages = Math.max(1, Number(payload.pages || 1));
+  const total = Number(payload.total || 0);
+  const pageSize = Number(payload.page_size || 0);
+  container.replaceChildren();
+  const summary = document.createElement('span');
+  summary.className = 'pagination-summary';
+  summary.textContent = `共 ${total} 条 · 每页 ${pageSize} 条 · 第 ${page} / ${pages} 页`;
+  container.append(summary);
+  const addButton = (label, targetPage, opts = {}) => {
+    const button = document.createElement('button');
+    button.type = 'button';
+    button.textContent = label;
+    button.disabled = !!opts.disabled;
+    button.classList.toggle('is-current', !!opts.current);
+    if (opts.current) button.setAttribute('aria-current', 'page');
+    button.addEventListener('click', () => { if (!opts.disabled && !opts.current) onPageChange(targetPage); });
+    container.append(button);
+  };
+  addButton('首页', 1, { disabled: page <= 1 });
+  addButton('上一页', page - 1, { disabled: page <= 1 });
+  const start = Math.max(1, page - 2), end = Math.min(pages, page + 2);
+  for (let current = start; current <= end; current += 1) addButton(String(current), current, { current: current === page });
+  addButton('下一页', page + 1, { disabled: page >= pages });
+  addButton('末页', pages, { disabled: page >= pages });
+}
+
+function releasePatchCell(item) {
+  const status = item.patch_status || 'not_available';
+  if (status === 'published') {
+    return `<span class="badge badge-success">已发布 · ${releaseSize(item.patch_total_bytes)}</span><br><span class="form-note">${esc(item.patch_from_version || '-')} → ${esc(item.version)} · ${Number(item.patch_file_count || 0)} 个文件</span>`;
+  }
+  if (status === 'failed') return `<span class="badge badge-warning" title="${esc(item.patch_error || '补丁生成失败')}">生成失败，使用完整包</span>`;
+  if (status === 'prepared') return '<span class="badge badge-muted">正在发布…</span>';
+  if (status === 'disabled') return '<span class="badge badge-muted">未启用</span>';
+  return '<span class="badge badge-muted">无上一版本</span>';
+}
+
+function releasePublishedMessage(release, patch) {
+  const channel = release.channel || 'update_only';
+  const prefix = channel === 'update_only'
+    ? `版本 ${release.version} 已发布；官网下载文件未变更`
+    : `${releaseChannelLabel(channel)}版本 ${release.version} 已发布并同步官网下载`;
+  const status = (patch && (patch.patch_status || patch.status)) || release.patch_status;
+  if (status === 'published') {
+    const size = patch ? (patch.patch_total_bytes ?? patch.total_bytes) : release.patch_total_bytes;
+    return `${prefix}；增量补丁 ${releaseSize(size)} 已生成`;
+  }
+  if (status === 'failed') return `${prefix}；增量补丁生成失败，用户将使用完整安装包`;
+  return prefix;
+}
+
+async function loadReleaseEnv() {
+  try {
+    const [health, jobs] = await Promise.all([
+      releaseApi('health'),
+      releaseApi('publish-jobs').catch(() => ({ items: [] })),
+    ]);
+    const rows = [
+      ['清单签名密钥', health.signing_key_configured],
+      ['EV Sign 证书', health.evsign_configured],
+      ['Authenticode 校验', health.authenticode_verifier],
+      ['增量补丁', health.incremental_patch_enabled],
+      ['内嵌补丁', health.embedded_patch_supported],
+      ['innoextract', health.innoextract_configured],
+    ];
+    $('release-env-list').innerHTML = rows.map(([label, value]) => {
+      const ok = typeof value === 'boolean' ? value : Boolean(value);
+      const text = typeof value === 'boolean' ? (value ? '已启用' : '未启用') : (value || '未配置');
+      return `<div><span>${label}</span><span class="badge ${ok ? 'badge-success' : 'badge-danger'}">${esc(text)}</span></div>`;
+    }).join('');
+    const latest = (jobs.items || [])[0];
+    if (latest) renderReleaseJob(latest);
+  } catch (error) { if (error.message !== '__AUTH__') $('release-env-list').textContent = error.message; }
+}
+
+async function loadReleaseHistory(page = RELEASE_HISTORY_PAGE) {
+  try {
+    const data = await releaseApi(`releases?page=${encodeURIComponent(page)}`);
+    RELEASE_HISTORY_PAGE = Number(data.page || 1);
+    const items = data.items || [];
+    $('release-history-body').innerHTML = items.length ? items.map(item => `<tr>
+      <td><strong>${esc(item.version)}</strong>${item.mandatory ? ' <span class="badge badge-warning">强制</span>' : ''}</td>
+      <td><span class="badge badge-muted">${releaseChannelLabel(item.channel)}</span></td>
+      <td>${esc(item.created_by || '-')}</td>
+      <td>${fmtTime(item.published_at)}</td>
+      <td>${esc(item.installer_filename || '-')}<br><span class="form-note">${releaseSize(item.file_size)}</span><br><span class="mono hash-cell" title="${esc(item.sha256 || '')}">${esc(item.sha256 || '-')}</span></td>
+      <td>${releasePatchCell(item)}</td>
+      <td>${esc(item.authenticode_status || '-')}</td>
+    </tr>`).join('') : '<tr><td class="empty" colspan="7">尚未发布任何版本</td></tr>';
+    renderReleasePagination('release-history-pagination', data, next => loadReleaseHistory(next));
+  } catch (error) { if (error.message !== '__AUTH__') toast(error.message, 'error'); }
+}
+
+async function loadReleaseLogs(page = RELEASE_LOGS_PAGE) {
+  try {
+    const data = await releaseApi(`audit-logs?page=${encodeURIComponent(page)}`);
+    RELEASE_LOGS_PAGE = Number(data.page || 1);
+    const items = data.items || [];
+    $('release-logs-body').innerHTML = items.length ? items.map(item => `<tr>
+      <td>${fmtTime(item.created_at)}</td>
+      <td>${esc(item.username || '-')}</td>
+      <td>${esc(item.action || '-')}</td>
+      <td>${esc(item.target || '-')}</td>
+      <td class="mono">${esc(item.ip_address || '-')}</td>
+    </tr>`).join('') : '<tr><td class="empty" colspan="5">暂无操作记录</td></tr>';
+    renderReleasePagination('release-logs-pagination', data, next => loadReleaseLogs(next));
+  } catch (error) { if (error.message !== '__AUTH__') toast(error.message, 'error'); }
+}
+
+function uploadReleasePackage(form, job, onProgress) {
+  return new Promise((resolve, reject) => {
+    const xhr = new XMLHttpRequest();
+    xhr.open('POST', apiPath('/api/release/releases/publish'));
+    if (TOKEN) xhr.setRequestHeader('X-Auth-Token', TOKEN);
+    xhr.responseType = 'json';
+    xhr.upload.addEventListener('progress', event => { if (event.lengthComputable) onProgress(event.loaded, event.total); });
+    xhr.addEventListener('load', () => {
+      const payload = xhr.response && typeof xhr.response === 'object' ? xhr.response : {};
+      if (xhr.status >= 200 && xhr.status < 300) { resolve(payload); return; }
+      if (xhr.status === 401) { showAuth(); reject(new Error('__AUTH__')); return; }
+      const detail = payload.detail;
+      const error = new Error(typeof detail === 'string' ? detail : (detail && detail.message) || `请求失败（${xhr.status}）`);
+      error.status = xhr.status;
+      reject(error);
+    });
+    xhr.addEventListener('error', () => reject(new Error('上传连接中断，请检查发布任务状态')));
+    xhr.addEventListener('abort', () => reject(new Error('上传已取消')));
+    form.set('job_id', job.id);
+    form.set('channel', job.channel || 'update_only');
+    xhr.send(form);
+  });
+}
+
+async function waitForReleaseJob(jobId, onJob, isCancelled) {
+  while (!isCancelled()) {
+    await new Promise(resolve => setTimeout(resolve, RELEASE_POLL_MS));
+    if (isCancelled()) return null;
+    const result = await releaseApi(`publish-jobs/${encodeURIComponent(jobId)}`);
+    onJob(result.job);
+    if (['completed', 'failed'].includes(result.job.phase)) return result.job;
+  }
+  return null;
+}
+
+function resetReleaseForm() {
+  $('release-version').value = '';
+  $('release-installer').value = '';
+  $('release-notes').value = '';
+  $('release-mandatory').checked = false;
+}
+
+const RELEASE_SUBMIT_BUTTONS = ['release-submit-internal', 'release-submit-public', 'release-submit-update-only'].map(id => $(id));
+
+async function submitRelease(button) {
+  if (RELEASE_SUBMITTING) return;
+  const version = ($('release-version').value || '').trim();
+  const installer = $('release-installer').files[0];
+  const notes = $('release-notes').value || '';
+  const mandatory = $('release-mandatory').checked;
+  if (!version) { toast('请填写版本号', 'error'); return; }
+  if (!installer || installer.size <= 0) { toast('请选择有效的 EXE 安装包', 'error'); return; }
+  RELEASE_SUBMITTING = true;
+  RELEASE_SUBMIT_BUTTONS.forEach(item => { item.disabled = true; });
+  button.textContent = '正在创建发布任务…';
+  let monitorCancelled = true;
+  try {
+    const created = await releaseApi('publish-jobs', {
+      method: 'POST',
+      body: JSON.stringify({
+        version,
+        channel: button.dataset.channel || 'update_only',
+        mandatory,
+        release_notes: notes,
+        installer_filename: installer.name,
+        total_bytes: installer.size,
+      }),
+    });
+    const job = created.job;
+    renderReleaseJob(job);
+    button.textContent = '正在上传安装包…';
+    const form = new FormData();
+    form.set('version', version);
+    form.set('release_notes', notes);
+    form.set('mandatory', mandatory ? 'true' : 'false');
+    form.set('installer', installer);
+    let lastReportedAt = 0;
+    monitorCancelled = false;
+    const uploadPromise = uploadReleasePackage(form, job, (uploaded, total) => {
+      renderReleaseJob({ ...job, uploaded_bytes: uploaded, total_bytes: total, phase: 'uploading', message: '正在上传安装包' });
+      const now = Date.now();
+      if (now - lastReportedAt >= 1000 || uploaded === total) {
+        lastReportedAt = now;
+        releaseApi(`publish-jobs/${encodeURIComponent(job.id)}/upload-progress`, { method: 'POST', body: JSON.stringify({ uploaded_bytes: uploaded, total_bytes: total }) }).catch(() => {});
+      }
+    });
+    const terminalPromise = waitForReleaseJob(job.id, nextJob => {
+      renderReleaseJob(nextJob);
+      button.textContent = nextJob.phase === 'completed' ? '发布完成' : nextJob.phase === 'failed' ? '发布失败' : (RELEASE_PHASE_LABELS[nextJob.phase] || '正在处理…');
+    }, () => monitorCancelled);
+    const outcome = await Promise.race([
+      uploadPromise.then(result => ({ source: 'response', result })),
+      terminalPromise.then(terminalJob => ({ source: 'job', terminalJob })),
+    ]);
+    monitorCancelled = true;
+    let message = '';
+    if (outcome.source === 'job') {
+      if (outcome.terminalJob && outcome.terminalJob.phase === 'failed') {
+        throw new Error(outcome.terminalJob.error || outcome.terminalJob.message || '发布失败');
+      }
+      const durable = await releaseApi(`releases/status/${encodeURIComponent(version)}`);
+      if (!(durable.published && durable.release)) throw new Error('任务已完成，但暂未读取到发布记录，请稍后刷新确认');
+      message = releasePublishedMessage(durable.release);
+    } else {
+      const result = outcome.result || {};
+      if (!result.release) {
+        const durable = await releaseApi(`releases/status/${encodeURIComponent(version)}`).catch(() => null);
+        if (!(durable && durable.published && durable.release)) throw new Error('服务器未返回发布结果，请稍后在发布记录中确认');
+        message = releasePublishedMessage(durable.release);
+      } else {
+        const status = result.authenticode && result.authenticode.status;
+        message = releasePublishedMessage(result.release, result.patch) + (status === 'Valid' ? '' : `；代码签名状态：${status || '未知'}`);
+      }
+    }
+    resetReleaseForm();
+    toast(message, 'success');
+    await loadReleaseHistory(1);
+    await loadReleaseEnv();
+  } catch (error) {
+    if (error.message !== '__AUTH__') {
+      let recovered = '';
+      try {
+        const durable = await releaseApi(`releases/status/${encodeURIComponent(version)}`);
+        if (durable.published && durable.release) recovered = releasePublishedMessage(durable.release);
+      } catch (_) { /* 忽略对账失败 */ }
+      if (recovered) { resetReleaseForm(); toast(recovered, 'success'); await loadReleaseHistory(1); await loadReleaseEnv(); }
+      else toast(error.message, 'error');
+    }
+  } finally {
+    monitorCancelled = true;
+    RELEASE_SUBMITTING = false;
+    RELEASE_SUBMIT_BUTTONS.forEach(item => { item.disabled = false; item.textContent = RELEASE_CHANNEL_LABELS[item.dataset.channel] || item.textContent; });
+  }
+}
+
+RELEASE_SUBMIT_BUTTONS.forEach(button => button.onclick = () => submitRelease(button));
+$('release-env-refresh').onclick = () => loadReleaseEnv();
+$('release-history-refresh').onclick = () => loadReleaseHistory(RELEASE_HISTORY_PAGE);
+$('release-logs-refresh').onclick = () => loadReleaseLogs(RELEASE_LOGS_PAGE);
 
 init();
 </script>

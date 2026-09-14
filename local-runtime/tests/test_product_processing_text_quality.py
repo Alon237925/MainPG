@@ -1020,7 +1020,7 @@ def test_new_task_reuses_exact_vision_and_text_without_billing_text_again(
     assert text_calls == 2
     assert second["result"]["provider_status_classes"]["doubao_vision"] == "cache_hit"
     assert second["result"]["provider_status_classes"]["doubao_text"] == "cache_hit"
-    assert second["result"]["billing_skipped_kinds"] == ["text"]
+    assert second["result"]["billing_skipped_kinds"] == ["text", "vision"]
     assert changed_site["result"]["provider_status_classes"]["doubao_text"] == "success"
 
 
