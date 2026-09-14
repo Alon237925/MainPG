@@ -49,10 +49,15 @@ export function TopNavigation({ sidebarPinned, activeKey, tabs, onToggleSidebar,
   const [storeThemes, setStoreThemes] = useState<ThemeListItemFromServer[]>([]);
   const [storeLoading, setStoreLoading] = useState(false);
   const [storeError, setStoreError] = useState<string | null>(null);
+  const [storeActionError, setStoreActionError] = useState<string | null>(null);
   const topbarRef = useRef<HTMLElement>(null);
   const themeMenuRef = useRef<HTMLDivElement>(null);
   const { theme, setTheme, downloadedThemes, isDownloaded, downloadTheme } = useTheme();
   const { uiMode, setUiMode } = useUiMode();
+
+  // 桌面风格（apple）下仅支持经典配色；其它主题在 apple 模式会被映射回 classic，
+  // 为避免「勾选使用中但实际不生效」的误导，apple 模式下禁用非 classic 主题切换。
+  const appleMode = uiMode === "apple";
 
   // 本地头像：仅用于本地展示，base64 存 localStorage。
   const AVATAR_KEY = AVATAR_STORAGE_KEY;
@@ -125,6 +130,7 @@ export function TopNavigation({ sidebarPinned, activeKey, tabs, onToggleSidebar,
     if (!themeStoreOpen) return;
     setStoreLoading(true);
     setStoreError(null);
+    setStoreActionError(null);
     fetchThemeList()
       .then((themes) => {
         setStoreThemes(themes);
@@ -220,6 +226,9 @@ export function TopNavigation({ sidebarPinned, activeKey, tabs, onToggleSidebar,
                       <strong>更多主题</strong>
                       <span aria-hidden="true" />
                     </header>
+                    {storeActionError && !storeLoading && !storeError && (
+                      <div className="theme-store-action-error" role="alert">{storeActionError}</div>
+                    )}
                     {storeLoading ? (
                       <div className="theme-store-empty">加载中…</div>
                     ) : storeError ? (
@@ -230,18 +239,27 @@ export function TopNavigation({ sidebarPinned, activeKey, tabs, onToggleSidebar,
                           const id = item.id as ThemeId;
                           const downloaded = isDownloaded(id);
                           const active = theme === id;
+                          const disabled = appleMode && id !== "classic";
                           const meta = THEME_META[id] ?? { label: item.label, swatch: item.swatch };
                           return (
-                            <div key={id} className={`theme-store-card ${active ? "is-active" : ""}`}>
+                            <div key={id} className={`theme-store-card ${active ? "is-active" : ""} ${disabled ? "is-disabled" : ""}`}>
                               <span className="theme-store-swatch" style={{ background: meta.swatch }} />
                               <span className="theme-store-name">{meta.label}</span>
                               <span className="theme-store-desc">{item.description}</span>
                               <button
                                 type="button"
+                                disabled={disabled}
                                 className={`theme-store-action ${downloaded ? "is-use" : "is-download"}`}
                                 onClick={async () => {
+                                  if (disabled) return;
                                   if (!downloaded) {
-                                    await downloadTheme(id);
+                                    try {
+                                      await downloadTheme(id);
+                                      setStoreActionError(null);
+                                    } catch (err) {
+                                      setStoreActionError(err instanceof Error ? err.message : "下载失败，请重试");
+                                      return;
+                                    }
                                   }
                                   setTheme(id);
                                   setThemeStoreOpen(false);
@@ -259,37 +277,50 @@ export function TopNavigation({ sidebarPinned, activeKey, tabs, onToggleSidebar,
                 ) : (
                   <>
                     <header className="theme-quick-header"><strong>主题风格</strong></header>
+                    {appleMode && (
+                      <div className="theme-locked-hint" role="status">桌面风格下仅支持经典配色</div>
+                    )}
                     <div className="theme-quick-options">
-                      {BUILTIN_THEME_IDS.map((id) => (
-                        <button
-                          key={id}
-                          type="button"
-                          className={`theme-option ${theme === id ? "is-active" : ""}`}
-                          onClick={() => {
-                            setTheme(id);
-                            setThemePanelOpen(false);
-                          }}
-                        >
-                          <span className="theme-swatch" style={{ background: THEME_META[id].swatch }} />
-                          <span className="theme-option-name">{THEME_META[id].label}</span>
-                          {theme === id && <span className="theme-check">✓</span>}
-                        </button>
-                      ))}
-                      {downloadedThemes.map((item) => (
-                        <button
-                          key={item.id}
-                          type="button"
-                          className={`theme-option ${theme === item.id ? "is-active" : ""}`}
-                          onClick={() => {
-                            setTheme(item.id);
-                            setThemePanelOpen(false);
-                          }}
-                        >
-                          <span className="theme-swatch" style={{ background: item.swatch }} />
-                          <span className="theme-option-name">{item.label}</span>
-                          {theme === item.id && <span className="theme-check">✓</span>}
-                        </button>
-                      ))}
+                      {BUILTIN_THEME_IDS.map((id) => {
+                        const disabled = appleMode && id !== "classic";
+                        return (
+                          <button
+                            key={id}
+                            type="button"
+                            disabled={disabled}
+                            className={`theme-option ${theme === id ? "is-active" : ""} ${disabled ? "is-disabled" : ""}`}
+                            onClick={() => {
+                              if (disabled) return;
+                              setTheme(id);
+                              setThemePanelOpen(false);
+                            }}
+                          >
+                            <span className="theme-swatch" style={{ background: THEME_META[id].swatch }} />
+                            <span className="theme-option-name">{THEME_META[id].label}</span>
+                            {theme === id && <span className="theme-check">✓</span>}
+                          </button>
+                        );
+                      })}
+                      {downloadedThemes.map((item) => {
+                        const disabled = appleMode && item.id !== "classic";
+                        return (
+                          <button
+                            key={item.id}
+                            type="button"
+                            disabled={disabled}
+                            className={`theme-option ${theme === item.id ? "is-active" : ""} ${disabled ? "is-disabled" : ""}`}
+                            onClick={() => {
+                              if (disabled) return;
+                              setTheme(item.id);
+                              setThemePanelOpen(false);
+                            }}
+                          >
+                            <span className="theme-swatch" style={{ background: item.swatch }} />
+                            <span className="theme-option-name">{item.label}</span>
+                            {theme === item.id && <span className="theme-check">✓</span>}
+                          </button>
+                        );
+                      })}
                     </div>
                     <div className="theme-quick-footer">
                       <button

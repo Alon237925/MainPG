@@ -318,21 +318,12 @@ export async function updateProductSourceGroup({
       form.set(`source_group_image_${groupIndex}`, file);
     }
   }
-  // 调试：打印实际提交给后端的表单字段（完全展开，方便直接复制）
-  console.log("[货源保存-请求] 表单字段(展开) = " + JSON.stringify(
-    [...form.entries()].map(([key, value]) => [
-      key,
-      typeof value === "string" ? value : { name: value.name, size: value.size, type: value.type, lastModified: value.lastModified },
-    ]),
-  ));
   const response = await fetch(`${apiBase}/api/profit-activity/products/${encodeURIComponent(skc)}/update`, {
     method: "POST",
     headers: token ? { Authorization: `Bearer ${token}` } : {},
     body: form,
   });
   const text = await response.text();
-  // 调试：打印后端响应状态与原文（应包含保存后的 source_groups）
-  console.log("[货源保存-响应] status = " + response.status + "\n响应原文 = " + text.slice(0, 1200));
   let data: unknown = text;
   try {
     data = text ? JSON.parse(text) : {};

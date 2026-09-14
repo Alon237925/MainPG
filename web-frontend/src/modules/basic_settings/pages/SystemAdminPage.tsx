@@ -37,7 +37,14 @@ type Tab = "pricing" | "changelog" | "keys";
 
 function formatTime(value: string): string {
   if (!value) return "-";
-  return value.replace("T", " ").replace("Z", "").slice(0, 19);
+  // 服务端时间统一为 UTC，这里转换为浏览器本地时区显示，避免直接截断慢 8 小时。
+  const date = new Date(value);
+  if (Number.isNaN(date.getTime())) return value.replace("T", " ").slice(0, 19);
+  const pad = (n: number) => String(n).padStart(2, "0");
+  return (
+    `${date.getFullYear()}-${pad(date.getMonth() + 1)}-${pad(date.getDate())} ` +
+    `${pad(date.getHours())}:${pad(date.getMinutes())}:${pad(date.getSeconds())}`
+  );
 }
 
 function summariseItems(after: unknown): string[] {

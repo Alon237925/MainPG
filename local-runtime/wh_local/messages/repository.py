@@ -17,6 +17,10 @@ CREATE TABLE IF NOT EXISTS messages (
 );
 CREATE INDEX IF NOT EXISTS idx_messages_read
     ON messages (read, published_at DESC);
+CREATE TABLE IF NOT EXISTS message_deletions (
+    server_id INTEGER PRIMARY KEY,
+    deleted_at TEXT NOT NULL DEFAULT (datetime('now'))
+);
 """
 
 
@@ -56,13 +60,20 @@ class MessagesRepository:
 
         已存在的消息会更新服务端字段，但保留本机 ``read`` 状态。
         ``kind`` 区分来源：announcement（公告）或 feedback_reply（反馈回复）。
+        用户主动删除过的 server_id 记录在黑名单里，同步时跳过，避免删了又回来。
         """
         con = self._connect()
         try:
             new_count = 0
+            deleted_ids = {
+                int(row["server_id"])
+                for row in con.execute("SELECT server_id FROM message_deletions")
+            }
             for item in items:
                 server_id = int(item.get("id") or 0)
                 if server_id <= 0:
+                    continue
+                if server_id in deleted_ids:
                     continue
                 title = str(item.get("title") or "").strip()
                 content = str(item.get("content") or "")
@@ -132,6 +143,34 @@ class MessagesRepository:
             cur = con.execute("UPDATE messages SET read = 1 WHERE read = 0")
             con.commit()
             return cur.rowcount
+        finally:
+            con.close()
+
+    def delete_message(self, message_id: int) -> bool:
+        """删除一条本地消息（用户主动删除消息中心里的消息）。
+
+        仅允许删除反馈回复（kind='feedback_reply'）；公告类消息与后台同步，
+        由 prune_retracted 按服务端在线列表管理，不允许用户手动删除。
+        同时把该消息的 ``server_id`` 记入黑名单，后续同步跳过它，避免"删了又回来"。
+        """
+        con = self._connect()
+        try:
+            row = con.execute(
+                "SELECT server_id, kind FROM messages WHERE id = ?", (message_id,)
+            ).fetchone()
+            if row is None:
+                return False
+            if row["kind"] != "feedback_reply":
+                return False
+            server_id = int(row["server_id"])
+            if server_id > 0:
+                con.execute(
+                    "INSERT OR IGNORE INTO message_deletions (server_id) VALUES (?)",
+                    (server_id,),
+                )
+            con.execute("DELETE FROM messages WHERE id = ?", (message_id,))
+            con.commit()
+            return True
         finally:
             con.close()
 

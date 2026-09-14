@@ -5,6 +5,7 @@ import {
   fetchUnreadCount,
   markAllMessagesRead,
   markMessageRead,
+  deleteMessage,
   type InboxMessage,
 } from "../api/messagesApi";
 
@@ -177,6 +178,22 @@ export function InboxBell() {
     void refreshList();
   };
 
+  const handleDelete = async (messageId: number) => {
+    try {
+      await deleteMessage(messageId);
+    } catch {
+      return;
+    }
+    setMessages((current) => current.filter((item) => item.id !== messageId));
+    setExpandedIds((current) => {
+      const next = new Set(current);
+      next.delete(messageId);
+      return next;
+    });
+    unreadEpochRef.current += 1;
+    void refreshList();
+  };
+
   const toggleExpanded = (messageId: number) => {
     setExpandedIds((current) => {
       const next = new Set(current);
@@ -237,11 +254,18 @@ export function InboxBell() {
               messages.map((item) => {
                 const expanded = expandedIds.has(item.id);
                 return (
-                  <button
+                  <div
                     key={item.id}
-                    type="button"
+                    role="button"
+                    tabIndex={0}
                     className={`inbox-item ${item.read ? "is-read" : "is-unread"} ${expanded ? "is-expanded" : ""}`}
                     onClick={() => handleItemClick(item)}
+                    onKeyDown={(event) => {
+                      if (event.key === "Enter" || event.key === " ") {
+                        event.preventDefault();
+                        handleItemClick(item);
+                      }
+                    }}
                     aria-expanded={expanded}
                   >
                     <span className="inbox-item-dot" aria-hidden="true" />
@@ -260,7 +284,21 @@ export function InboxBell() {
                         {expanded ? "收起" : "展开"}
                       </span>
                     )}
-                  </button>
+                    {item.kind === "feedback_reply" && (
+                      <button
+                        type="button"
+                        className="inbox-item-delete"
+                        aria-label="删除这条消息"
+                        title="删除"
+                        onClick={(event) => {
+                          event.stopPropagation();
+                          void handleDelete(item.id);
+                        }}
+                      >
+                        ×
+                      </button>
+                    )}
+                  </div>
                 );
               })
             )}

@@ -277,7 +277,9 @@ export function DailySelectionPage({ view = "directions", initialDirectionId, on
       .map((item) => updatesById.get(item.id) ?? item);
     return [...defaultDirections, ...customDirections];
   }, [customDirections, removedDefaultDirectionIds, updatedDefaultDirections]);
-  const validInitialDirection = directions.some((item) => item.id === initialDirectionId) ? initialDirectionId! : directions[0].id;
+  const validInitialDirection = directions.some((item) => item.id === initialDirectionId)
+    ? initialDirectionId!
+    : directions[0]?.id ?? "";
   const [selectedDirectionId, setSelectedDirectionId] = useState(validInitialDirection);
   const selectedDirection = useMemo(
     () => directions.find((item) => item.id === selectedDirectionId) ?? directions[0],
@@ -600,23 +602,30 @@ export function DailySelectionPage({ view = "directions", initialDirectionId, on
   // SKU 补齐轮询：任务运行中每秒刷新进度；完成后刷新批次候选显示最新 SKU 数。
   useEffect(() => {
     if (!activeRun || skuRepull?.status !== "running") return;
+    let stopped = false;
     const timer = window.setInterval(async () => {
       try {
         const state = await getSkuRepullState(activeRun.run_id);
+        if (stopped) return;
         setSkuRepull(state);
         if (state.status !== "running") {
           const [refreshedRun, refreshedRuns] = await Promise.all([
             getSelectionRun(activeRun.run_id),
             listSelectionRuns(),
           ]);
+          if (stopped) return;
           setActiveRun(refreshedRun);
           setRuns(refreshedRuns);
         }
       } catch (requestError) {
+        if (stopped) return;
         setError(requestError instanceof Error ? requestError.message : "SKU 补齐进度读取失败");
       }
     }, 1500);
-    return () => window.clearInterval(timer);
+    return () => {
+      stopped = true;
+      window.clearInterval(timer);
+    };
   }, [activeRun, skuRepull?.status]);
 
   // 打开批次时同步一次空采集自动重试状态（内存任务或历史轮次持久化）；
@@ -656,12 +665,15 @@ export function DailySelectionPage({ view = "directions", initialDirectionId, on
   // 空采集自动重试轮询：运行中每秒刷新状态；结束后刷新批次展示最新候选。
   useEffect(() => {
     if (!activeRun || collectionRetry?.status !== "running") return;
+    let stopped = false;
     const timer = window.setInterval(async () => {
       try {
         const state = await getCollectionRetryState(activeRun.run_id);
+        if (stopped) return;
         setCollectionRetry(state);
         if (state.status !== "running") {
           const run = await getSelectionRun(activeRun.run_id);
+          if (stopped) return;
           setActiveRun(run);
           setSelectedCandidates([]);
           void listSelectionRuns().then(setRuns).catch(() => undefined);
@@ -670,10 +682,14 @@ export function DailySelectionPage({ view = "directions", initialDirectionId, on
           }
         }
       } catch (requestError) {
+        if (stopped) return;
         setError(requestError instanceof Error ? requestError.message : "空采集重试进度读取失败");
       }
     }, 1500);
-    return () => window.clearInterval(timer);
+    return () => {
+      stopped = true;
+      window.clearInterval(timer);
+    };
   }, [activeRun, collectionRetry?.status]);
 
   // 空采集：同步一次后台自动重试状态；已完成则直接刷新批次为最新候选。

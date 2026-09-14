@@ -981,7 +981,7 @@ export function PersonalCenterPage() {
 
             <div className="pricing-foot">
               <span>充值换算：{summary?.pricing.ratio_label ?? "1 元 = 100 积分"}</span>
-              <span>规则版本 v{summary?.pricing.rule_version ?? "--"}{summary?.pricing.effective_at ? ` · 生效于 ${summary.pricing.effective_at.replace("T", " ").slice(0, 16)}` : ""}</span>
+              <span>规则版本 v{summary?.pricing.rule_version ?? "--"}{summary?.pricing.effective_at ? ` · 生效于 ${formatUsageTime(summary.pricing.effective_at).slice(0, 16)}` : ""}</span>
             </div>
           </article>
         ) : activePanel === "model" ? (

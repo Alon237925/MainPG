@@ -61,3 +61,10 @@ export async function markAllMessagesRead(): Promise<void> {
     token: resolveToken(),
   });
 }
+
+export async function deleteMessage(messageId: number): Promise<void> {
+  await httpJson(`/api/messages/${messageId}`, {
+    method: "DELETE",
+    token: resolveToken(),
+  });
+}

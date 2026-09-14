@@ -577,7 +577,7 @@ def create_app(database_path: Path | None = None) -> FastAPI:
     reply_sync = FeedbackReplySyncService(
         messages_repository,
         config.announce_base_url,
-        interval_seconds=180,
+        interval_seconds=30,
         account_id_provider=_current_remote_account_id,
     )
     app.include_router(create_messages_router(messages_repository, messages_sync))
