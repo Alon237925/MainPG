@@ -569,8 +569,11 @@
 .pod-dianxiaomi-export small { color: #aa6351; font-size: .53rem; line-height: 1.35; text-align: right; }
 .pod-open-failed-retry { color: var(--pod-primary) !important; background: var(--pod-surface) !important; }
 .pod-open-failed-retry:hover:not(:disabled) { border-color: var(--pod-primary); background: var(--pod-surface-tint) !important; }
+/* 上面两条带 !important，会盖掉 button:disabled 的灰化；这里补回来，禁用时才不会被误认成可点。 */
+.pod-open-failed-retry:disabled { color: var(--pod-text-muted) !important; background: var(--pod-surface-soft) !important; }
 
-.pod-batch-control { display: flex; flex-wrap: wrap; align-items: center; justify-content: flex-end; gap: 6px; }
+/* align-self: flex-start —— 导出那一列底下还有两行小字，居中会把暂停/取消往下顶，与导出按钮错行。 */
+.pod-batch-control { display: flex; flex-wrap: wrap; align-items: center; justify-content: flex-end; gap: 6px; align-self: flex-start; }
 .pod-batch-control button { min-height: 34px; padding: 7px 10px; border: 1px solid var(--pod-border-strong); border-radius: 9px; color: var(--pod-text-secondary); background: var(--pod-surface); font-size: .63rem; font-weight: 850; white-space: nowrap; cursor: pointer; }
 .pod-batch-control button:disabled { cursor: not-allowed; opacity: .55; }
 .pod-batch-resume { color: #fff !important; border-color: transparent !important; background: var(--theme-primary-button-gradient, linear-gradient(105deg, #087bf5, #14c8c0)) !important; }
