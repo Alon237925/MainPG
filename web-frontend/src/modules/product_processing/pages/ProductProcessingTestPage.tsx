@@ -148,12 +148,14 @@ export function ProductProcessingTestPage() {
     if (!currentTask) return;
     const runningStatuses = ['queued', 'running', 'paused'];
     if (!runningStatuses.includes(currentTask.task.status)) return;
+    let stopped = false;
     const timer = setInterval(async () => {
       try {
         const data = await ppRequest<TaskOutputsResponse>(
           api,
           `${API_BASE}/tasks/${currentTask.task_id}/outputs`
         );
+        if (stopped) return;
         setCurrentTask(data);
         if (!runningStatuses.includes(data.task.status)) {
           clearInterval(timer);
@@ -163,7 +165,10 @@ export function ProductProcessingTestPage() {
         clearInterval(timer);
       }
     }, 2000);
-    return () => clearInterval(timer);
+    return () => {
+      stopped = true;
+      clearInterval(timer);
+    };
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [currentTask?.task_id, currentTask?.task.status]);
 

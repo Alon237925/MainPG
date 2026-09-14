@@ -57,9 +57,6 @@ function SourceCardImage({ skc, site, group, imagePaths, fallbackUrl }: { skc: s
   useEffect(() => {
     let cancelled = false;
     let objectUrl = "";
-    // 调试：打印每次加载货源图的参数（group 与 imagePaths 变化时应重新请求）
-    console.log("[货源图显示] 尝试加载 → skc:", skc, "| site:", site, "| group:", group,
-      "| first:", first, "| imagePaths:", JSON.stringify(imagePaths));
     if (first) {
       loadProductImage({
         skc,
@@ -76,7 +73,6 @@ function SourceCardImage({ skc, site, group, imagePaths, fallbackUrl }: { skc: s
           }
           objectUrl = loaded;
           setUrl(loaded);
-          console.log("[货源图显示] 加载成功 → skc:", skc, "| group:", group, "| objectURL:", loaded);
         })
         .catch((err) => {
           console.error("[货源图显示] 加载失败 → skc:", skc, "| group:", group, "| first:", first, err);
@@ -326,12 +322,6 @@ export function ProductSourceDrawer({ product, onClose, onChanged }: Props) {
       setUnlinkError("请至少保留一个货源链接再保存。");
       return;
     }
-    // 调试：打印编辑态每行的原始信息
-    console.log("[货源保存-1] editRows =", editRows.map((r) => ({
-      key: r.key, originalGroup: r.originalGroup, url: r.url,
-      image: r.image ? { name: r.image.name, size: r.image.size, type: r.image.type } : null,
-      imagePreview: r.imagePreview ? "(有预览)" : "(无预览)",
-    })));
     setSavingSource(true);
     setUnlinkError("");
     try {
@@ -349,10 +339,6 @@ export function ProductSourceDrawer({ product, onClose, onChanged }: Props) {
         });
         if (row.image) groupImages[index] = row.image;
       });
-      // 调试：打印重建后的货源组与待上传的组图
-      console.log("[货源保存-2] 重建 groups =", JSON.stringify(groups, null, 2));
-      console.log("[货源保存-2] groupImages 键(组号) =", Object.keys(groupImages),
-        "| 值 =", Object.fromEntries(Object.entries(groupImages).map(([k, f]) => [k, f.name])));
       const site = ((productData ?? product).site || (productData ?? product).site_code || "US") as "US" | "CO" | "EC";
       const saved = await updateProductSourceGroup({
         site,
@@ -361,8 +347,6 @@ export function ProductSourceDrawer({ product, onClose, onChanged }: Props) {
         sourceGroups: groups,
         groupImages,
       });
-      // 调试：打印后端保存后返回的产品 source_groups（应包含新上传的图片路径）
-      console.log("[货源保存-3] 后端返回 product.source_groups =", JSON.stringify(saved?.product?.source_groups ?? [], null, 2));
       // 用接口返回的最新产品数据刷新抽屉内状态，再次编辑时使用最新的 source_groups
       if (saved?.product) setProductData(saved.product);
       for (const row of editRows) {

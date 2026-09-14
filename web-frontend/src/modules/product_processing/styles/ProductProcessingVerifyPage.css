@@ -178,7 +178,7 @@
   font-weight: 700;
   font-size: 0.82rem;
   cursor: pointer;
-  transition: all 0.15s ease;
+  transition: color, background-color, border-color, box-shadow, opacity, transform 0.15s ease;
 }
 
 .verify-actions button:hover:not(:disabled),
@@ -700,7 +700,7 @@
   display: inline-flex;
   align-items: center;
   gap: 4px;
-  transition: all 0.15s ease;
+  transition: color, background-color, border-color, box-shadow, opacity, transform 0.15s ease;
 }
 
 .btn-mini:hover {
@@ -732,7 +732,7 @@
   font-weight: 700;
   font-size: 0.82rem;
   cursor: pointer;
-  transition: all 0.15s ease;
+  transition: color, background-color, border-color, box-shadow, opacity, transform 0.15s ease;
 }
 .verify-upload-btn:hover {
   border-color: #82c9ef;
@@ -898,7 +898,7 @@
   font-weight: 800;
   cursor: pointer;
   white-space: nowrap;
-  transition: all 0.18s ease;
+  transition: color, background-color, border-color, box-shadow, opacity, transform 0.18s ease;
 }
 
 .verify-hide-single input {
@@ -3599,7 +3599,7 @@
   background: #fff;
   color: #455a64;
   cursor: pointer;
-  transition: all 0.15s;
+  transition: color, background-color, border-color, box-shadow, opacity, transform 0.15s ease;
 }
 .verify-pagination-pages button.active {
   background: #1677ff;
@@ -3643,7 +3643,7 @@
   background: linear-gradient(120deg, #fbfdff 20%, #f0f8fc 100%);
   color: #2f5878;
   cursor: pointer;
-  transition: all 0.18s ease;
+  transition: color, background-color, border-color, box-shadow, opacity, transform 0.18s ease;
   text-align: left;
 }
 
@@ -4014,7 +4014,7 @@
   line-height: 1;
   cursor: pointer;
   flex-shrink: 0;
-  transition: all 0.15s ease;
+  transition: color, background-color, border-color, box-shadow, opacity, transform 0.15s ease;
 }
 
 .verify-drawer-close:hover {
@@ -4108,7 +4108,7 @@
   border: 1px solid #dce9f2;
   border-radius: 10px;
   background: #fff;
-  transition: all 0.18s ease;
+  transition: color, background-color, border-color, box-shadow, opacity, transform 0.18s ease;
 }
 
 .verify-drawer-sku.deleted {
@@ -4161,7 +4161,7 @@
   font-size: 0.76rem;
   font-weight: 700;
   cursor: pointer;
-  transition: all 0.15s ease;
+  transition: color, background-color, border-color, box-shadow, opacity, transform 0.15s ease;
 }
 
 .verify-drawer-sku header button:hover {
@@ -4199,7 +4199,7 @@
   font-size: 0.84rem;
   font-weight: 700;
   cursor: pointer;
-  transition: all 0.15s ease;
+  transition: color, background-color, border-color, box-shadow, opacity, transform 0.15s ease;
 }
 
 .verify-drawer-foot .primary:hover:not(:disabled) {
@@ -4223,7 +4223,7 @@
   font-size: 0.8rem;
   font-weight: 700;
   padding: 7px 14px;
-  transition: all 0.15s ease;
+  transition: color, background-color, border-color, box-shadow, opacity, transform 0.15s ease;
 }
 
 .history-collection-trigger:hover {
@@ -4390,7 +4390,7 @@
   font-size: 0.82rem;
   font-weight: 700;
   cursor: pointer;
-  transition: all 0.15s ease;
+  transition: color, background-color, border-color, box-shadow, opacity, transform 0.15s ease;
 }
 
 .verify-history-foot .primary:hover {
@@ -4696,7 +4696,7 @@
   font-size: 0.82rem;
   font-weight: 700;
   cursor: pointer;
-  transition: all 0.15s ease;
+  transition: color, background-color, border-color, box-shadow, opacity, transform 0.15s ease;
 }
 
 .sku-batch-foot button:hover:not(:disabled) {

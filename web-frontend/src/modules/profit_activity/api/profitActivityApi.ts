@@ -6,22 +6,23 @@ export type ProfitActivitySiteOption = { site_code: ProfitActivitySite; display_
 // 与 ProfitActivityTestPage 保持一致：默认同源请求（后端由当前站点服务，
 // 如 8000 的 wh_local；可通过 localStorage profitActivityApiBase 覆盖）。
 // token 解析优先级：页面手动设置（whLocalApiToken）→ 登录用户会话
-// （wh_demo_token，与核价及货源模块同一工作区）→ 本地开发管理员令牌。
+// （wh_demo_token，与核价及货源模块同一工作区）→ 仅开发环境兜底本地管理员令牌。
 function resolveEndpoint() {
   return {
     apiBase: localStorage.getItem("profitActivityApiBase") || "",
-    token: localStorage.getItem("whLocalApiToken") || "dev-admin-token",
+    token: localStorage.getItem("whLocalApiToken") || (import.meta.env.DEV ? "dev-admin-token" : ""),
   };
 }
 
-// 候选令牌：优先当前登录用户；本地开发管理员令牌只作为未登录开发环境的兜底。
+// 候选令牌：优先当前登录用户；本地开发管理员令牌仅在开发环境、未登录时兜底。
+// 生产环境绝不注入 dev-admin-token，避免会话失效后静默回退获得管理员权限。
 function candidateTokens(): string[] {
   const tokens = new Set<string>();
   const manual = localStorage.getItem("whLocalApiToken");
   const customer = localStorage.getItem("wh_demo_token");
   if (manual) tokens.add(manual);
   if (customer) tokens.add(customer);
-  tokens.add("dev-admin-token");
+  if (import.meta.env.DEV) tokens.add("dev-admin-token");
   return [...tokens];
 }
 
@@ -318,21 +319,12 @@ export async function updateProductSourceGroup({
       form.set(`source_group_image_${groupIndex}`, file);
     }
   }
-  // 调试：打印实际提交给后端的表单字段（完全展开，方便直接复制）
-  console.log("[货源保存-请求] 表单字段(展开) = " + JSON.stringify(
-    [...form.entries()].map(([key, value]) => [
-      key,
-      typeof value === "string" ? value : { name: value.name, size: value.size, type: value.type, lastModified: value.lastModified },
-    ]),
-  ));
   const response = await fetch(`${apiBase}/api/profit-activity/products/${encodeURIComponent(skc)}/update`, {
     method: "POST",
     headers: token ? { Authorization: `Bearer ${token}` } : {},
     body: form,
   });
   const text = await response.text();
-  // 调试：打印后端响应状态与原文（应包含保存后的 source_groups）
-  console.log("[货源保存-响应] status = " + response.status + "\n响应原文 = " + text.slice(0, 1200));
   let data: unknown = text;
   try {
     data = text ? JSON.parse(text) : {};

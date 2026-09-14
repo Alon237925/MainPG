@@ -1,5 +1,7 @@
 import { useCallback, useSyncExternalStore } from "react";
 
+import { isThemeId, type ThemeId } from "./useTheme";
+
 export type UiModeId = "classic" | "apple";
 
 export const UI_MODE_META: Record<UiModeId, { label: string; description: string }> = {
@@ -24,13 +26,13 @@ function readUiMode(): UiModeId {
 
 function applyUiMode(id: UiModeId, animate = false) {
   document.documentElement.setAttribute("data-ui-mode", id);
-  let originalTheme = "classic";
+  // 复用 useTheme 的权威主题字典：切回 classic 布局时恢复用户选的主题，
+  // apple 布局则强制经典配色。这样新增主题时无需同步维护这里的枚举。
+  let originalTheme: ThemeId = "classic";
   try {
     window.localStorage.setItem(STORAGE_KEY, id);
-    const savedTheme = window.localStorage.getItem("mainpg.theme");
-    originalTheme = savedTheme === "sunset" || savedTheme === "violet" || savedTheme === "dessert" || savedTheme === "diamond" || savedTheme === "quirky" || savedTheme === "chinese" || savedTheme === "peach"
-      ? savedTheme
-      : "classic";
+    const savedTheme = window.localStorage.getItem("mainpg.theme") ?? "";
+    originalTheme = isThemeId(savedTheme) ? savedTheme : "classic";
   } catch { /* ignore */ }
   document.documentElement.setAttribute("data-theme", id === "apple" ? "classic" : originalTheme);
   if (animate) {

@@ -62,7 +62,10 @@ export function AiServicePage() {
   );
 
   useEffect(() => {
-    if (!selectableModels.some((model) => model.id === selectedModelId)) setSelectedModelId(selectableModels[0].id);
+    if (!selectableModels.some((model) => model.id === selectedModelId)) {
+      const first = selectableModels[0];
+      if (first) setSelectedModelId(first.id);
+    }
   }, [selectableModels, selectedModelId]);
 
   useEffect(() => () => {

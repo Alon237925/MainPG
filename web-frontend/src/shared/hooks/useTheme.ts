@@ -38,7 +38,7 @@ const CASCADE_MS = 2000;
 
 let cascadeTimer: number | undefined;
 
-function isThemeId(value: string): value is ThemeId {
+export function isThemeId(value: string): value is ThemeId {
   return value in THEME_META;
 }
 
