@@ -32,8 +32,13 @@ from fastapi.responses import HTMLResponse, PlainTextResponse
 from ..billing import (
     BATCH_BILLING_PROFILE_POD,
     BATCH_BILLING_PROFILE_PRODUCT,
+    PLAN_WEEKLY_UNITS,
     TOPUP_PROMOTION_ID,
     TOPUP_PROMOTION_NAME,
+    _ensure_wallet,
+    _plan_next_refresh,
+    _plan_period_key,
+    _plan_type_label,
     active_pricing,
     batch_freeze_status,
     compute_batch_charge,
@@ -3102,7 +3107,7 @@ def _billing_summary(database_path: Path, account: dict[str, Any]) -> dict[str, 
     # 展示型余额/流水缓存（短 TTL）；冻结/结算/充值等写路径会主动失效。
     pricing = active_pricing(database_path)
     promotion = topup_promotion_status()
-    cache_key = f"wallet:{account_id}:topup:fixed-package-tiered-bonus:{pricing['rule_version']}"
+    cache_key = f"wallet:{account_id}:topup:fixed-package-tiered-bonus:{pricing['rule_version']}:plan:{_plan_period_key()}"
     cached = _cache.cache_get(cache_key)
     if cached is not None:
         return cached
@@ -3110,7 +3115,8 @@ def _billing_summary(database_path: Path, account: dict[str, Any]) -> dict[str, 
         _ensure_wallet(conn, account_id, workspace_id)
         wallet = conn.execute(
             """
-            SELECT points_balance, locked_points, manual_frozen_points, version, ledger_head_hash, updated_at
+            SELECT points_balance, locked_points, manual_frozen_points, version, ledger_head_hash,
+                   updated_at, plan_balance, plan_period_key, plan_type
             FROM billing_wallets
             WHERE account_id = ?
             """,
@@ -3165,10 +3171,18 @@ def _billing_summary(database_path: Path, account: dict[str, Any]) -> dict[str, 
             "locked_points": _display_billing_points(int(wallet["locked_points"] if wallet else 0), pricing),
             "manual_frozen_points": _display_billing_points(int(wallet["manual_frozen_points"] if wallet else 0), pricing),
             "frozen_points": _display_billing_points(int((wallet["locked_points"] if wallet else 0) + (wallet["manual_frozen_points"] if wallet else 0)), pricing),
-            "available_points": _display_billing_points(int((wallet["points_balance"] if wallet else 0) - (wallet["locked_points"] if wallet else 0) - (wallet["manual_frozen_points"] if wallet else 0)), pricing),
+            "available_points": _display_billing_points(int((wallet["plan_balance"] if wallet else 0) + (wallet["points_balance"] if wallet else 0) - (wallet["locked_points"] if wallet else 0) - (wallet["manual_frozen_points"] if wallet else 0)), pricing),
             "version": int(wallet["version"] if wallet else 0),
             "ledger_head_hash": wallet["ledger_head_hash"] if wallet else "",
             "updated_at": wallet["updated_at"] if wallet else "",
+            "plan": {
+                "plan_type": wallet["plan_type"] if wallet else "experience",
+                "plan_label": _plan_type_label(wallet["plan_type"] if wallet else "experience"),
+                "plan_balance": _display_billing_points(int(wallet["plan_balance"] if wallet else 0), pricing),
+                "plan_limit": _display_billing_points(PLAN_WEEKLY_UNITS, pricing),
+                "plan_used": _display_billing_points(max(0, PLAN_WEEKLY_UNITS - int(wallet["plan_balance"] if wallet else 0)), pricing),
+                "next_refresh_at": _plan_next_refresh(wallet["plan_period_key"] if wallet else ""),
+            },
         },
         "pricing": pricing,
         "topup_promotion": {
@@ -3438,18 +3452,6 @@ def _topup_order_response(
         "order": order,
         "payment": payment,
     }
-
-
-def _ensure_wallet(conn: Any, account_id: str, workspace_id: str) -> None:
-    now = _utc_now()
-    conn.execute(
-        """
-        INSERT INTO billing_wallets (account_id, workspace_id, points_balance, locked_points, version, created_at, updated_at)
-        VALUES (?, ?, 0, 0, 0, ?, ?)
-        ON CONFLICT(account_id) DO NOTHING
-        """,
-        (account_id, workspace_id, now, now),
-    )
 
 
 def _stable_json_hash(payload: dict[str, Any]) -> str:

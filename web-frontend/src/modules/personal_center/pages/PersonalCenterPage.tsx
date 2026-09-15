@@ -816,7 +816,14 @@ export function PersonalCenterPage() {
               </div>
               <div className="personal-profile-id">
                 <p>个人中心</p>
-                <h1>{account?.username || summary?.account.username || "当前用户"}</h1>
+                <div className="personal-profile-name">
+                  <h1>{account?.username || summary?.account.username || "当前用户"}</h1>
+                  {summary?.wallet.plan && (
+                    <span className={`personal-plan-badge is-${summary.wallet.plan.plan_type}`}>
+                      {summary.wallet.plan.plan_label}
+                    </span>
+                  )}
+                </div>
               </div>
               <button className="personal-password-entry" type="button" onClick={openPasswordDialog}>
                 <span className="iconfont icon-key" aria-hidden="true" />
@@ -866,7 +873,42 @@ export function PersonalCenterPage() {
 
         <div className="personal-panel-content">
         <div className="personal-panel-anim" key={activePanel}>
-        {activePanel === "wallet" ? <div className="personal-grid">
+        {activePanel === "wallet" ? <>
+        <article className="personal-card plan-credit-card">
+          <div className="plan-credit-head">
+            <div className="personal-card-title">
+              <span className="iconfont icon-gold" aria-hidden="true" />
+              <div>
+                <h2>{summary?.wallet.plan?.plan_label ?? "体验版"}</h2>
+                <small>每周一刷新 · 免费体验额度</small>
+              </div>
+            </div>
+            <div className="plan-credit-remaining">
+              <span>剩余</span>
+              <b>{summary?.wallet.plan?.plan_balance ?? "--"}</b>
+              <em>/ {summary?.wallet.plan?.plan_limit ?? 500} 积分</em>
+            </div>
+          </div>
+          <div
+            className="plan-credit-meter"
+            role="progressbar"
+            aria-label="体验积分剩余额度"
+            aria-valuemin={0}
+            aria-valuemax={summary?.wallet.plan?.plan_limit ?? 500}
+            aria-valuenow={summary?.wallet.plan?.plan_balance ?? 0}
+          >
+            <span
+              style={{
+                width: `${Math.min(100, Math.max(0, ((summary?.wallet.plan?.plan_balance ?? 0) / (summary?.wallet.plan?.plan_limit || 1)) * 100))}%`,
+              }}
+            />
+          </div>
+          <div className="plan-credit-foot">
+            <span>已使用 {summary?.wallet.plan?.plan_used ?? 0} 积分</span>
+            <span>下次刷新 {summary?.wallet.plan?.next_refresh_at ? formatUsageTime(summary.wallet.plan.next_refresh_at).slice(0, 16) : "--"}</span>
+          </div>
+        </article>
+        <div className="personal-grid">
         <article className="personal-card topup-card">
           <div className="topup-header">
             <div className="personal-card-title">
@@ -989,7 +1031,8 @@ export function PersonalCenterPage() {
             )}
           </div>
         </article>
-        </div> : activePanel === "pricing" ? (
+        </div>
+        </> : activePanel === "pricing" ? (
           <article className="personal-card pricing-card">
             <div className="personal-card-title">
               <span className="iconfont icon-calculator" aria-hidden="true" />

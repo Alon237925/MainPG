@@ -673,6 +673,48 @@
   white-space: nowrap;
 }
 
+.personal-profile-name {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  min-width: 0;
+  margin-top: 3px;
+}
+
+.personal-profile-name h1 {
+  margin: 0;
+  font-size: 20px;
+  color: #fff;
+  line-height: 1.2;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.personal-plan-badge {
+  flex: none;
+  display: inline-flex;
+  align-items: center;
+  padding: 2px 10px;
+  border-radius: 999px;
+  font-size: 11px;
+  font-weight: 800;
+  letter-spacing: 0.02em;
+  line-height: 1.6;
+  color: #fff;
+  background: rgba(255, 255, 255, 0.16);
+  border: 1px solid rgba(255, 255, 255, 0.3);
+  backdrop-filter: blur(6px);
+  white-space: nowrap;
+}
+
+.personal-plan-badge.is-flagship {
+  color: #4a2c00;
+  background: linear-gradient(135deg, #ffe08a, #ffb84d);
+  border-color: rgba(255, 255, 255, 0.45);
+  box-shadow: 0 2px 10px rgba(255, 184, 77, 0.4);
+}
+
 .personal-profile-balance {
   position: relative;
   z-index: 1;
@@ -815,6 +857,102 @@
   background: var(--theme-module-surface, rgba(255, 255, 255, 0.94));
   border: 1px solid var(--theme-module-border, rgba(148, 163, 184, 0.2));
   box-shadow: 0 14px 36px rgba(15, 23, 42, 0.08);
+}
+
+/* 体验积分卡：金色横幅，展示每周刷新额度与剩余进度 */
+.plan-credit-card {
+  margin-bottom: 14px;
+  padding: 18px 20px;
+  color: #fff;
+  background:
+    radial-gradient(120% 160% at 8% -12%, rgba(255, 255, 255, 0.5), transparent 46%),
+    linear-gradient(135deg, #f2c14e 0%, #eba13a 55%, #e2882b 100%);
+  border: 1px solid rgba(226, 136, 43, 0.32);
+  box-shadow: 0 16px 38px rgba(226, 136, 43, 0.22);
+}
+
+.plan-credit-head {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 16px;
+}
+
+.plan-credit-head .personal-card-title {
+  margin-bottom: 0;
+}
+
+.plan-credit-head .personal-card-title > .iconfont {
+  color: #fff;
+}
+
+.plan-credit-head .personal-card-title h2 {
+  color: #fff;
+  font-size: 18px;
+}
+
+.plan-credit-head .personal-card-title small {
+  display: block;
+  margin-top: 2px;
+  color: rgba(255, 255, 255, 0.82);
+  font-size: 11px;
+  font-weight: 700;
+}
+
+.plan-credit-remaining {
+  display: flex;
+  align-items: baseline;
+  gap: 6px;
+  white-space: nowrap;
+}
+
+.plan-credit-remaining span {
+  font-size: 12px;
+  font-weight: 700;
+  color: rgba(255, 255, 255, 0.82);
+}
+
+.plan-credit-remaining b {
+  font-size: 26px;
+  font-weight: 900;
+  letter-spacing: -0.02em;
+  font-variant-numeric: tabular-nums;
+  text-shadow: 0 1px 8px rgba(120, 78, 4, 0.3);
+}
+
+.plan-credit-remaining em {
+  font-style: normal;
+  font-size: 12px;
+  font-weight: 700;
+  color: rgba(255, 255, 255, 0.82);
+}
+
+.plan-credit-meter {
+  margin-top: 14px;
+  height: 8px;
+  border-radius: 999px;
+  background: rgba(255, 255, 255, 0.28);
+  overflow: hidden;
+}
+
+.plan-credit-meter span {
+  display: block;
+  height: 100%;
+  border-radius: 999px;
+  background: #fff;
+  box-shadow: 0 0 10px rgba(255, 255, 255, 0.6);
+  transition: width 0.6s cubic-bezier(0.22, 1, 0.36, 1);
+}
+
+.plan-credit-foot {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 12px;
+  margin-top: 10px;
+  font-size: 12px;
+  font-weight: 700;
+  color: rgba(255, 255, 255, 0.85);
 }
 
 .personal-card-title {

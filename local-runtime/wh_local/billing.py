@@ -53,6 +53,49 @@ MULTIPLIER_DEFAULT_PERCENT = 100
 # POD 单条款式「基准价值」：随机区间 40..50 的参考中值，用于倍率换算与展示。
 POD_BASE_POINTS_PER_STYLE = 45
 
+# ---------------------------------------------------------------------------
+# 套餐体验积分：每个注册用户默认「体验版」，每周一北京时间 00:00 刷新固定额度，
+# 体验积分先于充值积分消耗（先过期先消耗）。旗舰版（flagship）预留 plan_type 口子，
+# 后续只需在 PLAN_TYPES 加配置 + 提供升级接口即可接入。
+# 数据库存「0.1 积分」单位（与 point_unit_scale 一致：10 units = 1 积分），
+# 故 500 积分 = 5000 units。
+# ---------------------------------------------------------------------------
+PLAN_TYPES = {
+    "experience": {"label": "体验版", "weekly_points": 500},
+    "flagship": {"label": "旗舰版", "weekly_points": 500},
+}
+PLAN_DEFAULT_TYPE = "experience"
+PLAN_UNIT_SCALE = 10
+PLAN_WEEKLY_POINTS = 500
+PLAN_WEEKLY_UNITS = PLAN_WEEKLY_POINTS * PLAN_UNIT_SCALE
+
+
+def _plan_period_key(now_dt: datetime | None = None) -> str:
+    """本周一北京时间的日期（YYYY-MM-DD），作为体验积分的周期标识。"""
+    china_tz = timezone(timedelta(hours=8))
+    dt = (now_dt or datetime.now(timezone.utc)).astimezone(china_tz)
+    monday = (dt - timedelta(days=dt.weekday())).date()
+    return monday.isoformat()
+
+
+def _plan_next_refresh(period_key: str) -> str:
+    """下一个刷新时刻（下周一北京时间 00:00），ISO 8601 带 +08:00 偏移。
+
+   周期标识缺失/异常时返回空串，调用方按空值展示占位。
+    """
+    try:
+        monday = datetime.strptime(period_key, "%Y-%m-%d").date()
+    except (TypeError, ValueError):
+        return ""
+    china_tz = timezone(timedelta(hours=8))
+    next_monday = monday + timedelta(days=7)
+    refresh = datetime(next_monday.year, next_monday.month, next_monday.day, tzinfo=china_tz)
+    return refresh.isoformat(timespec="seconds")
+
+
+def _plan_type_label(plan_type: str) -> str:
+    return PLAN_TYPES.get(plan_type, PLAN_TYPES[PLAN_DEFAULT_TYPE])["label"]
+
 
 def _multiplier_category(feature_key: str) -> str:
     """Map a feature key / billing profile to its multiplier category.
@@ -697,19 +740,8 @@ def reserve_ai_usage(
         ).fetchone()
         if existing is not None:
             return dict(existing)
-        wallet = conn.execute(
-            """
-            SELECT points_balance, locked_points, manual_frozen_points
-            FROM billing_wallets
-            WHERE account_id = ?
-            """,
-            (actor.id,),
-        ).fetchone()
-        available = (
-            int(wallet["points_balance"])
-            - int(wallet["locked_points"])
-            - int(wallet["manual_frozen_points"])
-        )
+        plan_balance, paid_balance, locked_pts, manual_frozen = _wallet_balances(conn, actor.id)
+        available = plan_balance + paid_balance - locked_pts - manual_frozen
         if available < reserve_points:
             raise HTTPException(
                 status_code=402,
@@ -824,30 +856,30 @@ def settle_ai_usage_success(
         charge_points = base_charge_points + premium_units
         refund_points = int(row["reserved_points"]) - base_charge_points
         wallet = conn.execute(
-            "SELECT points_balance, locked_points FROM billing_wallets WHERE account_id = ?",
+            "SELECT plan_balance, points_balance FROM billing_wallets WHERE account_id = ?",
             (row["account_id"],),
         ).fetchone()
         if wallet is None:
             raise HTTPException(status_code=409, detail="wallet missing")
+        total_available = int(wallet["plan_balance"]) + int(wallet["points_balance"])
         # 兜底：重试溢价未在冻结时预留（reserve 只含 base + 退款余量），余额不足以覆盖
         # base+premium 时按余额上限截断扣费，避免触发 CHECK(points_balance >= 0) 抛 500。
-        if charge_points > int(wallet["points_balance"]):
-            charge_points = int(wallet["points_balance"])
+        if charge_points > total_available:
+            charge_points = total_available
             premium_units = max(0, charge_points - base_charge_points)
-        conn.execute(
-            """
-            UPDATE billing_wallets
-            SET points_balance = points_balance - ?,
-                locked_points = locked_points - ?,
-                version = version + 1,
-                updated_at = ?
-            WHERE account_id = ?
-            """,
-            (charge_points, int(row["reserved_points"]), now, row["account_id"]),
+        # 分池扣费：体验积分先消耗，再消耗充值积分；同时释放本笔全额锁定额。
+        plan_used, paid_used = _debit_wallet(
+            conn,
+            row["account_id"],
+            charge_points,
+            now,
+            unlock_units=int(row["reserved_points"]),
         )
         event_metadata = _merge_metadata(row["metadata_json"], metadata or {}, provider_task_id)
         if premium_units:
             event_metadata["retry_premium_units"] = premium_units
+        if plan_used:
+            event_metadata["plan_points_used"] = plan_used
         conn.execute(
             """
             UPDATE billing_ai_usage_events
@@ -896,6 +928,8 @@ def settle_ai_usage_success(
                 "provider_task_id": provider_task_id,
                 "model": model,
                 "retry_premium_units": premium_units,
+                "plan_points_used": plan_used,
+                "paid_points_used": paid_used,
             },
         )
         if refund_points:
@@ -1031,14 +1065,12 @@ def _settle_consumed_usage_after_business_failure(
     refund_points = int(row["reserved_points"]) - charge_points
     provider = "wuyin" if str(row["feature_key"]) == "product_processing.image_grid_2k" else "aicoming"
     model = "image_gpt" if provider == "wuyin" else "gpt-5.6-terra"
-    conn.execute(
-        """
-        UPDATE billing_wallets
-        SET points_balance = points_balance - ?, locked_points = locked_points - ?,
-            version = version + 1, updated_at = ?
-        WHERE account_id = ?
-        """,
-        (charge_points, int(row["reserved_points"]), settled_at, row["account_id"]),
+    _debit_wallet(
+        conn,
+        row["account_id"],
+        charge_points,
+        settled_at,
+        unlock_units=int(row["reserved_points"]),
     )
     conn.execute(
         """
@@ -1336,17 +1368,85 @@ def _ensure_billing_account_values(
 
 
 def _ensure_wallet(conn: Any, account_id: str, workspace_id: str) -> None:
+    """Create the wallet on first use and lazily refresh the weekly plan credit.
+
+    体验积分不写 billing_point_ledger（该台账 balance_after 跟踪的是充值池），
+    只在钱包列上惰性重置，避免污染财务台账语义。旗舰版后续通过升级接口改 plan_type。
+    """
     now = _utc_now()
+    period = _plan_period_key()
     conn.execute(
         """
         INSERT INTO billing_wallets (
-            account_id, workspace_id, points_balance, locked_points, version, created_at, updated_at
+            account_id, workspace_id, points_balance, locked_points, version,
+            plan_balance, plan_period_key, plan_type, created_at, updated_at
         )
-        VALUES (?, ?, 0, 0, 0, ?, ?)
+        VALUES (?, ?, 0, 0, 0, ?, ?, ?, ?, ?)
         ON CONFLICT(account_id) DO NOTHING
         """,
-        (account_id, workspace_id or "default", now, now),
+        (account_id, workspace_id or "default", PLAN_WEEKLY_UNITS, period, PLAN_DEFAULT_TYPE, now, now),
     )
+    # 跨周期惰性重置：体验积分重置为满额（不累积），plan_type 保持不变。
+    conn.execute(
+        """
+        UPDATE billing_wallets
+        SET plan_balance = ?, plan_period_key = ?, version = version + 1, updated_at = ?
+        WHERE account_id = ? AND plan_period_key <> ?
+        """,
+        (PLAN_WEEKLY_UNITS, period, now, account_id, period),
+    )
+
+
+def _wallet_balances(conn: Any, account_id: str) -> tuple[int, int, int, int]:
+    """Return (plan_balance, points_balance, locked_points, manual_frozen_points).
+
+    先做惰性周刷新，保证读到的体验积分是本周期最新值。
+    """
+    row = conn.execute(
+        """
+        SELECT plan_balance, points_balance, locked_points, manual_frozen_points
+        FROM billing_wallets WHERE account_id = ?
+        """,
+        (account_id,),
+    ).fetchone()
+    if row is None:
+        return (0, 0, 0, 0)
+    return (
+        int(row["plan_balance"]),
+        int(row["points_balance"]),
+        int(row["locked_points"]),
+        int(row["manual_frozen_points"]),
+    )
+
+
+def _debit_wallet(
+    conn: Any,
+    account_id: str,
+    charge_units: int,
+    now: str,
+    unlock_units: int = 0,
+) -> tuple[int, int]:
+    """Debit ``charge_units`` from the wallet, consuming plan credit first.
+
+    返回 (plan_used, paid_used)，供结算台账记录分池明细。体验积分先于充值积分消耗。
+    ``unlock_units`` 同时释放对应锁定额（结算/释放时传 reserved/frozen 值）。
+    """
+    plan_balance, points_balance, _, _ = _wallet_balances(conn, account_id)
+    plan_used = min(plan_balance, charge_units)
+    paid_used = charge_units - plan_used
+    conn.execute(
+        """
+        UPDATE billing_wallets
+        SET plan_balance = plan_balance - ?,
+            points_balance = points_balance - ?,
+            locked_points = locked_points - ?,
+            version = version + 1,
+            updated_at = ?
+        WHERE account_id = ?
+        """,
+        (plan_used, paid_used, unlock_units, now, account_id),
+    )
+    return plan_used, paid_used
 
 
 def _append_ledger(
@@ -2058,19 +2158,8 @@ def freeze_batch_points(
             freeze_units_per_link if profile == BATCH_BILLING_PROFILE_PRODUCT else None
         )
         frozen_points = _display_points(frozen_units)
-        wallet = conn.execute(
-            """
-            SELECT points_balance, locked_points, manual_frozen_points
-            FROM billing_wallets
-            WHERE account_id = ?
-            """,
-            (actor.id,),
-        ).fetchone()
-        available = (
-            int(wallet["points_balance"])
-            - int(wallet["locked_points"])
-            - int(wallet["manual_frozen_points"])
-        )
+        plan_balance, paid_balance, locked_pts, manual_frozen = _wallet_balances(conn, actor.id)
+        available = plan_balance + paid_balance - locked_pts - manual_frozen
         if available < frozen_units:
             raise HTTPException(
                 status_code=402,
@@ -2266,18 +2355,8 @@ def freeze_planned_points(
                 "expires_at": str(existing["expires_at"]),
                 "already_frozen": True,
             }
-        wallet = conn.execute(
-            """
-            SELECT points_balance, locked_points, manual_frozen_points
-            FROM billing_wallets WHERE account_id = ?
-            """,
-            (actor.id,),
-        ).fetchone()
-        available = (
-            int(wallet["points_balance"])
-            - int(wallet["locked_points"])
-            - int(wallet["manual_frozen_points"])
-        )
+        plan_balance, paid_balance, locked_pts, manual_frozen = _wallet_balances(conn, actor.id)
+        available = plan_balance + paid_balance - locked_pts - manual_frozen
         if available < units:
             raise HTTPException(
                 status_code=402,
@@ -2384,16 +2463,12 @@ def settle_planned_points(
         if charge + refund != frozen:
             raise HTTPException(status_code=400, detail="settlement does not reconcile to frozen points")
         now = _utc_now()
-        conn.execute(
-            """
-            UPDATE billing_wallets
-            SET points_balance = points_balance - ?,
-                locked_points = locked_points - ?,
-                version = version + 1,
-                updated_at = ?
-            WHERE account_id = ?
-            """,
-            (charge, frozen, now, expected_account_id),
+        _debit_wallet(
+            conn,
+            expected_account_id,
+            charge,
+            now,
+            unlock_units=frozen,
         )
         conn.execute(
             """
@@ -2686,24 +2761,22 @@ def settle_batch_points(
             )
         total_charged_units = total_charge_units + total_premium_units
         wallet = conn.execute(
-            "SELECT points_balance FROM billing_wallets WHERE account_id = ?",
+            "SELECT plan_balance, points_balance FROM billing_wallets WHERE account_id = ?",
             (expected_account_id,),
         ).fetchone()
         # 兜底：重试溢价未在冻结时预留（frozen 只含 base+退款余量），余额不足以覆盖
         # charge+premium 时按余额上限截断，避免触发 CHECK(points_balance >= 0) 抛 500。
-        if wallet is not None and total_charged_units > int(wallet["points_balance"]):
-            total_charged_units = int(wallet["points_balance"])
+        if wallet is not None:
+            total_available = int(wallet["plan_balance"]) + int(wallet["points_balance"])
+            if total_charged_units > total_available:
+                total_charged_units = total_available
         # release the unused lock (refund) and debit the charge; wallet stores units.
-        conn.execute(
-            """
-            UPDATE billing_wallets
-            SET points_balance = points_balance - ?,
-                locked_points = locked_points - ?,
-                version = version + 1,
-                updated_at = ?
-            WHERE account_id = ?
-            """,
-            (total_charged_units, frozen_units, _utc_now(), expected_account_id),
+        _debit_wallet(
+            conn,
+            expected_account_id,
+            total_charged_units,
+            _utc_now(),
+            unlock_units=frozen_units,
         )
         now = _utc_now()
         conn.execute(
@@ -2879,16 +2952,12 @@ def release_expired_batch_freezes(database_path: Path, *, now_iso: str = "") -> 
                     idempotency_key=f"batch_expiry:{freeze['freeze_id']}:retain",
                     metadata={"link_count": int(freeze["link_count"])},
                 )
-            conn.execute(
-                """
-                UPDATE billing_wallets
-                SET points_balance = points_balance - ?,
-                    locked_points = locked_points - ?,
-                    version = version + 1,
-                    updated_at = ?
-                WHERE account_id = ?
-                """,
-                (retained_units, frozen_units, _utc_now(), str(freeze["account_id"])),
+            _debit_wallet(
+                conn,
+                str(freeze["account_id"]),
+                retained_units,
+                _utc_now(),
+                unlock_units=frozen_units,
             )
             released += 1
     return released
