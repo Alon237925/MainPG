@@ -829,6 +829,11 @@ def settle_ai_usage_success(
         ).fetchone()
         if wallet is None:
             raise HTTPException(status_code=409, detail="wallet missing")
+        # 兜底：重试溢价未在冻结时预留（reserve 只含 base + 退款余量），余额不足以覆盖
+        # base+premium 时按余额上限截断扣费，避免触发 CHECK(points_balance >= 0) 抛 500。
+        if charge_points > int(wallet["points_balance"]):
+            charge_points = int(wallet["points_balance"])
+            premium_units = max(0, charge_points - base_charge_points)
         conn.execute(
             """
             UPDATE billing_wallets
@@ -2680,6 +2685,14 @@ def settle_batch_points(
                 detail="settle totals exceed the frozen points",
             )
         total_charged_units = total_charge_units + total_premium_units
+        wallet = conn.execute(
+            "SELECT points_balance FROM billing_wallets WHERE account_id = ?",
+            (expected_account_id,),
+        ).fetchone()
+        # 兜底：重试溢价未在冻结时预留（frozen 只含 base+退款余量），余额不足以覆盖
+        # charge+premium 时按余额上限截断，避免触发 CHECK(points_balance >= 0) 抛 500。
+        if wallet is not None and total_charged_units > int(wallet["points_balance"]):
+            total_charged_units = int(wallet["points_balance"])
         # release the unused lock (refund) and debit the charge; wallet stores units.
         conn.execute(
             """

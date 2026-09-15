@@ -659,46 +659,8 @@ class SQLiteCustomerAuthService:
         return CustomerAuthActionResult(ok=True, message="password reset")
 
     def password_reset(self, payload: dict[str, Any]) -> CustomerAuthActionResult:
-        if _text(payload, "reset_token") or _text(payload, "token"):
-            return self.reset_password(payload)
-        identifier = _text(payload, "account_id") or _text(payload, "username") or _text(payload, "email")
-        new_password = _text(payload, "new_password") or _text(payload, "password")
-        if not identifier:
-            raise ValueError("account_id, username or email is required")
-        if not new_password or len(new_password) < 6:
-            raise ValueError("new password must be at least 6 characters")
-
-        salt = secrets.token_hex(16)
-        password_hash = _hash_password(new_password, salt, DEFAULT_ITERATIONS)
-        now = _utc_now()
-        with transaction(self.database_path) as conn:
-            row = conn.execute(
-                """
-                SELECT account_id
-                FROM auth_accounts
-                WHERE account_id = ?
-                   OR lower(username) = lower(?)
-                   OR (email <> '' AND lower(email) = lower(?))
-                """,
-                (identifier, identifier, identifier),
-            ).fetchone()
-            if row is None:
-                raise ValueError("account not found")
-            conn.execute(
-                """
-                UPDATE auth_password_credentials
-                SET password_hash = ?, salt = ?, algorithm = 'pbkdf2_sha256', iterations = ?, updated_at = ?
-                WHERE account_id = ?
-                """,
-                (password_hash, salt, DEFAULT_ITERATIONS, now, row["account_id"]),
-            )
-            conn.execute(
-                "UPDATE auth_accounts SET updated_at = ? WHERE account_id = ?",
-                (now, row["account_id"]),
-            )
-            _revoke_platform_sessions(conn, row["account_id"])
-            _log_security_event(conn, row["account_id"], "password_reset_direct", True)
-        return CustomerAuthActionResult(ok=True, message="password reset")
+        # 安全：统一走邮箱验证码流程（reset_password），禁止无凭证直接改密。
+        return self.reset_password(payload)
 
     def _log_login(self, account_id: str, username: str, email: str, success: bool, reason: str) -> None:
         # 本地登录日志文件（login.log，与 runtime.log 同目录），按事件详细记录。
