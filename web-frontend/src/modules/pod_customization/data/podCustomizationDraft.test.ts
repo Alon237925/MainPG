@@ -91,7 +91,7 @@ test("v2 POD drafts move their global weight and declared price into each SKU an
     { name: "默认款", declared_price: "18.5", weight_g: "450" },
   ]);
   assert.deepEqual(result.state.spec_card.cells, [
-    ["尺寸图", "长", "宽", "高"],
+    ["SKU", "Length", "Width", "Height"],
     ["默认款", "30", "20", "10"],
   ]);
 });
@@ -124,7 +124,7 @@ test("v1 POD drafts migrate SKU names and product dimensions into per-SKU listin
     { name: "深蓝", declared_price: "18.5", weight_g: "450" },
   ]);
   assert.deepEqual(result.state.spec_card.cells, [
-    ["尺寸图", "长", "宽", "高"],
+    ["SKU", "Length", "Width", "Height"],
     ["  米白 ", "30", "20", "10"],
     ["深蓝", "30", "20", "10"],
   ]);
@@ -155,7 +155,7 @@ test("v1 POD drafts without SKU names migrate to the default SKU", () => {
     { name: "默认款", declared_price: "", weight_g: "" },
   ]);
   assert.deepEqual(result.state.spec_card.cells, [
-    ["尺寸图", "长", "宽", "高"],
+    ["SKU", "Length", "Width", "Height"],
     ["默认款", "30", "20", "10"],
   ]);
 });

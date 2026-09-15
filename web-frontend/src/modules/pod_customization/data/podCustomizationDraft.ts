@@ -64,7 +64,7 @@ const EMPTY_LISTING_FIELDS: PodListingFieldsDraft = {
 // 与 podCustomizationModel.EMPTY_SPEC_CARD 同形的空白表（1 行表头 + 1 个空 SKU 行 × 4 列）。
 // 这里刻意本地实现，不 import 模型模块：本文件会被 node --experimental-strip-types
 // 直接加载（podCustomizationDraft.test.ts），无扩展名的运行时导入在 Node ESM 下无法解析。
-const SPEC_CARD_DIMENSION_HEADER = ["尺寸图", "长", "宽", "高"];
+const SPEC_CARD_DIMENSION_HEADER = ["SKU", "Length", "Width", "Height"];
 
 const EMPTY_SPEC_CARD_DRAFT: SpecCardConfig = {
   enabled: true,

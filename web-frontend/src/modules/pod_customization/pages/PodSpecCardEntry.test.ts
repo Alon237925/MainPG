@@ -56,7 +56,7 @@ test("the spec-card configuration is frozen into the create-batch listing snapsh
   assert.match(modelSource, /export function listingFieldsForApi\(\s*fields: PodListingFieldsDraft,\s*specCard\?: SpecCardConfig \| null,\s*\): PodListingFieldsResult \{/);
   assert.match(modelSource, /\.\.\.\(specCard \? \{ spec_card: specCardForApi\(specCard\) \} : \{\}\)/);
   assert.match(modelSource, /export function isSpecCardConfigured\(config: SpecCardConfig \| null \| undefined\): boolean \{/);
-  assert.match(modelSource, /export const SPEC_CARD_DIMENSION_HEADER = \["尺寸图", "长", "宽", "高"\] as const;/);
+  assert.match(modelSource, /export const SPEC_CARD_DIMENSION_HEADER = \["SKU", "Length", "Width", "Height"\] as const;/);
   // 必填口径：每个 SKU 行的长/宽/高（第 2/3/4 列）都要非空，表头行与第 1 列不参与。
   assert.match(modelSource, /\[1, 2, 3\]\.every\(\(column\) => typeof row\[column\] === "string" && row\[column\]\.trim\(\)\.length > 0\)/);
   assert.match(modelSource, /export function specCardSummaryText\(config: SpecCardConfig \| null \| undefined\): string \{/);

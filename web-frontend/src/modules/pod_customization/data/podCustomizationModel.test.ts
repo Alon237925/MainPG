@@ -141,7 +141,7 @@ test("listing fields normalize every SKU with its declared price and weight, and
     style: "light" as const,
     corner: "bottom-right" as const,
     cells: [
-      ["尺寸图", "长", "宽", "高"],
+      ["SKU", "Length", "Width", "Height"],
       ["米白", "30", "20", "10"],
       ["深蓝", "31", "21", "11"],
     ],
@@ -181,7 +181,7 @@ test("listing fields require one complete SKU with its dimensions", () => {
     style: "light" as const,
     corner: "bottom-right" as const,
     cells: [
-      ["尺寸图", "长", "宽", "高"],
+      ["SKU", "Length", "Width", "Height"],
       ["默认款", "30", "20", "10"],
     ],
   };
@@ -206,7 +206,7 @@ test("listing fields require one complete SKU with its dimensions", () => {
   }, {
     ...specCard,
     cells: [
-      ["尺寸图", "长", "宽", "高"],
+      ["SKU", "Length", "Width", "Height"],
       ["默认款", "0", "20", "10"],
     ],
   }), { error: "SKU「默认款」的长（cm）必须是大于 0 的有效数字。" });
