@@ -183,15 +183,14 @@ class SQLiteCustomerAuthService:
         email = _normalize_email(_text(payload, "email"))
         email_code = _text(payload, "email_code")
         password = _text(payload, "password")
-        invitation_code = _text(payload, "invitation_code")
+        # 邀请码可选：未填写时默认归属到公共邀请码 MAINPG-448N-ZKP6。
+        invitation_code = _text(payload, "invitation_code") or "MAINPG-448N-ZKP6"
         if not username:
             raise ValueError("username is required")
         if not re.fullmatch(r"\d{6}", email_code):
             raise ValueError("a valid 6-digit email code is required")
         if not password or len(password) < 6:
             raise ValueError("password must be at least 6 characters")
-        if not invitation_code:
-            raise ValueError("invitation code is required")
 
         verification_id = self._validate_email_code(email, email_code, purpose="register")
 
