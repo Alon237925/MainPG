@@ -183,6 +183,48 @@ def test_title_request_uses_cropped_hero_and_includes_style_task_id() -> None:
     assert '"description"' in user_contract
 
 
+def test_title_request_carries_copy_restrictions_into_the_copy_contract() -> None:
+    from wh_local.modules.pod_customization.title_runtime import PodTitleRequest, PodTitleRuntime
+
+    session = _Session([_Response(_payload())])
+    runtime = PodTitleRuntime(session=session, requests_per_minute=0)
+    request = PodTitleRequest(
+        style_task_id="style-task-72",
+        style_index=4,
+        hero_image=b"cropped-hero",
+        hero_content_type="image/png",
+        business_fields=BusinessFields(
+            product_name="Canvas Tote",
+            product_category="tote bag",
+            copy_restrictions="标题不要出现刺绣，标题和描述都要明确带上 2D Flat",
+        ),
+        creative_prompt="coastal botanic line art",
+    )
+    try:
+        runtime.generate_title(request, grant=_grant(ark="ark-secret"), call_id="style-task-72:title:1")
+    finally:
+        runtime.close()
+
+    user_contract = session.requests[0]["json"]["messages"][1]["content"][1]["text"]
+    assert '"copy_restrictions": "标题不要出现刺绣，标题和描述都要明确带上 2D Flat"' in user_contract
+    assert "copy_restrictions_policy" in user_contract
+    assert "no effect on the image" in user_contract
+
+
+def test_blank_copy_restrictions_leave_the_copy_contract_neutral() -> None:
+    from wh_local.modules.pod_customization.title_runtime import PodTitleRuntime
+
+    session = _Session([_Response(_payload())])
+    runtime = PodTitleRuntime(session=session, requests_per_minute=0)
+    try:
+        runtime.generate_title(_request(), grant=_grant(ark="ark-secret"), call_id="style-task-72:title:1")
+    finally:
+        runtime.close()
+
+    user_contract = session.requests[0]["json"]["messages"][1]["content"][1]["text"]
+    assert '"copy_restrictions": ""' in user_contract
+
+
 @pytest.mark.parametrize(
     "payload",
     [

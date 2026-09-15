@@ -106,6 +106,7 @@ const BUSINESS_FIELDS: Array<{
   multiline?: boolean;
   required?: boolean;
   hint?: string;
+  placeholder?: string;
 }> = [
   { key: "product_name", label: "产品名称", required: true },
   { key: "product_category", label: "产品品类", required: true },
@@ -134,6 +135,13 @@ const BUSINESS_FIELDS: Array<{
     label: "禁用元素",
     multiline: true,
     hint: "尽量多写，且务必覆盖侵权类（品牌 logo、商标、球队或联盟标识、影视动漫游戏角色、卡通 IP 形象、名人肖像、奢侈品牌老花、平台水印、受版权保护的海报封面）与危险违禁类（武器弹药、管制刀具、爆炸物、毒品、赌博、烟草电子烟、酒精、暴力血腥、恐怖或仇恨符号、纳粹标志、宗教或政治符号、国旗国徽、成人或色情内容、钞票图样、身份证件、二维码、真人照片），避免商品下架或店铺被封",
+  },
+  {
+    key: "copy_restrictions",
+    label: "标题/描述限制",
+    multiline: true,
+    placeholder: "谨慎填写：如「标题不要出现刺绣」「明确带上 2D Flat」",
+    hint: "选填，建议留空、谨慎填写。填了就请写明确说法，例如「标题不要出现刺绣」「标题和描述都要明确带上 2D Flat」；该限制只作用于 AI 生成的标题与描述，不影响图片，也不会放宽平台的违禁词、品牌、长度等硬性规则",
   },
 ];
 
@@ -170,6 +178,7 @@ const EMPTY_BUSINESS_FIELDS_FOR_SWITCH: Record<keyof PodBusinessFieldsDraft, str
   style_keywords: "",
   color_preferences: "",
   excluded_elements: "",
+  copy_restrictions: "",
 };
 
 const EMPTY_LISTING_FIELDS_FOR_SWITCH: PodListingFieldsDraft = {
@@ -922,7 +931,7 @@ export function PodCustomizationPage({ isActive = true }: Props) {
             <PodBriefInput onGenerated={handleBriefGenerated} history={briefHistory} onSelectHistory={selectBriefHistory} />
             <div className="pod-business-fields">
               {BUSINESS_FIELDS.map((field, fieldIndex) => (
-                <label key={field.key} className={field.multiline ? "is-multiline" : ""}><span>{field.label}{field.required && <em>*</em>}{field.hint && <i className="pod-field-info" data-tip={field.hint} aria-hidden="true">ⓘ</i>}</span><textarea rows={1} ref={(el) => { businessTextareasRef.current[fieldIndex] = el; }} value={businessFields[field.key]} onChange={(event) => {
+                <label key={field.key} className={field.multiline ? "is-multiline" : ""}><span>{field.label}{field.required && <em>*</em>}{field.hint && <i className="pod-field-info" data-tip={field.hint} aria-hidden="true">ⓘ</i>}</span><textarea rows={1} placeholder={field.placeholder} ref={(el) => { businessTextareasRef.current[fieldIndex] = el; }} value={businessFields[field.key]} onChange={(event) => {
                   updateBusinessField(field.key, event.currentTarget.value);
                   autoGrowBusinessTextarea(event.currentTarget);
                 }} /></label>

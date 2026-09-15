@@ -42,6 +42,8 @@ export type PodBusinessFieldsDraft = {
   style_keywords: string;
   color_preferences: string;
   excluded_elements: string;
+  /** 选填：用户手写的上架文案限制（如「标题不要出现刺绣」），只作用于标题与描述，不影响图片。 */
+  copy_restrictions: string;
 };
 
 export type PodBusinessFields = Omit<PodBusinessFieldsDraft,
@@ -61,8 +63,8 @@ export type PodBriefFieldsResponse = {
   fields: PodBusinessFields;
 };
 
-/** 智能前置层实际代填的字段：与业务字段同形，一次性代填全部字段。 */
-export type PodBriefFieldsDraft = PodBusinessFieldsDraft;
+/** 智能前置层实际代填的字段：业务字段去掉「上架文案限制」（该类限制不由智能填写生成）。 */
+export type PodBriefFieldsDraft = Omit<PodBusinessFieldsDraft, "copy_restrictions">;
 
 /** 「最近生成」历史条目；fields 为回填前的字符串口径（数组已用「、」连接）。 */
 export type PodBriefHistoryItem = {

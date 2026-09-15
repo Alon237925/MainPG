@@ -51,6 +51,7 @@ const EMPTY_BUSINESS_FIELDS: PodBusinessFieldsDraft = {
   style_keywords: "",
   color_preferences: "",
   excluded_elements: "",
+  copy_restrictions: "",
 };
 
 const EMPTY_LISTING_FIELDS: PodListingFieldsDraft = {
@@ -235,7 +236,7 @@ function browserStorage(): PodCustomizationStorage | null {
 function cloneDraft(state: PodCustomizationDraft): PodCustomizationDraft {
   return {
     version: POD_CUSTOMIZATION_DRAFT_VERSION,
-    business_fields: { ...state.business_fields },
+    business_fields: businessFieldsOrDefault(state.business_fields),
     listing_fields: {
       ...state.listing_fields,
       skus: state.listing_fields.skus.map((sku) => ({ ...sku })),
@@ -320,7 +321,13 @@ function isBusinessFields(value: unknown): value is PodBusinessFieldsDraft {
     && typeof value.design_theme === "string"
     && typeof value.style_keywords === "string"
     && typeof value.color_preferences === "string"
-    && typeof value.excluded_elements === "string";
+    && typeof value.excluded_elements === "string"
+    // copy_restrictions 为后加的键：旧草稿与历史条目缺失时视为空串，不丢弃整份草稿。
+    && (value.copy_restrictions === undefined || typeof value.copy_restrictions === "string");
+}
+
+function businessFieldsOrDefault(fields: PodBusinessFieldsDraft): PodBusinessFieldsDraft {
+  return { ...fields, copy_restrictions: fields.copy_restrictions ?? "" };
 }
 
 function isListingFields(value: unknown): value is PodListingFieldsDraft {
@@ -582,7 +589,7 @@ function migrateDraft(
   legacy: PreviousPodCustomizationDraft | OlderPodCustomizationDraft | LegacyPodCustomizationDraft,
 ): PodCustomizationDraft {
   return {
-    business_fields: legacy.business_fields,
+    business_fields: businessFieldsOrDefault(legacy.business_fields),
     batch_count: legacy.batch_count,
     custom_count_mode: legacy.custom_count_mode,
     custom_count_input: legacy.custom_count_input,

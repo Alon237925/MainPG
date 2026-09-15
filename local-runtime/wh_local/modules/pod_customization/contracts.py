@@ -68,6 +68,9 @@ class BusinessFields(BaseModel):
     style_keywords: list[str] = Field(default_factory=list)
     color_preferences: list[str] = Field(default_factory=list)
     excluded_elements: list[str] = Field(default_factory=list)
+    # 选填：用户手写的上架文案限制（例如「标题不要出现刺绣」「明确带上 2D Flat」）。
+    # 只作用于标题/英文标题/描述，不进入图片提示词。
+    copy_restrictions: str = ""
 
 
 # --- 智能前置层：模糊输入 → 结构化业务字段 ---
