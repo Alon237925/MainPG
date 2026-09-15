@@ -27,6 +27,7 @@ const EMPTY_DRAFT: PodBusinessFieldsDraft = {
   style_keywords: "",
   color_preferences: "",
   excluded_elements: "",
+  copy_restrictions: "",
 };
 
 /** 前置层实际代填的 9 个字段。 */
@@ -53,6 +54,7 @@ function briefFields(overrides: Partial<PodBusinessFields> = {}): PodBusinessFie
     style_keywords: ["仙人掌", "纳瓦霍几何"],
     color_preferences: ["棕", "米白"],
     excluded_elements: ["品牌 logo"],
+    copy_restrictions: "标题不要出现刺绣",
     ...overrides,
   };
 }
@@ -87,6 +89,17 @@ test("generated fields overwrite the same draft fields and keep untouched keys",
   const partial = mergeBusinessFields(current, { product_name: "新名称" });
   assert.equal(partial.product_name, "新名称");
   assert.equal(partial.target_audience, "保留人群");
+});
+
+test("smart fill never generates or clears the hand-written copy restrictions", () => {
+  // 智能填写不代填该字段：生成结果里没有这个键，用户已填的限制必须原样保留。
+  const draft = briefFieldsToDraft(briefFields());
+  assert.equal("copy_restrictions" in draft, false);
+
+  const current = { ...EMPTY_DRAFT, copy_restrictions: "标题不要出现刺绣" };
+  const merged = mergeBusinessFields(current, briefFieldsToDraft(briefFields()));
+
+  assert.equal(merged.copy_restrictions, "标题不要出现刺绣");
 });
 
 test("recording a brief history entry dedupes the same trimmed input and keeps the newest", () => {

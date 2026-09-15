@@ -102,9 +102,12 @@ test("business list fields are normalized at the API boundary", () => {
     style_keywords: "复古, 粗线条",
     color_preferences: "松绿、砂岩黄",
     excluded_elements: "Logo",
+    copy_restrictions: " 标题不要出现刺绣、务必带上 2D Flat ",
   });
   assert.deepEqual(payload.core_selling_points, ["轻量", "防漏"]);
   assert.deepEqual(payload.style_keywords, ["复古", "粗线条"]);
+  // 上架文案限制是整段自然语言：只去首尾空白，不按分隔符切分。
+  assert.equal(payload.copy_restrictions, "标题不要出现刺绣、务必带上 2D Flat");
 });
 
 test("built-in v1 prompt carries the renamed batch-wide fields and never the element list", () => {
@@ -113,11 +116,14 @@ test("built-in v1 prompt carries the renamed batch-wide fields and never the ele
     product_name: "绗缝手提托特包",
     design_theme: "美式西南复古牛仔荒野风",
     style_keywords: "复古牛仔靴插画、沙漠仙人掌、绿松石配饰",
+    copy_restrictions: "标题不要出现刺绣",
   });
   assert.ok(prompt.includes("主题整批统一风格：美式西南复古牛仔荒野风"));
   assert.ok(prompt.includes("内饰表面保持无花色的统一纯色（默认黑色）"));
   assert.ok(!prompt.includes("风格关键词"));
   assert.ok(!prompt.includes("复古牛仔靴插画"));
+  // 上架文案限制只作用于标题与描述，绝不进入图片提示词。
+  assert.ok(!prompt.includes("标题不要出现刺绣"));
 });
 
 test("pristine v1 snapshot detection follows the renamed labels", () => {
@@ -135,7 +141,7 @@ test("listing fields normalize every SKU with its declared price and weight, and
     style: "light" as const,
     corner: "bottom-right" as const,
     cells: [
-      ["尺寸图", "长", "宽", "高"],
+      ["SKU", "Length", "Width", "Height"],
       ["米白", "30", "20", "10"],
       ["深蓝", "31", "21", "11"],
     ],
@@ -175,7 +181,7 @@ test("listing fields require one complete SKU with its dimensions", () => {
     style: "light" as const,
     corner: "bottom-right" as const,
     cells: [
-      ["尺寸图", "长", "宽", "高"],
+      ["SKU", "Length", "Width", "Height"],
       ["默认款", "30", "20", "10"],
     ],
   };
@@ -200,7 +206,7 @@ test("listing fields require one complete SKU with its dimensions", () => {
   }, {
     ...specCard,
     cells: [
-      ["尺寸图", "长", "宽", "高"],
+      ["SKU", "Length", "Width", "Height"],
       ["默认款", "0", "20", "10"],
     ],
   }), { error: "SKU「默认款」的长（cm）必须是大于 0 的有效数字。" });

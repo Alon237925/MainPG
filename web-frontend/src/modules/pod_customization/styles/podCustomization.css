@@ -109,6 +109,7 @@
 .pod-advanced-prompt-editor textarea:focus,
 .pod-scene-optimizer textarea:focus,
 .pod-template-upload input:focus { border-color: var(--pod-primary); box-shadow: 0 0 0 3px rgba(var(--pod-primary-rgb), .13); }
+.pod-business-fields :is(input, textarea)::placeholder { color: var(--pod-text-muted); opacity: .9; }
 
 .pod-advanced-prompt { margin-top: 10px; border: 1px solid var(--pod-border); border-radius: 10px; background: var(--pod-surface-soft); overflow: hidden; }
 .pod-advanced-prompt > button { display: flex; align-items: center; justify-content: space-between; width: 100%; padding: 9px; border: 0; color: var(--pod-text-secondary); background: transparent; text-align: left; }

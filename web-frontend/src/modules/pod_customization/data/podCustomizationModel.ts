@@ -43,6 +43,7 @@ export const EMPTY_POD_BUSINESS_FIELDS: PodBusinessFieldsDraft = {
   style_keywords: "",
   color_preferences: "",
   excluded_elements: "",
+  copy_restrictions: "",
 };
 
 export const EMPTY_POD_LISTING_FIELDS: PodListingFieldsDraft = {
@@ -53,9 +54,9 @@ export const EMPTY_POD_LISTING_FIELDS: PodListingFieldsDraft = {
 };
 
 // 尺寸详情（第 4 张图上的规格卡）是结构化表格，不再是自由表格：
-// 第 1 行为表头（尺寸图 / 长 / 宽 / 高），之后每个 SKU 一行，固定 4 列；
+// 第 1 行为表头（SKU / Length / Width / Height，英文，会原样印到图上），之后每个 SKU 一行，固定 4 列；
 // 表头与第 1 列由 SKU 预设自动映射，属强制只读单元格。
-export const SPEC_CARD_DIMENSION_HEADER = ["尺寸图", "长", "宽", "高"] as const;
+export const SPEC_CARD_DIMENSION_HEADER = ["SKU", "Length", "Width", "Height"] as const;
 export const SPEC_CARD_COLUMNS = SPEC_CARD_DIMENSION_HEADER.length;
 export const SPEC_CARD_DIMENSION_LABELS = ["长（cm）", "宽（cm）", "高（cm）"] as const;
 export const SPEC_CARD_MIN_ROWS = 1;
@@ -298,6 +299,8 @@ export function businessFieldsForApi(fields: PodBusinessFieldsDraft): PodBusines
     style_keywords: splitBusinessField(fields.style_keywords),
     color_preferences: splitBusinessField(fields.color_preferences),
     excluded_elements: splitBusinessField(fields.excluded_elements),
+    // 上架文案限制是整段自然语言，原样透传（不切分、不进 buildPromptV1）。
+    copy_restrictions: fields.copy_restrictions.trim(),
   };
 }
 
