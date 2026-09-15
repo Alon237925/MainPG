@@ -1,4 +1,4 @@
-import { useEffect, useLayoutEffect, useMemo, useRef, useState } from "react";
+import { lazy, Suspense, useEffect, useLayoutEffect, useMemo, useRef, useState, type ReactNode } from "react";
 
 import {
   isWorkspaceNavigationGroup,
@@ -17,25 +17,28 @@ import { InkTap } from "../../shared/components/InkTap";
 import { useTheme } from "../../shared/hooks/useTheme";
 import { useUiMode } from "../../shared/hooks/useUiMode";
 import { WorkspaceHomePage } from "../../modules/dashboard/pages/WorkspaceHomePage";
-import { DailySelectionPage } from "../../modules/daily_selection/pages/DailySelectionPage";
-import { ProfitActivityProductsPage } from "../../modules/profit_activity/pages/ProfitActivityProductsPage";
-import { ProfitActivityTestPage } from "../../modules/profit_activity/pages/ProfitActivityTestPage";
-import { PriceVerificationPage } from "../../modules/price_verification/pages/PriceVerificationPage";
-import { ProductProcessingVerifyPage } from "../../modules/product_processing/pages/ProductProcessingVerifyPage";
-import { ProductProcessingTaskPage } from "../../modules/product_processing/pages/ProductProcessingTaskPage";
-import { ProductProcessingHistoryPage } from "../../modules/product_processing/pages/ProductProcessingHistoryPage";
-import { ProductProcessingPrecheckPage } from "../../modules/product_processing/pages/ProductProcessingPrecheckPage";
-import { ComboKitPage } from "../../modules/combo_kit/pages/ComboKitPage";
-import { ComboKitPromptPresetPage } from "../../modules/combo_kit/pages/ComboKitPromptPresetPage";
-import { ComboKitHistoryPage } from "../../modules/combo_kit/pages/ComboKitHistoryPage";
-import { DimensionCanvasPage } from "../../modules/product_processing/pages/DimensionCanvasPage";
-import { PodCustomizationPage } from "../../modules/pod_customization/pages/PodCustomizationPage";
 import {
   importPreviewItem,
   listDimensionNotifications,
   markDimensionNotificationRead,
 } from "../../modules/product_processing/api/dimensionCanvasApi";
-import { PersonalCenterPage } from "../../modules/personal_center/pages/PersonalCenterPage";
+
+// 页面组件按需懒加载（路由级代码分割，缩小首屏 bundle）。
+// dashboard 是默认首屏 tab，保持同步加载，避免首屏出现加载闪烁。
+const DailySelectionPage = lazy(() => import("../../modules/daily_selection/pages/DailySelectionPage").then((m) => ({ default: m.DailySelectionPage })));
+const ProfitActivityProductsPage = lazy(() => import("../../modules/profit_activity/pages/ProfitActivityProductsPage").then((m) => ({ default: m.ProfitActivityProductsPage })));
+const ProfitActivityTestPage = lazy(() => import("../../modules/profit_activity/pages/ProfitActivityTestPage").then((m) => ({ default: m.ProfitActivityTestPage })));
+const PriceVerificationPage = lazy(() => import("../../modules/price_verification/pages/PriceVerificationPage").then((m) => ({ default: m.PriceVerificationPage })));
+const ProductProcessingVerifyPage = lazy(() => import("../../modules/product_processing/pages/ProductProcessingVerifyPage").then((m) => ({ default: m.ProductProcessingVerifyPage })));
+const ProductProcessingTaskPage = lazy(() => import("../../modules/product_processing/pages/ProductProcessingTaskPage").then((m) => ({ default: m.ProductProcessingTaskPage })));
+const ProductProcessingHistoryPage = lazy(() => import("../../modules/product_processing/pages/ProductProcessingHistoryPage").then((m) => ({ default: m.ProductProcessingHistoryPage })));
+const ProductProcessingPrecheckPage = lazy(() => import("../../modules/product_processing/pages/ProductProcessingPrecheckPage").then((m) => ({ default: m.ProductProcessingPrecheckPage })));
+const ComboKitPage = lazy(() => import("../../modules/combo_kit/pages/ComboKitPage").then((m) => ({ default: m.ComboKitPage })));
+const ComboKitPromptPresetPage = lazy(() => import("../../modules/combo_kit/pages/ComboKitPromptPresetPage").then((m) => ({ default: m.ComboKitPromptPresetPage })));
+const ComboKitHistoryPage = lazy(() => import("../../modules/combo_kit/pages/ComboKitHistoryPage").then((m) => ({ default: m.ComboKitHistoryPage })));
+const DimensionCanvasPage = lazy(() => import("../../modules/product_processing/pages/DimensionCanvasPage").then((m) => ({ default: m.DimensionCanvasPage })));
+const PodCustomizationPage = lazy(() => import("../../modules/pod_customization/pages/PodCustomizationPage").then((m) => ({ default: m.PodCustomizationPage })));
+const PersonalCenterPage = lazy(() => import("../../modules/personal_center/pages/PersonalCenterPage").then((m) => ({ default: m.PersonalCenterPage })));
 import type { ProductProcessingOptions } from "../../modules/product_processing/types";
 import type { DimensionCanvasItem, DimensionNotification } from "../../modules/product_processing/types/dimensionCanvas";
 import { DimensionNotificationRefreshFence } from "../../modules/product_processing/data/dimensionNotificationRefresh";
@@ -81,6 +84,16 @@ function navigationGroupForModule(id: WorkspaceModuleId, groups: WorkspaceNaviga
 function moduleTab(id: WorkspaceModuleId, flatModules: WorkspaceModule[]): WorkspaceTab {
   const module = flatModules.find((item) => item.id === id)!;
   return { key: id, moduleId: id, label: module.label, icon: module.icon, iconClass: module.iconClass };
+}
+
+/** 懒加载模块的加载占位：轻量骨架，避免切换模块时出现空白闪烁。 */
+function ModuleFallback() {
+  return (
+    <div className="workspace-module-fallback" role="status" aria-label="模块加载中">
+      <span className="workspace-module-fallback-spinner" aria-hidden="true" />
+      <span>正在加载模块…</span>
+    </div>
+  );
 }
 
 export function WorkspaceShell({ currentRole = "operator", onSignOut, playEntryAnimation = false, onEntryAnimationComplete = () => undefined }: WorkspaceShellProps) {
@@ -436,24 +449,32 @@ export function WorkspaceShell({ currentRole = "operator", onSignOut, playEntryA
 
   const renderTab = (tab: WorkspaceTab) => {
     const isActive = activeTabKey === tab.key;
+    let content: ReactNode;
     switch (tab.moduleId) {
       case "dashboard":
-        return <WorkspaceHomePage onOpenModule={openModule} />;
+        content = <WorkspaceHomePage onOpenModule={openModule} />;
+        break;
       case "daily_selection":
       case "daily_selection_collection":
-        return <DailySelectionPage view="collection" initialDirectionId={tab.directionId} onOpenProductProcessingDraft={() => openModule("product_processing")} topbarStatusVisible={isActive} isActive={isActive} />;
+        content = <DailySelectionPage view="collection" initialDirectionId={tab.directionId} onOpenProductProcessingDraft={() => openModule("product_processing")} topbarStatusVisible={isActive} isActive={isActive} />;
+        break;
       case "profit_activity":
-        return <ProfitActivityTestPage isActive={isActive} />;
+        content = <ProfitActivityTestPage isActive={isActive} />;
+        break;
       case "profit_activity_products":
-        return <ProfitActivityProductsPage isActive={isActive} />;
+        content = <ProfitActivityProductsPage isActive={isActive} />;
+        break;
       case "price_verification":
-        return <PriceVerificationPage isActive={isActive} />;
+        content = <PriceVerificationPage isActive={isActive} />;
+        break;
       case "product_processing":
-        return <ProductProcessingVerifyPage onStartProcessing={openProcessingTask} isActive={isActive} />;
+        content = <ProductProcessingVerifyPage onStartProcessing={openProcessingTask} isActive={isActive} />;
+        break;
       case "product_processing_history":
-        return <ProductProcessingHistoryPage onOpenTask={openProcessingTaskDetail} onOpenPrecheck={openProcessingPrecheck} />;
+        content = <ProductProcessingHistoryPage onOpenTask={openProcessingTaskDetail} onOpenPrecheck={openProcessingPrecheck} />;
+        break;
       case "product_processing_tasks":
-        return tab.taskId != null ? (
+        content = tab.taskId != null ? (
           <ProductProcessingPrecheckPage taskId={tab.taskId} initialChangeSetId={tab.dimensionChangeSetId} onOpenDimensionItem={openDimensionItem} isActive={isActive} />
         ) : (
           <ProductProcessingTaskPage
@@ -464,21 +485,29 @@ export function WorkspaceShell({ currentRole = "operator", onSignOut, playEntryA
             onOpenPrecheck={openProcessingPrecheck}
           />
         );
+        break;
       case "combo_generate":
-        return <ComboKitPage isActive={isActive} initialSetId={tab.initialSetId} />;
+        content = <ComboKitPage isActive={isActive} initialSetId={tab.initialSetId} />;
+        break;
       case "combo_prompt_preset":
-        return <ComboKitPromptPresetPage isActive={isActive} />;
+        content = <ComboKitPromptPresetPage isActive={isActive} />;
+        break;
       case "combo_history":
-        return <ComboKitHistoryPage isActive={isActive} onOpenSet={openComboGenerate} />;
+        content = <ComboKitHistoryPage isActive={isActive} onOpenSet={openComboGenerate} />;
+        break;
       case "dimension_canvas":
-        return <DimensionCanvasPage initialBatchId={tab.dimensionBatchId} initialItemId={tab.dimensionItemId} onOpenPrecheck={openProcessingPrecheck} isActive={isActive} />;
+        content = <DimensionCanvasPage initialBatchId={tab.dimensionBatchId} initialItemId={tab.dimensionItemId} onOpenPrecheck={openProcessingPrecheck} isActive={isActive} />;
+        break;
       case "pod_customization":
-        return <PodCustomizationPage isActive={isActive} />;
+        content = <PodCustomizationPage isActive={isActive} />;
+        break;
       case "personal_center":
-        return <PersonalCenterPage />;
+        content = <PersonalCenterPage />;
+        break;
       default:
-        return <EmptyModulePage module={modulesById.get(tab.moduleId)!} />;
+        content = <EmptyModulePage module={modulesById.get(tab.moduleId)!} />;
     }
+    return <Suspense fallback={<ModuleFallback />}>{content}</Suspense>;
   };
 
   const sidebarIsCollapsed = sidebarCollapsed || isNarrowDesktop;
