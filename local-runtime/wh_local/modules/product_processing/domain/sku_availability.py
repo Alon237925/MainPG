@@ -74,23 +74,6 @@ def load(raw: Any) -> dict[str, Any]:
     return dict(value) if isinstance(value, Mapping) else {}
 
 
-def is_usable_source(
-    stored: Mapping[str, Any] | None,
-    current_fingerprint: str,
-) -> bool:
-    """落库结论对当前图集是否仍成立，且判定为「可用规格原图」。"""
-    if not stored:
-        return False
-    if bool(stored.get("scope_relaxed")):
-        # 判定范围被兜底放宽，无法保证覆盖导出实际使用的图集。
-        return False
-    if str(stored.get("status") or "") != STATUS_CLEAN:
-        return False
-    if not current_fingerprint:
-        return False
-    return current_fingerprint == str(stored.get("fingerprint") or "")
-
-
 def resolve_draft_usable(
     stored: Mapping[str, Any] | None,
     *,
@@ -101,20 +84,91 @@ def resolve_draft_usable(
 
     ``fingerprint_error=True`` 表示当前图集读不出来（媒体不可用），保守按未判定处理。
     """
+    judged, clean, reason = _resolve(stored, current_fingerprint=current_fingerprint, fingerprint_error=fingerprint_error)
+    return {
+        "judged": judged,
+        "clean": clean,
+        "usable_source": clean,
+        "reason": reason,
+        # 结论有效时一并给出「检出中文的 SKU」，供导出侧兜底剔除。
+        "chinese_variant_keys": chinese_variant_keys(stored) if judged else [],
+    }
+
+
+def resolve_chinese_variant_keys(
+    stored: Mapping[str, Any] | None,
+    *,
+    current_fingerprint: str | None,
+    fingerprint_error: bool = False,
+) -> list[str]:
+    """导出侧兜底剔除：判定有效且检出中文的 SKU 变种导出键。
+
+    与 ``resolve_draft_usable`` 共用有效性口径（未判定 / 口径放宽 / 指纹失效一律不生效），
+    避免拿过期结论误删导出行。
+    """
+    judged, _clean, _reason = _resolve(
+        stored, current_fingerprint=current_fingerprint, fingerprint_error=fingerprint_error,
+    )
+    return chinese_variant_keys(stored) if judged else []
+
+
+def chinese_variant_keys(stored: Mapping[str, Any] | None) -> list[str]:
+    """落库结论里「检出中文」的变种导出键（去重排序）。
+
+    ``all_sku_chinese`` 表示该链接所有有规格图的 SKU 都含中文：此时不做 SKU 级剔除
+    （否则整条商品会从导出表格里消失），按现状回退商品主图，因此返回空。
+    """
+    if not stored or bool(stored.get("all_sku_chinese")):
+        return []
+    raw = stored.get("chinese_variant_keys") or []
+    if not isinstance(raw, (list, tuple)):
+        return []
+    return sorted({str(value).strip() for value in raw if str(value or "").strip()})
+
+
+def merge_excluded_variant_keys(
+    overrides: dict[str, Any], keys: Sequence[str],
+) -> dict[str, Any]:
+    """把「检出中文的 SKU」并入 ``excluded_variant_keys``（与手工排除取并集）。
+
+    就地改写并返回 ``overrides``；没有可并入的键时原样返回，避免把「未设置」写成显式空。
+    """
+    normalized = [str(key).strip() for key in keys if str(key or "").strip()]
+    if not normalized:
+        return overrides
+    merged = [
+        str(key).strip()
+        for key in (overrides.get("excluded_variant_keys") or [])
+        if str(key or "").strip()
+    ]
+    known = set(merged)
+    for key in normalized:
+        if key not in known:
+            merged.append(key)
+            known.add(key)
+    overrides["excluded_variant_keys"] = merged
+    return overrides
+
+
+def _resolve(
+    stored: Mapping[str, Any] | None,
+    *,
+    current_fingerprint: str | None,
+    fingerprint_error: bool,
+) -> tuple[bool, bool, str]:
+    """结论有效性判定，返回 ``(是否明确判定且有效, 是否判定干净, reason)``。"""
     if not stored:
-        return {"judged": False, "clean": False, "usable_source": False, "reason": "never_judged"}
+        return False, False, "never_judged"
     if bool(stored.get("scope_relaxed")):
-        return {"judged": False, "clean": False, "usable_source": False, "reason": "scope_relaxed"}
+        return False, False, "scope_relaxed"
     status = str(stored.get("status") or "")
     if status not in DECIDED_STATUSES:
-        reason = "not_decided" if not status else status
-        return {"judged": False, "clean": False, "usable_source": False, "reason": reason}
+        return False, False, "not_decided" if not status else status
     if fingerprint_error:
-        return {"judged": False, "clean": False, "usable_source": False, "reason": "media_unavailable"}
+        return False, False, "media_unavailable"
     if not current_fingerprint or current_fingerprint != str(stored.get("fingerprint") or ""):
-        return {"judged": False, "clean": False, "usable_source": False, "reason": "fingerprint_stale"}
-    clean = status == STATUS_CLEAN
-    return {"judged": True, "clean": clean, "usable_source": clean, "reason": status}
+        return False, False, "fingerprint_stale"
+    return True, status == STATUS_CLEAN, status
 
 
 def keep_active_sku_views(

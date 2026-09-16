@@ -40,6 +40,7 @@ from PySide6.QtGui import (
     QColor,
     QFont,
     QFontDatabase,
+    QIcon,
     QLinearGradient,
     QPainter,
     QPen,
@@ -201,6 +202,22 @@ def _asset_path(name: str) -> str:
     """返回 launcher 包内 assets 目录下文件的绝对路径。"""
     pkg = Path(__file__).resolve().parent
     return str(pkg / "assets" / name)
+
+
+def _app_icon() -> QIcon:
+    """返回应用图标（「界」字 app-icon.ico），用于窗口/任务栏。
+
+    PyInstaller onefile 时资源解包到 sys._MEIPASS；源码运行时在 local-runtime 根目录。
+    """
+    candidates = []
+    meipass = getattr(sys, "_MEIPASS", "")
+    if meipass:
+        candidates.append(Path(meipass) / "app-icon.ico")
+    candidates.append(Path(__file__).resolve().parent.parent / "app-icon.ico")
+    for path in candidates:
+        if path.is_file():
+            return QIcon(str(path))
+    return QIcon()
 
 
 def _load_iconfont() -> int:
@@ -2388,6 +2405,9 @@ def _use_light_titlebar(window: QWidget) -> None:
 def main() -> int:
     app = QtWidgets.QApplication(sys.argv)
     app.setFont(QFont("Microsoft YaHei", 10))
+
+    # 应用图标（标题栏 + 任务栏，含 splash 与主窗口）
+    app.setWindowIcon(_app_icon())
 
     # 加载图标字体
     _load_iconfont()

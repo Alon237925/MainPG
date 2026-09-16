@@ -1940,6 +1940,14 @@ class PreviewImageService:
             )
             if variant_image_urls:
                 overrides["variant_image_urls"] = variant_image_urls
+            # 草稿 SKU 结论随行下发（指纹校验需要当前图集，工作簿是纯函数模块拿不到）：
+            # auto 策略的原图可用性 + 含中文 SKU 的兜底剔除键。后者让「SKU 规格图检出中文」
+            # 的变种一律不导出，前端没提交（关掉「优化链接 SKU」）、手工清除或老批次数据
+            # 也照样过滤。
+            sku_state = self._row_sku_availability(draft_id, workspace_id, drafts_by_id)
+            sku_availability.merge_excluded_variant_keys(
+                overrides, sku_state.get("chinese_variant_keys") or [],
+            )
             result["preview_overrides"] = overrides
             # SKU 规格图来源：老批次结果里可能没有 source_variant_records，
             # 从草稿 raw_payload 回填，保证店小秘/妙手导出能按 SKU 落规格图。
@@ -1950,11 +1958,8 @@ class PreviewImageService:
                     variants = raw_payload.get("source_variant_records")
                     if variants:
                         result["source_variant_records"] = variants
-            # auto 策略：解析可用性结论随行下发（指纹校验需要当前图集，工作簿是纯
-            # 函数模块拿不到），口径与 service.mark_row_auto_variant_source 一致。
-            result["sku_source_usable"] = self._sku_source_usable(
-                draft_id, workspace_id, drafts_by_id
-            )
+            # auto 策略：原图是否可用（口径与 service.mark_row_sku_availability 一致）。
+            result["sku_source_usable"] = bool(sku_state.get("usable_source"))
             rows.append(result)
         return rows
 
@@ -2003,21 +2008,30 @@ class PreviewImageService:
             return {"judged": False, "clean": False, "usable_source": False, "reason": "media_unavailable"}
         return sku_availability.resolve_draft_usable(stored, current_fingerprint=current)
 
-    def _sku_source_usable(
+    def _row_sku_availability(
         self,
         draft_id: int,
         workspace_id: str,
         drafts_by_id: Mapping[int, Mapping[str, Any]],
-    ) -> bool:
-        """该草稿的规格图是否已明确判定「可用且结论未失效」。"""
+    ) -> dict[str, Any]:
+        """该草稿的规格图可用性结论（用预加载草稿，避免逐条查库）。
+
+        返回 ``resolve_draft_usable`` 的口径（``judged``/``clean``/``usable_source``/
+        ``reason``），外加 ``chinese_variant_keys``：判定有效时检出中文、导出应整行剔除的
+        SKU 变种键。未判定 / 口径放宽 / 指纹失效一律按未判定返回（不剔除任何行）。
+        """
         draft = drafts_by_id.get(draft_id) or {}
         stored = sku_availability.load(draft.get("sku_availability_raw"))
-        if not stored:
-            return False
-        if bool(stored.get("scope_relaxed")) or str(stored.get("status") or "") not in sku_availability.DECIDED_STATUSES:
-            return False
+        if (
+            not stored
+            or bool(stored.get("scope_relaxed"))
+            or str(stored.get("status") or "") not in sku_availability.DECIDED_STATUSES
+        ):
+            return sku_availability.resolve_draft_usable(None, current_fingerprint=None)
         if self.media_assets is None:
-            return False
+            return sku_availability.resolve_draft_usable(
+                stored, current_fingerprint=None, fingerprint_error=True,
+            )
         try:
             groups = self.media_assets.list_draft_media(workspace_id, int(draft_id))
             views, _relaxed = sku_availability.keep_active_sku_views(
@@ -2030,8 +2044,10 @@ class PreviewImageService:
                 ]
             )
         except Exception:  # noqa: BLE001 - 当前图集读不出来时保守按未判定
-            return False
-        return sku_availability.is_usable_source(stored, current)
+            return sku_availability.resolve_draft_usable(
+                stored, current_fingerprint=None, fingerprint_error=True,
+            )
+        return sku_availability.resolve_draft_usable(stored, current_fingerprint=current)
 
     def _source_main_fallback(
         self,

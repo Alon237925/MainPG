@@ -65,6 +65,7 @@ from ..modules.dashboard.router import create_router as create_dashboard_router
 from ..modules.themes.router import create_themes_router
 from ..modules.ai_service import create_router as create_ai_service_router
 from ..modules.ai_service.temporary_cos import TemporaryCosStore
+from ..modules.guide import create_router as create_guide_router
 from ..modules.help_agent import create_router as create_help_agent_router
 from ..messages import (
     AnnouncementSyncService,
@@ -456,6 +457,8 @@ def create_app(database_path: Path | None = None) -> FastAPI:
         app.include_router(create_admin_proxy_router(remote_customer_auth, customer_sessions))
 
     app.include_router(create_basic_settings_router(db_path))
+    # 新手引导配置：前端播放引导时读取，管理员在工作台里可视化编辑后写回。
+    app.include_router(create_guide_router(db_path))
     # 主题商店资源：优先读运行根目录下的源码包(wh_local/data/themes)，打包构建
     # 时再回退到 PyInstaller 解包目录。客户端走公网下载，此路由仅服务端/开发机需要，
     # 找不到目录时挂空列表，不影响启动。
