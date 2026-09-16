@@ -42,6 +42,8 @@ import type { DimensionCanvasItem, DimensionNotification } from "../../modules/p
 import { DimensionNotificationRefreshFence } from "../../modules/product_processing/data/dimensionNotificationRefresh";
 import { EmptyModulePage } from "../../shared/components/EmptyModulePage";
 import { BrandEntryAnimation } from "../../shared/components/BrandEntryAnimation";
+import { hasSeenGuide, markGuideSeen, startGuideTour, type GuidePageId } from "../../shared/components/GuideTour";
+import { HelpAgentWidget } from "../../modules/help_agent/components/HelpAgentWidget";
 import { WorkspaceTabScrollStore } from "./workspaceTabState";
 
 type WorkspaceShellProps = {
@@ -256,6 +258,35 @@ export function WorkspaceShell({ currentRole = "operator", onSignOut, playEntryA
     setWorkspaceNotice("");
   };
 
+  const guideTourRef = useRef<ReturnType<typeof startGuideTour> | null>(null);
+  const guideAutoStartedRef = useRef(false);
+
+  /** 启动蒙版引导：先确保落在采集页，跨页时由 onRequestPage 切页。 */
+  const startGuide = () => {
+    if (guideTourRef.current?.isActive()) return;
+    openModule("daily_selection");
+    guideTourRef.current = startGuideTour({
+      onRequestPage: (page: GuidePageId) => openModule(page),
+      onFinish: () => {
+        guideTourRef.current = null;
+        markGuideSeen();
+      },
+    });
+  };
+
+  // 首次进入工作台自动弹一次；看过之后只保留顶部栏的手动入口。
+  // startGuide 每次渲染都是新函数，用 ref 取最新实现，避免 effect 被重渲染反复重排定时器。
+  const startGuideRef = useRef(startGuide);
+  startGuideRef.current = startGuide;
+  useEffect(() => {
+    if (playEntryAnimation || guideAutoStartedRef.current || hasSeenGuide()) return;
+    const timer = window.setTimeout(() => {
+      guideAutoStartedRef.current = true;
+      startGuideRef.current();
+    }, 800);
+    return () => window.clearTimeout(timer);
+  }, [playEntryAnimation]);
+
   const openComboGenerate = (setId: string) => {
     setExpandedGroupId("combo_workflow");
     setTabs((current) => {
@@ -450,12 +481,12 @@ export function WorkspaceShell({ currentRole = "operator", onSignOut, playEntryA
       case "price_verification":
         return <PriceVerificationPage isActive={isActive} />;
       case "product_processing":
-        return <ProductProcessingVerifyPage onStartProcessing={openProcessingTask} isActive={isActive} />;
+        return <ProductProcessingVerifyPage onStartProcessing={openProcessingTask} onOpenPrecheck={openProcessingPrecheck} onOpenCollection={() => openModule("daily_selection")} isActive={isActive} />;
       case "product_processing_history":
         return <ProductProcessingHistoryPage onOpenTask={openProcessingTaskDetail} onOpenPrecheck={openProcessingPrecheck} />;
       case "product_processing_tasks":
         return tab.taskId != null ? (
-          <ProductProcessingPrecheckPage taskId={tab.taskId} initialChangeSetId={tab.dimensionChangeSetId} onOpenDimensionItem={openDimensionItem} isActive={isActive} />
+          <ProductProcessingPrecheckPage taskId={tab.taskId} initialChangeSetId={tab.dimensionChangeSetId} onOpenDimensionItem={openDimensionItem} onOpenDraftPool={() => openModule("product_processing")} isActive={isActive} />
         ) : (
           <ProductProcessingTaskPage
             initialTaskId={tab.taskRunId}
@@ -502,7 +533,7 @@ export function WorkspaceShell({ currentRole = "operator", onSignOut, playEntryA
         badges={{ dimension_canvas: dimensionNotifications.length }}
       />
       <section className="workspace-main">
-        <TopNavigation sidebarPinned={!sidebarIsCollapsed} activeKey={activeTabKey} tabs={tabs} onToggleSidebar={() => setSidebarCollapsed((value) => !value)} onSelectTab={selectTab} onCloseTab={closeTab} onOpenPersonalCenter={() => openModule("personal_center")} onSignOut={onSignOut} />
+        <TopNavigation sidebarPinned={!sidebarIsCollapsed} activeKey={activeTabKey} tabs={tabs} onToggleSidebar={() => setSidebarCollapsed((value) => !value)} onSelectTab={selectTab} onCloseTab={closeTab} onOpenPersonalCenter={() => openModule("personal_center")} onOpenGuide={startGuide} onSignOut={onSignOut} />
         <div className="content-card" ref={contentRef}>
           {workspaceNotice && (
             <div className="workspace-notice" role="status">
@@ -543,6 +574,7 @@ export function WorkspaceShell({ currentRole = "operator", onSignOut, playEntryA
       >
         <span aria-hidden="true">↑</span>
       </button>
+      <HelpAgentWidget />
       <BrandEntryAnimation active={playEntryAnimation} onComplete={onEntryAnimationComplete} />
     </main>
   );

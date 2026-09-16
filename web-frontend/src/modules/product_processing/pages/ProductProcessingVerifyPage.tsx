@@ -2,6 +2,7 @@ import { useEffect, useMemo, useRef, useState } from 'react';
 import { createPortal } from 'react-dom';
 import { useChangePoller } from '../../../shared/hooks/useChangePoller';
 import { SkuBatchManager } from '../components/SkuBatchManager';
+import { ProductFlowCard } from '../components/ProductFlowSteps';
 import { ppRequest, type ApiContext } from '../api/client';
 import { productProcessingApiContext } from '../api/context';
 import { type DraftCollectionBatch } from '../api/productProcessingApi';
@@ -10,6 +11,7 @@ import type {
   DraftSummary,
   DraftVariant,
   ProductProcessingOptions,
+  TaskHistoryItem,
 } from '../types';
 import '../styles/ProductProcessingVerifyPage.css';
 
@@ -29,6 +31,10 @@ type DeletedDraftBatch = {
 
 type Props = {
   onStartProcessing?: (draftIds: number[], options: ProductProcessingOptions, premiumDraftIds: number[]) => boolean;
+  /** 打开「结果预检」页（工作流第 03 步） */
+  onOpenPrecheck?: (taskId: number) => void;
+  /** 空态 CTA：跳到「采集」页把商品入池 */
+  onOpenCollection?: () => void;
   isActive?: boolean;
 };
 
@@ -68,7 +74,7 @@ function draftDirty(draft: DraftSummary, edits: Record<number, DraftEdit>): bool
   );
 }
 
-export function ProductProcessingVerifyPage({ onStartProcessing, isActive = true }: Props) {
+export function ProductProcessingVerifyPage({ onStartProcessing, onOpenPrecheck, onOpenCollection, isActive = true }: Props) {
   const ctx = api();
   const [options, setOptions] = useState<ProductProcessingOptions>({
     targetSite: 'US',
@@ -116,10 +122,12 @@ export function ProductProcessingVerifyPage({ onStartProcessing, isActive = true
   const [draftBatches, setDraftBatches] = useState<DraftCollectionBatch[]>([]);
   const [selectedBatchIds, setSelectedBatchIds] = useState<Set<string>>(new Set());
   const [activeBatchId, setActiveBatchId] = useState<string | null>(null);
-  const [batchesOpen, setBatchesOpen] = useState(true);
+  const [batchesOpen, setBatchesOpen] = useState(false);
   const [batchBusy, setBatchBusy] = useState(false);
   // 批次列表是否还有更多（后端 limit 上限 200，超出时提示，避免以为“只有这么多”）
   const [batchesHasMore, setBatchesHasMore] = useState(false);
+  // 最近一次 AI 处理任务：工作流第 03 步「结果预检」的入口与可用性判断依据。
+  const [latestTask, setLatestTask] = useState<TaskHistoryItem | null>(null);
   const draftListRef = useRef<HTMLDivElement>(null);
   const stickyToolbarRef = useRef<HTMLDivElement>(null);
   const stickySpacerRef = useRef<HTMLDivElement>(null);
@@ -328,6 +336,16 @@ export function ProductProcessingVerifyPage({ onStartProcessing, isActive = true
     }
   };
 
+  // 工作流第 03 步的可用性依赖最近一次处理任务；失败不影响草稿池主流程。
+  const refreshLatestTask = async () => {
+    try {
+      const data = await ppRequest<{ tasks: TaskHistoryItem[] }>(ctx, `${API_BASE}/tasks/history?limit=1&offset=0`);
+      setLatestTask(data.tasks?.[0] ?? null);
+    } catch (err) {
+      console.warn('latest task refresh failed', err);
+    }
+  };
+
   const toggleBatch = (batchId: string) => {
     setSelectedBatchIds((prev) => {
       const next = new Set(prev);
@@ -383,6 +401,7 @@ export function ProductProcessingVerifyPage({ onStartProcessing, isActive = true
   useEffect(() => {
     refresh().catch(fail);
     refreshBatches();
+    refreshLatestTask();
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, []);
 
@@ -398,7 +417,7 @@ export function ProductProcessingVerifyPage({ onStartProcessing, isActive = true
   useChangePoller({
     url: `${API_BASE}/drafts/revision`,
     headers: { "X-Workspace-ID": ctx.workspaceId },
-    onChange: () => { refresh(true).catch(() => undefined); refreshBatches(); },
+    onChange: () => { refresh(true).catch(() => undefined); refreshBatches(); refreshLatestTask(); },
   });
 
   const toggleDraft = (id: number) => {
@@ -637,8 +656,29 @@ export function ProductProcessingVerifyPage({ onStartProcessing, isActive = true
     setEdits((prev) => { const next = { ...prev }; for (const id of ids) delete next[id]; return next; });
   };
 
+  // 工作流步骤可用性：草稿池常驻；处理设置需要勾选；结果预检需要已有处理任务。
+  const canOpenFlowStep = (id: string) => {
+    if (id === 'settings') return selectedIds.size > 0;
+    if (id === 'precheck') return Boolean(latestTask && onOpenPrecheck);
+    return true;
+  };
+
+  const openFlowStep = (id: string) => {
+    if (!canOpenFlowStep(id)) {
+      setError(id === 'settings' ? '请先勾选需要处理的草稿，再进入处理设置。' : '暂无处理任务，完成一次 AI 处理后即可查看结果预检。');
+      setMessage('');
+      return;
+    }
+    if (id === 'settings') { void handleProcess(false); return; }
+    if (id === 'precheck') { if (latestTask) onOpenPrecheck?.(latestTask.task_id); return; }
+    draftListRef.current?.scrollIntoView({ behavior: 'smooth', block: 'start' });
+  };
+
+  // 草稿池为空时整页纵向撑满内容区，把下方留白收进空态块里居中展示。
+  const isPoolEmpty = totalDrafts === 0;
+
   return (
-    <div className="verify-page">
+    <div className={`verify-page${isPoolEmpty ? ' is-pool-empty' : ''}`}>
       <header className="verify-commandbar">
         <div className="verify-command-title">
           <h1>产品处理草稿池</h1>
@@ -651,11 +691,17 @@ export function ProductProcessingVerifyPage({ onStartProcessing, isActive = true
         </div>
       </header>
 
+      <ProductFlowCard
+        activeId="pool"
+        canOpen={canOpenFlowStep}
+        onOpen={openFlowStep}
+      />
+
       {(message || error) && (
         <div className={`verify-message ${error ? 'error' : ''}`}>{error || message}</div>
       )}
 
-      <section className="verify-section" ref={draftListRef}>
+      <section className={`verify-section${isPoolEmpty ? ' is-empty' : ''}`} ref={draftListRef}>
         <div className="verify-sticky-toolbar-spacer" ref={stickySpacerRef}>
         <div className={`verify-sticky-toolbar ${isStickyToolbar ? 'is-stuck' : ''}`} ref={stickyToolbarRef}>
         <div className="verify-section-head">
@@ -794,16 +840,61 @@ export function ProductProcessingVerifyPage({ onStartProcessing, isActive = true
           )}
         </div>
 
-        {totalDrafts === 0 && (
-          <p className={`verify-empty${listError ? ' is-error' : ''}`}>
-            {listError
-              ? <>草稿加载失败：{listError}（可点击右上方「刷新」重试）</>
-              : listLoading
-                ? '正在加载草稿…'
-                : selectableDrafts.length > 0
-                  ? '当前搜索 / 筛选条件下没有匹配的草稿。'
-                  : '暂无待处理草稿，去「采集」或「每日选品」入池后再回来刷新。'}
-          </p>
+        {isPoolEmpty && (
+          <div className={`verify-empty-state${listError ? ' is-error' : ''}`}>
+            <span className={`verify-empty-icon${listLoading ? ' is-loading' : ''}`} aria-hidden="true">
+              <i
+                className={`iconfont ${
+                  listError ? 'icon-warning-circle' : listLoading ? 'icon-sync' : selectableDrafts.length > 0 ? 'icon-search' : 'icon-appstore'
+                }`}
+              />
+            </span>
+            <strong className="verify-empty-title">
+              {listError
+                ? '草稿加载失败'
+                : listLoading
+                  ? '正在加载草稿…'
+                  : selectableDrafts.length > 0
+                    ? '没有匹配的草稿'
+                    : '草稿池还是空的'}
+            </strong>
+            <p className="verify-empty-desc">
+              {listError
+                ? `${listError}（可点击右上方「刷新」重试）`
+                : listLoading
+                  ? '正在同步本地草稿池数据，请稍候。'
+                  : selectableDrafts.length > 0
+                    ? '当前搜索 / 筛选条件下没有结果，换个关键词或清空筛选再看看。'
+                    : '从「采集」或「每日选品」把商品入池，再回到这里刷新，即可开始 AI 处理。'}
+            </p>
+            {!listLoading && (
+              <div className="verify-empty-actions">
+                {listError ? (
+                  <button type="button" className="primary" onClick={() => refresh().catch(fail)} disabled={loading}>
+                    <i className="iconfont icon-sync" aria-hidden="true" />重新加载
+                  </button>
+                ) : selectableDrafts.length > 0 ? (
+                  <button
+                    type="button"
+                    onClick={() => { setSearchTerm(''); setSkuCountFilter(0); setHideSingleSpec(false); setPage(1); }}
+                  >
+                    <i className="iconfont icon-reload" aria-hidden="true" />清空筛选
+                  </button>
+                ) : (
+                  <>
+                    {onOpenCollection && (
+                      <button type="button" className="primary" onClick={onOpenCollection}>
+                        <i className="iconfont icon-appstore" aria-hidden="true" />去采集商品
+                      </button>
+                    )}
+                    <button type="button" onClick={() => refresh().catch(fail)} disabled={loading}>
+                      <i className="iconfont icon-sync" aria-hidden="true" />刷新草稿池
+                    </button>
+                  </>
+                )}
+              </div>
+            )}
+          </div>
         )}
         <div className="verify-draft-list">
           {pageDrafts.map((draft) => {

@@ -169,6 +169,27 @@
   border-color: rgba(217, 93, 120, 0.22);
 }
 
+/* 采集页头配套修正：上面已把 .shop-collection-header 改成浅色毛玻璃，
+   但 shop-collection.css 里它的文字是配深色 hero 渐变的白字，
+   不改成深色就会出现「白字白底」看不见。 */
+[data-theme="peach"] .shop-collection-header strong {
+  color: #473037;
+}
+
+[data-theme="peach"] .shop-collection-header p {
+  color: #7a5560;
+}
+
+[data-theme="peach"] .shop-collection-header .shop-collection-title .iconfont {
+  color: #b03a55;
+  background: rgba(217, 93, 120, 0.12);
+}
+
+[data-theme="peach"] .shop-collection-header .shop-collection-persistent {
+  color: #a8455f;
+  background: rgba(217, 93, 120, 0.14);
+}
+
 [data-theme="peach"] .shop-items-list article,
 [data-theme="peach"] .plugin-candidate-list article,
 [data-theme="peach"] .shop-batch-stats span,

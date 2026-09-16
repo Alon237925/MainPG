@@ -13,6 +13,7 @@ from pathlib import Path
 import re
 import secrets
 import socket
+import sqlite3
 import threading
 import time
 from typing import Any
@@ -1089,6 +1090,27 @@ def create_auth_app(database_path: Path | None = None) -> FastAPI:
                 "SELECT COUNT(*) FROM customer_feedback WHERE account_id = ?",
                 (str(account["account_id"]),),
             ).fetchone()[0]
+            # 关联查询管理员真正推送给用户的回复（feedback_replies），与内部备注
+            # admin_note 区分开：admin_note 仅是后台暂存备注，不应作为"官方回复"展示给用户。
+            replies_by_feedback: dict[str, list[dict[str, str]]] = {}
+            feedback_ids = [str(row["feedback_id"]) for row in rows]
+            if feedback_ids:
+                try:
+                    placeholders = ",".join("?" * len(feedback_ids))
+                    reply_rows = conn.execute(
+                        f"SELECT feedback_id, content, created_at FROM feedback_replies "
+                        f"WHERE feedback_id IN ({placeholders}) "
+                        f"ORDER BY created_at ASC, id ASC",
+                        feedback_ids,
+                    ).fetchall()
+                    for reply in reply_rows:
+                        replies_by_feedback.setdefault(str(reply["feedback_id"]), []).append({
+                            "content": str(reply["content"] or ""),
+                            "created_at": str(reply["created_at"] or ""),
+                        })
+                except sqlite3.OperationalError:
+                    # feedback_replies 表尚未创建（旧库）时降级为空回复，不阻塞"我的反馈"。
+                    replies_by_feedback = {}
         return {
             "ok": True,
             "feedback": [
@@ -1101,6 +1123,7 @@ def create_auth_app(database_path: Path | None = None) -> FastAPI:
                     "total_image_bytes": int(row["total_image_bytes"]),
                     "status": str(row["status"]),
                     "admin_note": str(row["admin_note"] or ""),
+                    "replies": replies_by_feedback.get(str(row["feedback_id"]), []),
                     "status_updated_at": str(row["status_updated_at"] or ""),
                     "app_version": str(row["app_version"] or ""),
                     "platform": str(row["platform"] or ""),

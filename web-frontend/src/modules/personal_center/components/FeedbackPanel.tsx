@@ -8,6 +8,7 @@ import {
   type FeedbackHistoryItem,
   type FeedbackImagePayload,
 } from "../api/personalCenterApi";
+import { mergePrefillContent } from "../data/feedbackPrefill";
 
 const FEEDBACK_MAX_IMAGES = 3;
 const FEEDBACK_MAX_IMAGE_BYTES = 2 * 1024 * 1024;
@@ -31,8 +32,24 @@ function formatFeedbackTime(iso: string): string {
   }
 }
 
-export function FeedbackPanel() {
-  const [content, setContent] = useState("");
+/** 从"【我的反馈】原文\n\n【回复】xxx"的回复正文里，只取【回复】之后的内容。 */
+function extractReplyContent(content: string): string {
+  const marker = "【回复】";
+  const idx = content.indexOf(marker);
+  const reply = idx >= 0 ? content.slice(idx + marker.length) : content;
+  return reply.trim();
+}
+
+type FeedbackPanelProps = {
+  /**
+   * 预填的反馈内容。操作答疑答不上来时会把用户的原问题带过来，
+   * 用户就不用重新打一遍。
+   */
+  initialContent?: string;
+};
+
+export function FeedbackPanel({ initialContent = "" }: FeedbackPanelProps) {
+  const [content, setContent] = useState(initialContent);
   const [category, setCategory] = useState<FeedbackCategory>("suggestion");
   const [contact, setContact] = useState("");
   const [images, setImages] = useState<FeedbackImagePayload[]>([]);
@@ -60,6 +77,13 @@ export function FeedbackPanel() {
   useEffect(() => {
     void loadHistory();
   }, [loadHistory]);
+
+  // 从操作答疑跳过来时带上原问题。用「追加」而非「覆盖」，
+  // 免得把用户已经打了一半的内容冲掉。
+  useEffect(() => {
+    if (!initialContent.trim()) return;
+    setContent((current) => mergePrefillContent(current, initialContent));
+  }, [initialContent]);
 
   // 打开抽屉时重新拉取，避免展示过期状态；Esc 关闭。
   useEffect(() => {
@@ -276,7 +300,15 @@ export function FeedbackPanel() {
                         {item.image_count > 0 && <span className="feedback-list-images">含 {item.image_count} 张图</span>}
                       </div>
                       <p className="feedback-list-content">{item.content}</p>
-                      {item.admin_note && <p className="feedback-list-note">官方回复：{item.admin_note}</p>}
+                      {item.replies && item.replies.length > 0 && (
+                        <div className="feedback-list-replies">
+                          {item.replies.map((reply, replyIndex) => (
+                            <p key={replyIndex} className="feedback-list-note">
+                              官方回复{formatFeedbackTime(reply.created_at) ? `（${formatFeedbackTime(reply.created_at)}）` : ""}：{extractReplyContent(reply.content)}
+                            </p>
+                          ))}
+                        </div>
+                      )}
                     </li>
                   ))}
                 </ul>

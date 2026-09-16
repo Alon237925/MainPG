@@ -330,7 +330,9 @@ export function DailySelectionPage({ view = "directions", initialDirectionId, on
       .map((item) => updatesById.get(item.id) ?? item);
     return [...defaultDirections, ...customDirections];
   }, [customDirections, removedDefaultDirectionIds, updatedDefaultDirections]);
-  const validInitialDirection = directions.some((item) => item.id === initialDirectionId) ? initialDirectionId! : directions[0].id;
+  const validInitialDirection = directions.some((item) => item.id === initialDirectionId)
+    ? initialDirectionId!
+    : directions[0]?.id ?? "";
   const [selectedDirectionId, setSelectedDirectionId] = useState(validInitialDirection);
   const selectedDirection = useMemo(
     () => directions.find((item) => item.id === selectedDirectionId) ?? directions[0],
@@ -653,23 +655,30 @@ export function DailySelectionPage({ view = "directions", initialDirectionId, on
   // SKU 补齐轮询：任务运行中每秒刷新进度；完成后刷新批次候选显示最新 SKU 数。
   useEffect(() => {
     if (!activeRun || skuRepull?.status !== "running") return;
+    let stopped = false;
     const timer = window.setInterval(async () => {
       try {
         const state = await getSkuRepullState(activeRun.run_id);
+        if (stopped) return;
         setSkuRepull(state);
         if (state.status !== "running") {
           const [refreshedRun, refreshedRuns] = await Promise.all([
             getSelectionRun(activeRun.run_id),
             listSelectionRuns(),
           ]);
+          if (stopped) return;
           setActiveRun(refreshedRun);
           setRuns(refreshedRuns);
         }
       } catch (requestError) {
+        if (stopped) return;
         setError(requestError instanceof Error ? requestError.message : "SKU 补齐进度读取失败");
       }
     }, 1500);
-    return () => window.clearInterval(timer);
+    return () => {
+      stopped = true;
+      window.clearInterval(timer);
+    };
   }, [activeRun, skuRepull?.status]);
 
   // 打开批次时同步一次空采集自动重试状态（内存任务或历史轮次持久化）；
@@ -709,12 +718,15 @@ export function DailySelectionPage({ view = "directions", initialDirectionId, on
   // 空采集自动重试轮询：运行中每秒刷新状态；结束后刷新批次展示最新候选。
   useEffect(() => {
     if (!activeRun || collectionRetry?.status !== "running") return;
+    let stopped = false;
     const timer = window.setInterval(async () => {
       try {
         const state = await getCollectionRetryState(activeRun.run_id);
+        if (stopped) return;
         setCollectionRetry(state);
         if (state.status !== "running") {
           const run = await getSelectionRun(activeRun.run_id);
+          if (stopped) return;
           setActiveRun(run);
           setSelectedCandidates([]);
           void listSelectionRuns().then(setRuns).catch(() => undefined);
@@ -723,10 +735,14 @@ export function DailySelectionPage({ view = "directions", initialDirectionId, on
           }
         }
       } catch (requestError) {
+        if (stopped) return;
         setError(requestError instanceof Error ? requestError.message : "空采集重试进度读取失败");
       }
     }, 1500);
-    return () => window.clearInterval(timer);
+    return () => {
+      stopped = true;
+      window.clearInterval(timer);
+    };
   }, [activeRun, collectionRetry?.status]);
 
   // 空采集：同步一次后台自动重试状态；已完成则直接刷新批次为最新候选。
@@ -936,6 +952,10 @@ export function DailySelectionPage({ view = "directions", initialDirectionId, on
       throw new Error("采集数量必须是正整数");
     }
     const normalizedKeywords = keywords.split(/[，,\n]/).map((item) => item.trim()).filter(Boolean).slice(0, 5);
+    // 只填分隔符时 trim 非空但归一化后为空，必须在提交前拦住，否则后端会直接拒绝。
+    if (mode === "keyword" && normalizedKeywords.length === 0) {
+      throw new Error("关键词不能只填分隔符，请至少填写一个有效关键词");
+    }
     const criteria: DailySelectionCriteria = {
       keywords: mode === "image" ? normalizedKeywords : normalizedKeywords,
       selection_scope: scope,
@@ -964,6 +984,19 @@ export function DailySelectionPage({ view = "directions", initialDirectionId, on
     if (parsedMaxSkuPrice !== undefined) criteria.max_sku_price = parsedMaxSkuPrice;
     if (parsedMinSkuStock !== undefined) criteria.min_sku_stock = parsedMinSkuStock;
     if (parsedMaxSkuStock !== undefined) criteria.max_sku_stock = parsedMaxSkuStock;
+    // 上下限写反属于用户常见笔误，前端先拦，避免等到后端校验才报错。
+    if (parsedMinPrice !== undefined && parsedMaxPrice !== undefined && parsedMinPrice > parsedMaxPrice) {
+      throw new Error("最低价格不能大于最高价格");
+    }
+    if (parsedMinSkuCount !== undefined && parsedMaxSkuCount !== undefined && parsedMinSkuCount > parsedMaxSkuCount) {
+      throw new Error("SKU 规格数下限不能大于上限");
+    }
+    if (parsedMinSkuPrice !== undefined && parsedMaxSkuPrice !== undefined && parsedMinSkuPrice > parsedMaxSkuPrice) {
+      throw new Error("SKU 最低价不能大于 SKU 最高价");
+    }
+    if (parsedMinSkuStock !== undefined && parsedMaxSkuStock !== undefined && parsedMinSkuStock > parsedMaxSkuStock) {
+      throw new Error("SKU 库存下限不能大于上限");
+    }
 
     criteria.collection_mode = mode;
     criteria.collection_platform = platform === "taobao" ? "taobao" : "1688";

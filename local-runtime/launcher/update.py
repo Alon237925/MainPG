@@ -27,13 +27,13 @@ from functools import total_ordering
 from pathlib import Path
 from typing import Any, Callable, Iterable, Mapping
 from urllib.parse import urlparse
-from urllib.request import urlopen
+from urllib.request import Request, urlopen
 
 from cryptography.exceptions import InvalidSignature
 from cryptography.hazmat.primitives.asymmetric.ed25519 import Ed25519PublicKey
 
 # ---- 与 wh_local/config.py 保持同步 --------------------------------------- #
-APP_VERSION = "1.4.1"
+APP_VERSION = "1.4.4"
 UPDATE_RELEASE_HOST = "workbench.haocoming.top"
 UPDATE_MANIFEST_URL = f"https://{UPDATE_RELEASE_HOST}/mainpg/windows/manifest.json"
 UPDATE_MANIFEST_ALLOWED_HOSTS = frozenset({UPDATE_RELEASE_HOST})
@@ -151,15 +151,34 @@ def install_root() -> Path:
     return Path.cwd().resolve()
 
 
+def version_file_dirs() -> list[Path]:
+    """按优先级列出可能存放 version.json 的目录。
+
+    启动器管理的是已安装的主程序，所以优先读主程序安装目录；顺序与
+    ``core.product_exe_candidates()`` 的定位顺序保持一致，避免版本号与
+    实际启动的程序对不上。源码运行时主程序仍装在 %LOCALAPPDATA%\\MainPG，
+    只有主程序安装目录都读不到时才回退到启动器自身目录。
+    """
+    dirs: list[Path] = []
+    env_exe = os.environ.get("WH_APP_EXE")
+    if env_exe:
+        dirs.append(Path(env_exe).expanduser().resolve().parent)
+    appdata_local = os.environ.get("LOCALAPPDATA") or str(Path.home() / "AppData" / "Local")
+    dirs.append(Path(appdata_local) / "MainPG")
+    dirs.append(install_root())
+    return dirs
+
+
 def current_version() -> str:
-    """当前版本：读 version.json 兜底 APP_VERSION（复用 config 逻辑）。"""
-    try:
-        data = json.loads((install_root() / "version.json").read_text(encoding="utf-8"))
+    """当前版本：读主程序安装目录的 version.json，兜底 APP_VERSION。"""
+    for directory in version_file_dirs():
+        try:
+            data = json.loads((directory / "version.json").read_text(encoding="utf-8"))
+        except (OSError, ValueError):
+            continue
         value = str(data.get("version") or "").strip()
         if value:
             return value
-    except (OSError, ValueError):
-        pass
     return APP_VERSION
 
 
@@ -298,21 +317,45 @@ def download_release(
     release: UpdateRelease,
     on_progress: Callable[[int, int | None, float | None], None] | None = None,
 ) -> Path:
-    """下载并校验安装包，返回本地路径。on_progress(downloaded, total, percentage)。"""
+    """下载并校验安装包，返回本地路径。on_progress(downloaded, total, percentage)。
+
+    断点续传：上一次中断留下的 ``.exe.part`` 会用 HTTP Range 从断点继续；服务端
+    不支持 Range（未返回 206）时自动丢弃分片从头下载。网络类错误保留分片以便下次
+    继续，只有 SHA-256 校验失败才删除分片（说明分片已损坏）。
+    """
     updates_dir = runtime_root() / "updates"
     updates_dir.mkdir(parents=True, exist_ok=True)
     destination = updates_dir / f"MainPG-{release.version}.exe"
     partial = destination.with_suffix(".exe.part")
-    digest = hashlib.sha256()
-    downloaded = 0
+
+    if destination.is_file() and _sha256_file(destination) == release.sha256:
+        size = destination.stat().st_size
+        if on_progress:
+            on_progress(size, size, 100.0)
+        return destination
+
+    resume_from = partial.stat().st_size if partial.is_file() else 0
+    request = Request(
+        release.installer_url,
+        headers={"Range": f"bytes={resume_from}-"} if resume_from else {},
+        method="GET",
+    )
     try:
-        source = urlopen(release.installer_url, timeout=30)  # nosec B310: manifest-validated
+        source = urlopen(request, timeout=30)  # nosec B310: manifest-validated
     except OSError as error:
         raise UpdateCheckError(f"无法下载安装包：{error}") from error
     try:
         _validate_response_url(source)
+        if resume_from and _response_status(source) != 206:
+            # 服务端不支持断点续传，丢弃分片后重头下载
+            resume_from = 0
+            partial.unlink(missing_ok=True)
         total = _content_length(source)
-        with partial.open("wb") as output:
+        if total is not None and resume_from:
+            total += resume_from
+        digest = _digest_of(partial) if resume_from else hashlib.sha256()
+        downloaded = resume_from
+        with partial.open("ab" if resume_from else "wb") as output:
             for chunk in _download_chunks(source):
                 output.write(chunk)
                 digest.update(chunk)
@@ -321,16 +364,63 @@ def download_release(
                 if on_progress:
                     on_progress(downloaded, total, percentage)
         if digest.hexdigest().lower() != release.sha256:
+            partial.unlink(missing_ok=True)
             raise UpdateCheckError("下载的安装包 SHA-256 与签名清单不一致")
         os.replace(partial, destination)
+        prune_downloads()
         return destination
-    except Exception:
-        partial.unlink(missing_ok=True)
-        raise
     finally:
         close = getattr(source, "close", None)
         if callable(close):
             close()
+
+
+# 已下载安装包最多保留几个（不含当前运行版本）
+UPDATE_KEEP = 3
+
+
+def downloaded_installers() -> list[dict[str, Any]]:
+    """已下载的安装包清单（按版本倒序），供「安装 / 回滚」使用。"""
+    updates_dir = runtime_root() / "updates"
+    items: list[dict[str, Any]] = []
+    if not updates_dir.is_dir():
+        return items
+    current = current_version()
+    for path in updates_dir.glob("MainPG-*.exe"):
+        version = path.stem[len("MainPG-"):]
+        try:
+            SemanticVersion.parse(version)
+        except ValueError:
+            continue
+        try:
+            stat = path.stat()
+        except OSError:
+            continue
+        items.append(
+            {
+                "version": version,
+                "path": str(path),
+                "size": stat.st_size,
+                "modified": stat.st_mtime,
+                "current": version == current,
+            }
+        )
+    items.sort(key=lambda item: SemanticVersion.parse(item["version"]), reverse=True)
+    return items
+
+
+def prune_downloads(keep: int = UPDATE_KEEP) -> list[str]:
+    """只保留最近 keep 个历史安装包（不动当前运行版本），返回被删除的文件名。"""
+    removable = [item for item in downloaded_installers() if not item["current"]]
+    removed: list[str] = []
+    for item in removable[keep:]:
+        path = Path(item["path"])
+        try:
+            path.unlink()
+        except OSError:
+            continue
+        removed.append(path.name)
+    return removed
 
 
 def launch_installer(path: Path) -> None:
@@ -351,6 +441,31 @@ def launch_installer(path: Path) -> None:
 def _download_chunks(source: Any) -> Iterable[bytes]:
     while chunk := source.read(1024 * 256):
         yield chunk
+
+
+def _digest_of(path: Path) -> Any:
+    """对已存在的分片做增量 SHA-256，返回 hashlib 对象（续传时复用已下载部分）。"""
+    digest = hashlib.sha256()
+    with path.open("rb") as handle:
+        while chunk := handle.read(1024 * 256):
+            digest.update(chunk)
+    return digest
+
+
+def _sha256_file(path: Path) -> str:
+    return _digest_of(path).hexdigest().lower()
+
+
+def _response_status(source: Any) -> int | None:
+    """HTTP 状态码；用于判断服务端是否支持 Range（206）。"""
+    status = getattr(source, "status", None)
+    if status is None:
+        getcode = getattr(source, "getcode", None)
+        status = getcode() if callable(getcode) else None
+    try:
+        return int(status) if status is not None else None
+    except (TypeError, ValueError):
+        return None
 
 
 def _content_length(source: Any) -> int | None:

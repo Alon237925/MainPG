@@ -158,6 +158,16 @@ class DailySelectionCriteria(BaseModel):
         except ValidationError as error:
             raise DailySelectionCriteriaError(criteria_error_message(error)) from error
 
+    @classmethod
+    def validated(cls, data: Any) -> "DailySelectionCriteria":
+        """统一构造入口：校验失败时统一抛一句可读中文，供异步任务链路复用。"""
+        try:
+            return cls.model_validate(data)
+        except DailySelectionCriteriaError:
+            raise
+        except ValidationError as error:
+            raise DailySelectionCriteriaError(criteria_error_message(error)) from error
+
     @field_validator("keywords", mode="before")
     @classmethod
     def _normalize_keywords(cls, value: object) -> tuple[str, ...]:

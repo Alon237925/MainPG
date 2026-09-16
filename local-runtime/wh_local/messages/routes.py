@@ -35,6 +35,14 @@ def create_messages_router(
             raise HTTPException(status_code=404, detail="消息不存在")
         return {"ok": True}
 
+    @router.delete("/{message_id}")
+    def delete_message(
+        message_id: int, _: Any = Depends(actor_from_authorization)
+    ) -> dict[str, Any]:
+        if not repository.delete_message(message_id):
+            raise HTTPException(status_code=404, detail="消息不存在")
+        return {"ok": True}
+
     if sync_service is not None:
 
         @router.post("/sync")

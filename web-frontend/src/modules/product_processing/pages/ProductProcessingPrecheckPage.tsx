@@ -19,6 +19,7 @@ import {
   type ListingAdvice,
 } from '../api/productProcessingApi';
 import { DimensionChangeSetReview } from '../components/DimensionChangeSetReview';
+import { ProductFlowCard } from '../components/ProductFlowSteps';
 import { PrecheckFinalizeProgress } from '../components/PrecheckFinalizeProgress';
 import { PrecheckImageManager } from '../components/PrecheckImageManager';
 import {
@@ -64,6 +65,8 @@ type Props = {
   taskId: number;
   initialChangeSetId?: string;
   onOpenDimensionItem: (taskId: number, taskItemId: number) => void;
+  /** 工作流第 01 步：回到「产品处理草稿池」 */
+  onOpenDraftPool?: () => void;
   isActive?: boolean;
 };
 
@@ -250,7 +253,7 @@ function removeSession(key: string): void {
   }
 }
 
-export function ProductProcessingPrecheckPage({ taskId, initialChangeSetId, onOpenDimensionItem, isActive = true }: Props) {
+export function ProductProcessingPrecheckPage({ taskId, initialChangeSetId, onOpenDimensionItem, onOpenDraftPool, isActive = true }: Props) {
   const ctx = useMemo(() => api(), []);
   const [preview, setPreview] = useState<PreviewResponse | null>(null);
   const [edits, setEdits] = useState<Record<number, ItemEdits>>({});
@@ -504,14 +507,29 @@ export function ProductProcessingPrecheckPage({ taskId, initialChangeSetId, onOp
   const safePage = Math.min(page, totalPages);
   const pagedItems = filteredItems.slice((safePage - 1) * pageSize, safePage * pageSize);
 
+  // 与草稿池页共用同一套「产品处理工作流」卡片：本页停在结果预检，
+  // 只能回到第 01 步草稿池（第 02 步需先勾选草稿，故本页不直达）。
+  const canOpenFlowStep = (id: string) => (id === 'pool' ? Boolean(onOpenDraftPool) : false);
+  const openFlowStep = (id: string) => {
+    if (id === 'pool') onOpenDraftPool?.();
+  };
+
   if (!preview) {
     return (
       <div className="verify-page">
         <header className="verify-commandbar">
           <div className="verify-command-title">
-            <h1>预检</h1>
+            <h1>预检与最终发布</h1>
+            <p>图片先以稳定素材 ID 在本地清单中增删排序；点击完成后，仅发布最终保留图片并生成店小秘表格。</p>
           </div>
         </header>
+
+        <ProductFlowCard
+          activeId="precheck"
+          canOpen={canOpenFlowStep}
+          onOpen={openFlowStep}
+        />
+
         {(message || error) && <div className={`verify-message ${error ? 'error' : ''}`}>{error || message}</div>}
         <p className="verify-empty">{loading ? '加载预检数据…' : '任务尚未完成，无法预检'}</p>
       </div>
@@ -601,7 +619,7 @@ export function ProductProcessingPrecheckPage({ taskId, initialChangeSetId, onOp
   };
 
   const effectiveVariantImageMode = (item: PreviewItem): VariantImageMode => (
-    editFor(item).variantImageMode ?? item.overrides.variant_image_mode ?? 'source'
+    editFor(item).variantImageMode ?? item.overrides.variant_image_mode ?? 'auto'
   );
 
   /** 被整行剔除的 SKU 变种键（本地编辑优先，其次已保存值）。 */
@@ -661,7 +679,7 @@ export function ProductProcessingPrecheckPage({ taskId, initialChangeSetId, onOp
         core_fields: { ...item.core_fields },
         image_manifest_v2: cloneManifest(item.image_manifest),
         shipping_package_records: effectiveShippingPackageOverrides(item),
-        variant_image_mode: item.overrides.variant_image_mode ?? 'source',
+        variant_image_mode: item.overrides.variant_image_mode ?? 'auto',
         excluded_variant_keys: item.overrides.excluded_variant_keys ?? [],
         variant_image_overrides: item.overrides.variant_image_overrides ?? {},
       },
@@ -1269,7 +1287,18 @@ export function ProductProcessingPrecheckPage({ taskId, initialChangeSetId, onOp
           <h1>预检与最终发布</h1>
           <p>图片先以稳定素材 ID 在本地清单中增删排序；点击完成后，仅发布最终保留图片并生成店小秘表格。</p>
         </div>
+        <div className="verify-command-stats">
+          <span><i className="iconfont icon-database" aria-hidden="true" /><strong>{allItems.length}</strong><em>项目</em></span>
+          <span><i className="iconfont icon-check-circle" aria-hidden="true" /><strong>{exportableCount}</strong><em>可导出</em></span>
+          <span><i className="iconfont icon-save" aria-hidden="true" /><strong>{dirtyCount}</strong><em>未保存</em></span>
+        </div>
       </header>
+
+      <ProductFlowCard
+        activeId="precheck"
+        canOpen={canOpenFlowStep}
+        onOpen={openFlowStep}
+      />
 
       {(message || error) && (
         <div className={`verify-message ${error ? 'error' : ''}`}>{error || message}</div>
@@ -1739,6 +1768,12 @@ export function ProductProcessingPrecheckPage({ taskId, initialChangeSetId, onOp
           modeOf={(draftId) => {
             const item = itemOfDraft(draftId);
             return item ? effectiveVariantImageMode(item) : 'source';
+          }}
+          modeSavedOf={(draftId) => {
+            const item = itemOfDraft(draftId);
+            if (!item) return true;
+            // 本地编辑值与已保存值一致 ⇒ 已生效；否则提示「待保存」。
+            return effectiveVariantImageMode(item) === (item.overrides.variant_image_mode ?? 'auto');
           }}
           onApplyMode={applyVariantImageMode}
           excludedOf={(draftId) => {

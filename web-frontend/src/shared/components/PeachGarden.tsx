@@ -297,7 +297,7 @@ export const PeachGarden = memo(function PeachGarden({ theme, uiMode }: PeachGar
       if (document.hidden) {
         cancelAnimationFrame(rafId);
         running = false;
-      } else if (!running) {
+      } else if (!running && !reduceMotion) {
         running = true;
         last = performance.now();
         rafId = requestAnimationFrame(step);
