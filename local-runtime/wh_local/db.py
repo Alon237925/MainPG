@@ -902,6 +902,7 @@ def _module_migrations() -> list[tuple[str, str, str]]:
         "011_pod_style_export_selection",
         "012_batch_execution_fencing",
         "013_style_elements",
+        "014_semi_customization",
     )
     for migration_name in pod_customization_migrations:
         sql_path = (

@@ -14,6 +14,7 @@ from wh_local.modules.pod_customization.contracts import (
     ListingFields,
     NormalizedPoint,
     NormalizedRect,
+    SemiBatchCreate,
 )
 from wh_local.modules.pod_customization.service import PodCustomizationService
 from wh_local.session import Actor
@@ -184,6 +185,68 @@ def test_startup_recovery_marks_interrupted_batch_as_retryable_failure(tmp_path:
     assert stored["status"] == "failed"
     assert stored["failed_count"] == 20
     assert "失败" in stored["error_message"]
+
+
+def _style_grid_rows(service: PodCustomizationService, batch_id: str) -> list[dict]:
+    with service.repository._connect() as connection:
+        return [
+            dict(row)
+            for row in connection.execute(
+                """SELECT status, error_message FROM pod_customization_style_grid_results
+                   WHERE batch_id = ?""",
+                (batch_id,),
+            ).fetchall()
+        ]
+
+
+def test_shutdown_fence_converges_style_grid_results(tmp_path: Path) -> None:
+    """关机围栏必须同时收敛 style_grid_results。
+
+    风格网格（v2）批次的结果行在这里，只收敛旧表 pod_customization_batch_items
+    会让未完成款式永远停在 queued——前端一直显示「等待生成」，既不是失败也不能
+    整款重试。
+    """
+    service = _service(tmp_path)
+    actor = _actor()
+    batch = service.create_semi_batch(actor, SemiBatchCreate(count=8), enqueue=False)
+
+    service.repository.pause_billing_runs_for_shutdown()
+
+    rows = _style_grid_rows(service, batch["id"])
+    assert len(rows) == 8
+    assert {row["status"] for row in rows} == {"failed"}
+    assert all("本机服务中断" in row["error_message"] for row in rows)
+    assert service.get_batch(actor, batch["id"])["status"] == "failed"
+
+
+def test_startup_recovery_converges_rows_stranded_by_an_old_shutdown_fence(tmp_path: Path) -> None:
+    """批次已是终态、结果行仍非终态时，启动恢复也必须兜住。
+
+    旧版关机围栏把批次判成 partial_failure 后就再也不会被「非终态批次」那条收敛
+    分支选中，于是残留的 queued 款式会一直卡住。
+    """
+    service = _service(tmp_path)
+    actor = _actor()
+    batch = service.create_semi_batch(actor, SemiBatchCreate(count=4), enqueue=False)
+    with service.repository._connect() as connection:
+        connection.execute(
+            "UPDATE pod_customization_style_grid_results SET status = 'queued' WHERE batch_id = ?",
+            (batch["id"],),
+        )
+        connection.execute(
+            """UPDATE pod_customization_batches
+               SET status = 'partial_failure', processed_count = 0,
+                   completed_count = 0, failed_count = 0
+               WHERE batch_id = ?""",
+            (batch["id"],),
+        )
+
+    service.recover_interrupted_work()
+
+    assert {row["status"] for row in _style_grid_rows(service, batch["id"])} == {"failed"}
+    stored = service.get_batch(actor, batch["id"])
+    assert stored["status"] == "partial_failure"
+    assert stored["failed_count"] == 1
 
 
 def test_additive_pod_schema_does_not_delete_legacy_ai_service_pod_history(tmp_path: Path) -> None:

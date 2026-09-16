@@ -66,7 +66,7 @@ class RemotePodBillingCoordinator(PodBillingCoordinator):
                 "idempotency_key": freeze_id,
                 "link_count": link_count,
                 "scope": list(status.get("scope") or []),
-                "billing_profile": "pod_random_v1",
+                "billing_profile": str(status.get("billing_profile") or "pod_random_v1"),
             },
         )
         freeze = response.get("freeze") if isinstance(response, Mapping) else None

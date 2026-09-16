@@ -11,6 +11,18 @@ from ...session import Actor
 PodFeature = Literal["pod.title", "pod.image"]
 PodCallStatus = Literal["success", "no_return"]
 
+# 计费画像：字符串由远端计费服务解释，并据此决定每 link 的随机单价区间。
+POD_BILLING_PROFILE_RANDOM = "pod_random_v1"
+POD_BILLING_PROFILE_SEMI = "pod_semi_v1"
+
+# 半定制当前使用的计费画像。
+# 暂时复用 pod_random_v1：远端计费服务的 profile 白名单尚未包含 pod_semi_v1，
+# 直接上报会被以 400 invalid batch billing profile 拒绝，建批次直接失败。
+# 代价是暂时按 40–50/款计费（约定为 32–38/款）。
+# 远端上线 pod_semi_v1 后，把下面一行改成 POD_BILLING_PROFILE_SEMI 即可；
+# 冻结与结算口径不依赖该字符串（它们看 semi_item_count），无需其他改动。
+SEMI_BILLING_PROFILE = POD_BILLING_PROFILE_RANDOM
+
 _PRODUCT_BATCH_FEATURES: tuple[tuple[PodFeature, str], ...] = (
     ("pod.title", "title"),
     ("pod.image", "four_grid"),
@@ -55,6 +67,88 @@ class PodCallOutcome:
 class PodCallPlan:
     idempotency_key: str
     calls: tuple[PodPlannedCall, ...]
+    # 上报给远端计费服务的画像字符串（决定单价区间）。
+    billing_profile: str = POD_BILLING_PROFILE_RANDOM
+    # 半定制的交付款数（>0 即为半定制）。冻结与结算的「按款展开」口径只看它，
+    # 与 billing_profile 解耦：这样才能在不改远端的前提下临时换用别的画像。
+    semi_item_count: int = 0
+
+    @classmethod
+    def for_semi_batch(cls, batch_id: str, *, count: int) -> "PodCallPlan":
+        """半定制初始批次：``count`` 为交付款数（4 的倍数），组数 = count / 4。
+
+        生图调用仍按组下发（每组一次速创四宫格），计费按款展开
+        （见 ``product_batch_freeze_payload`` / ``_semi_batch_settlement_payload``）。
+        """
+        if isinstance(count, bool) or not isinstance(count, int) or not 4 <= count <= 200:
+            raise ValueError("semi count must be between 4 and 200")
+        if count % 4 != 0:
+            raise ValueError("semi count must be a multiple of 4")
+        group_count = count // 4
+        calls = tuple(
+            call
+            for group_index in range(1, group_count + 1)
+            for call in (
+                PodPlannedCall(f"{batch_id}:style:{group_index}:image:1", "pod.image"),
+                PodPlannedCall(f"{batch_id}:style:{group_index}:image:2", "pod.image"),
+            )
+        )
+        return cls(
+            idempotency_key=f"pod:semi-batch:{batch_id}:initial",
+            calls=calls,
+            billing_profile=SEMI_BILLING_PROFILE,
+            semi_item_count=count,
+        )
+
+    @classmethod
+    def for_semi_batch_resume(
+        cls,
+        batch_id: str,
+        resume_id: str,
+        *,
+        image_style_indices: Sequence[int],
+    ) -> "PodCallPlan":
+        """半定制「继续」：只为剩余组冻结，link_count = 剩余组数 × 4。
+
+        调用 id 刻意沿用原批次的 ``:style:{组}`` 形式，worker 才能接回已持久化的生成状态。
+        """
+        indices = tuple(int(index) for index in image_style_indices)
+        if not indices:
+            raise ValueError("at least one remaining POD semi group is required")
+        calls = tuple(
+            PodPlannedCall(f"{batch_id}:style:{group_index}:image:{attempt}", "pod.image")
+            for group_index in indices
+            for attempt in (1, 2)
+        )
+        return cls(
+            idempotency_key=f"pod:batch:{batch_id}:resume:{resume_id}",
+            calls=calls,
+            billing_profile=SEMI_BILLING_PROFILE,
+            semi_item_count=len(indices) * 4,
+        )
+
+    @classmethod
+    def for_semi_style_retry(cls, action_id: str) -> "PodCallPlan":
+        """半定制「整组重试」：只冻结该组的两次生图调用，按 4 款展开计费。
+
+        不能复用 ``for_style_retry``：那个计划会带上 5 个标题调用，而半定制是纯图案、
+        没有标题链路，worker 永远不会把它们记成结果，结算时 ``_validated_outcomes``
+        的全量比对过不去，冻结积分也就退不回来。
+
+        ``action_id`` 由调用方拼成 ``{batch}:style:{组}:retry:{uuid}``，组号靠其中的
+        ``:style:{组}:`` 标记传递给 ``_product_batch_groups`` 与 worker 的
+        ``_image_call_id``，因此这里不需要再单独传组号。
+        """
+        calls = tuple(
+            PodPlannedCall(f"{action_id}:image:{attempt}", "pod.image")
+            for attempt in (1, 2)
+        )
+        return cls(
+            idempotency_key=f"pod:retry:{action_id}",
+            calls=calls,
+            billing_profile=SEMI_BILLING_PROFILE,
+            semi_item_count=4,
+        )
 
     @classmethod
     def for_batch(cls, batch_id: str, *, style_count: int) -> "PodCallPlan":
@@ -232,13 +326,20 @@ class PodCallPlan:
         One POD style is one billed product link. Provider retries remain local
         attempts and do not create additional billable subitems.
         """
+        if self.semi_item_count:
+            return {
+                "idempotency_key": self.idempotency_key,
+                "link_count": self.semi_item_count,
+                "scope": ["four_grid"],
+                "billing_profile": self.billing_profile,
+            }
         groups = self._product_batch_groups()
         present = {call.feature for group in groups for call in group}
         return {
             "idempotency_key": self.idempotency_key,
             "link_count": len(groups),
             "scope": [remote for pod, remote in _PRODUCT_BATCH_FEATURES if pod in present],
-            "billing_profile": "pod_random_v1",
+            "billing_profile": self.billing_profile,
         }
 
     def product_batch_settlement_payload(
@@ -246,6 +347,9 @@ class PodCallPlan:
         outcomes: Sequence[PodCallOutcome],
     ) -> dict[str, object]:
         """Fold provider attempts into product-processing subitem outcomes."""
+        # 半定制按「款」展开（口径看 semi_item_count，不看 profile 字符串）。
+        if self.semi_item_count:
+            return self._semi_batch_settlement_payload(outcomes)
         outcome_by_call = self._validated_outcomes(outcomes)
         items: list[dict[str, object]] = []
         for link_idx, group in enumerate(self._product_batch_groups(), start=1):
@@ -265,6 +369,37 @@ class PodCallPlan:
                     }
                 )
             items.append({"link_idx": link_idx, "subitems": subitems})
+        return {"items": items}
+
+    def _semi_batch_settlement_payload(
+        self,
+        outcomes: Sequence[PodCallOutcome],
+    ) -> dict[str, object]:
+        """半定制结算：把按「组」的生图成败展开成按「款」的 subitem。
+
+        组 g 的 4 个款（连续 4 个 link_idx）共享该组速创调用的成败。
+        组号从调用 id 实际解析（而不是假定 1..N），这样「继续」只跑部分组时也正确。
+        """
+        if not self.semi_item_count or self.semi_item_count % 4 != 0:
+            raise ValueError("semi settlement requires a valid semi_item_count")
+        outcome_by_call = self._validated_outcomes(outcomes)
+        items: list[dict[str, object]] = []
+        for group in self._product_batch_groups():
+            image_calls = [call for call in group if call.feature == "pod.image"]
+            succeeded = any(
+                outcome_by_call[(call.call_id, call.feature)] == "success"
+                for call in image_calls
+            )
+            status = "success" if succeeded else "no_return"
+            for _ in range(4):
+                items.append({
+                    "link_idx": len(items) + 1,
+                    "subitems": [{"feature": "four_grid", "status": status}],
+                })
+        if len(items) != self.semi_item_count:
+            raise ValueError(
+                "semi settlement link count does not match the frozen item count"
+            )
         return {"items": items}
 
     def settlement_payload(

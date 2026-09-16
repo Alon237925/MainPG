@@ -21,9 +21,14 @@ TEST_GRANT_POINTS = int(os.environ.get("WH_BILLING_TEST_GRANT_POINTS", "10000") 
 GATEWAY_LEGACY_LEASE_SECONDS = 900
 BATCH_BILLING_PROFILE_PRODUCT = "product_processing"
 BATCH_BILLING_PROFILE_POD = "pod_random_v1"
+# 半定制（纯图案）独立计费画像：每款（单张图案）随机 32..38 整数积分。
+BATCH_BILLING_PROFILE_POD_SEMI = "pod_semi_v1"
 # POD 每条款式定价：服务器随机取 40..50 整数积分。
 POD_LINK_PRICE_MIN_POINTS = 40
 POD_LINK_PRICE_VARIANTS = 11
+# POD 半定制每款（单张图案）定价：服务器随机取 32..38 整数积分。
+POD_SEMI_LINK_PRICE_MIN_POINTS = 32
+POD_SEMI_LINK_PRICE_VARIANTS = 7
 # Fixed-package topup gifts are tiered by package: higher packages gift more.
 # The historical ``topup_double`` configuration remains in SQLite for audit
 # and old order snapshots.  New orders use this fixed tiered rule and
@@ -595,7 +600,7 @@ def usage_history(
     for row in batch_rows:
         raw_status = str(row["status"] or "")
         billing_profile = str(row["billing_profile"] or BATCH_BILLING_PROFILE_PRODUCT)
-        is_pod = billing_profile == BATCH_BILLING_PROFILE_POD
+        is_pod = billing_profile in {BATCH_BILLING_PROFILE_POD, BATCH_BILLING_PROFILE_POD_SEMI}
         freeze_id = str(row["freeze_id"] or "")
         # 组合套装扣费通过 freeze_batch_points(idempotency_key=combo-kit:xxx) 写入，
         # 按 freeze_id 前缀划分独立板块，便于消费流水按服务归类管理。
@@ -1960,7 +1965,7 @@ def freeze_batch_points(
     """
     link_count = max(1, int(link_count))
     profile = str(billing_profile or BATCH_BILLING_PROFILE_PRODUCT).strip()
-    if profile not in {BATCH_BILLING_PROFILE_PRODUCT, BATCH_BILLING_PROFILE_POD}:
+    if profile not in {BATCH_BILLING_PROFILE_PRODUCT, BATCH_BILLING_PROFILE_POD, BATCH_BILLING_PROFILE_POD_SEMI}:
         raise HTTPException(status_code=400, detail="invalid batch billing profile")
     # 冻结时读取当前生效单条价值/倍率；固定价值模式按 points_per_unit 精确扣费。
     multipliers = active_multipliers(database_path)
@@ -2013,7 +2018,7 @@ def freeze_batch_points(
                 return _batch_freeze_response(
                     existing, pricing=display_pricing, already_frozen=True
                 )
-        if profile == BATCH_BILLING_PROFILE_POD:
+        if profile in {BATCH_BILLING_PROFILE_POD, BATCH_BILLING_PROFILE_POD_SEMI}:
             allowed_scope = {"title", "four_grid"}
             if (
                 not normalized_scope
@@ -2029,13 +2034,12 @@ def freeze_batch_points(
                 # 固定单条价值模式：每款式都按管理员设置的价值收取。
                 link_price_units = [target_units_per_link for _ in range(link_count)]
             else:
+                semi = profile == BATCH_BILLING_PROFILE_POD_SEMI
+                min_points = POD_SEMI_LINK_PRICE_MIN_POINTS if semi else POD_LINK_PRICE_MIN_POINTS
+                variants = POD_SEMI_LINK_PRICE_VARIANTS if semi else POD_LINK_PRICE_VARIANTS
                 link_price_units = [
                     _scaled_units(
-                        (
-                            POD_LINK_PRICE_MIN_POINTS
-                            + secrets.randbelow(POD_LINK_PRICE_VARIANTS)
-                        )
-                        * PIC_UNIT_SCALE,
+                        (min_points + secrets.randbelow(variants)) * PIC_UNIT_SCALE,
                         multiplier_percent,
                     )
                     for _ in range(link_count)
@@ -2554,12 +2558,12 @@ def settle_batch_points(
         )
         freeze_rule_version = (
             int(freeze["rule_version"] or pricing["rule_version"])
-            if profile == BATCH_BILLING_PROFILE_POD
+            if profile in {BATCH_BILLING_PROFILE_POD, BATCH_BILLING_PROFILE_POD_SEMI}
             else int(pricing["rule_version"])
         )
         pod_link_price_units: list[int] = []
         pod_scope: tuple[str, ...] = ()
-        if profile == BATCH_BILLING_PROFILE_POD:
+        if profile in {BATCH_BILLING_PROFILE_POD, BATCH_BILLING_PROFILE_POD_SEMI}:
             try:
                 pod_link_price_units = [
                     int(value)
@@ -2598,7 +2602,7 @@ def settle_batch_points(
         for index, entry in enumerate(item_results, start=1):
             if not isinstance(entry, dict):
                 raise HTTPException(status_code=400, detail="item_results entry must be an object")
-            if profile == BATCH_BILLING_PROFILE_POD:
+            if profile in {BATCH_BILLING_PROFILE_POD, BATCH_BILLING_PROFILE_POD_SEMI}:
                 try:
                     supplied_link_index = int(entry.get("link_idx"))
                 except (TypeError, ValueError) as exc:
@@ -2608,7 +2612,7 @@ def settle_batch_points(
             link_results = entry.get("subitems")
             if not isinstance(link_results, list):
                 raise HTTPException(status_code=400, detail="subitems must be a list")
-            if profile == BATCH_BILLING_PROFILE_POD:
+            if profile in {BATCH_BILLING_PROFILE_POD, BATCH_BILLING_PROFILE_POD_SEMI}:
                 statuses: dict[str, str] = {}
                 for result in link_results:
                     if not isinstance(result, dict):

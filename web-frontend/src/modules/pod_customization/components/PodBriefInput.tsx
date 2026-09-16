@@ -13,7 +13,14 @@ type Props = {
   onGenerated: (fields: PodBriefFieldsDraft, input: string) => void;
   history: PodBriefHistoryItem[];
   onSelectHistory: (item: PodBriefHistoryItem) => void;
+  /** 折叠标题下的副标题；默认是全定制（带产品名）口径。 */
+  subtitle?: string;
+  /** 未输入时的提示文案；半定制是纯图案，不带产品名。 */
+  hint?: string;
 };
+
+const DEFAULT_SUBTITLE = "写「产品名 + 风格」，AI 自动填好下方业务字段";
+const DEFAULT_HINT = "请务必带上产品名，格式：产品名 + 风格（可再补目标人群、卖点）";
 
 // 阶段化文案：调用期间按固定节奏轮换，避免只显示一个静态的“生成中”。
 const BRIEF_STAGES = ["正在理解需求…", "正在组织字段…"];
@@ -33,7 +40,13 @@ function briefSummary(input: string): string {
   return normalized.length > BRIEF_SUMMARY_MAX_LENGTH ? `${normalized.slice(0, BRIEF_SUMMARY_MAX_LENGTH)}…` : normalized;
 }
 
-export function PodBriefInput({ onGenerated, history, onSelectHistory }: Props) {
+export function PodBriefInput({
+  onGenerated,
+  history,
+  onSelectHistory,
+  subtitle = DEFAULT_SUBTITLE,
+  hint = DEFAULT_HINT,
+}: Props) {
   const [open, setOpen] = useState(true);
   const [brief, setBrief] = useState("");
   const [loading, setLoading] = useState(false);
@@ -86,7 +99,7 @@ export function PodBriefInput({ onGenerated, history, onSelectHistory }: Props) 
   return (
     <section className="pod-brief-input" aria-label="智能填写">
       <button type="button" className="pod-brief-input-toggle" aria-expanded={open} onClick={() => setOpen((current) => !current)}>
-        <span><b>智能填写</b><small>写「产品名 + 风格」，AI 自动填好下方业务字段</small></span>
+        <span><b>智能填写</b><small>{subtitle}</small></span>
         <i className={`iconfont icon-down ${open ? "is-open" : ""}`} aria-hidden="true" />
       </button>
       {open && <div className="pod-brief-input-body">
@@ -103,7 +116,7 @@ export function PodBriefInput({ onGenerated, history, onSelectHistory }: Props) 
           }}
         />
         <div className="pod-brief-input-meta">
-          <span className={loading ? "pod-brief-input-stage" : ""}>{loading ? BRIEF_STAGES[stageIndex] : "请务必带上产品名，格式：产品名 + 风格（可再补目标人群、卖点）"}</span>
+          <span className={loading ? "pod-brief-input-stage" : ""}>{loading ? BRIEF_STAGES[stageIndex] : hint}</span>
           <small>{brief.length}/{POD_BRIEF_MAX_LENGTH}</small>
         </div>
         <button type="button" className="pod-brief-input-generate" disabled={loading || !isBriefRequestValid(brief)} onClick={() => void generate()}>
