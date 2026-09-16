@@ -618,6 +618,7 @@
 .personal-sidebar {
   grid-column: 2;
   grid-row: 1;
+  align-self: stretch;          /* 覆盖父级 align-items:start，让侧栏撑满整行高度，体验版卡才能 flex 填满 */
   display: flex;
   flex-direction: column;
   gap: 8px;
@@ -819,6 +820,9 @@
 
 /* 体验积分卡：与身份卡同尺寸（同圆角/内边距），大数字主体展示剩余额度 */
 .personal-plan-card {
+  display: flex;
+  flex-direction: column;         /* 高度由页面 JS 同步为上方深色卡高度 */
+  justify-content: space-between; /* 内容均匀分布，充满整张卡片 */
   margin-top: 0;
   padding: 22px 20px;
   border-radius: 22px;
@@ -849,6 +853,8 @@
 }
 
 .personal-plan-card-refresh {
+  margin: 2px 0 6px;
+  text-align: center;
   font-size: 12px;
   font-weight: 700;
   color: var(--theme-text-muted, #64748b);
@@ -857,17 +863,22 @@
 .personal-plan-card-value {
   display: flex;
   align-items: baseline;
+  justify-content: center;       /* 大数字居中，作为卡片视觉中心 */
   gap: 8px;
-  margin-top: 14px;
+  margin: 0;
 }
 
 .personal-plan-card-value b {
-  font-size: 36px;
+  font-size: 42px;
   font-weight: 900;
   letter-spacing: -0.02em;
   line-height: 1;
-  color: var(--theme-text-primary, #132238);
   font-variant-numeric: tabular-nums;
+  /* 渐变文字，与进度条渐变同源 */
+  background: var(--theme-primary-button-gradient, linear-gradient(135deg, #0ea5ff, #20e0bd));
+  -webkit-background-clip: text;
+  background-clip: text;
+  color: transparent;
 }
 
 .personal-plan-card-value em {
@@ -875,14 +886,16 @@
   font-size: 13px;
   font-weight: 700;
   color: var(--theme-text-muted, #64748b);
+  margin-bottom: 7px;
 }
 
 .personal-plan-card-meter {
-  margin-top: 18px;
-  height: 12px;
+  margin-top: 0;                 /* 间距交给卡片的 space-between 均匀分配 */
+  height: 14px;
   border-radius: 999px;
   background: var(--theme-module-surface-soft, #eef2f6);
   overflow: hidden;
+  box-shadow: inset 0 1px 3px rgba(15, 23, 42, 0.08);
 }
 
 .personal-plan-card-meter span {
@@ -894,14 +907,36 @@
 }
 
 .personal-plan-card-foot {
-  display: flex;
-  align-items: center;
-  justify-content: space-between;
+  display: none;                 /* 已被三列数据格 personal-plan-stats 取代 */
+}
+
+.personal-plan-stats {
+  display: grid;
+  grid-template-columns: repeat(3, 1fr);
   gap: 8px;
-  margin-top: 16px;
-  font-size: 12px;
-  font-weight: 650;
+}
+
+.personal-plan-stat {
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  gap: 3px;
+  padding: 9px 4px;
+  border-radius: 12px;
+  background: var(--theme-module-surface-soft, #eef2f6);
+}
+
+.personal-plan-stat span {
+  font-size: 11px;
+  font-weight: 700;
   color: var(--theme-text-muted, #64748b);
+}
+
+.personal-plan-stat b {
+  font-size: 15px;
+  font-weight: 800;
+  color: var(--theme-text-primary, #132238);
+  font-variant-numeric: tabular-nums;
 }
 
 .personal-card-title {
@@ -2090,4 +2125,122 @@
 @media (max-width: 480px) {
   .feedback-meta-row { flex-direction: column; gap: 10px; }
   .feedback-list-time { margin-left: 0; width: 100%; }
+}
+
+/* ---- 体验版卡「升级体验」小按钮（卡片顶部右侧） ---- */
+.personal-plan-upgrade {
+  flex: 0 0 auto;
+  white-space: nowrap;
+  padding: 6px 16px;
+  border: 1px solid var(--theme-module-primary-strong, #0ea5ff);
+  border-radius: 999px;
+  background: rgba(14, 165, 255, 0.06);
+  cursor: pointer;
+  color: var(--theme-module-primary-strong, #0c78bd);
+  font-size: 12px;
+  font-weight: 800;
+  transition: background 0.18s ease, color 0.18s ease, box-shadow 0.18s ease;
+}
+.personal-plan-upgrade:hover {
+  border-color: transparent;
+  background: var(--theme-primary-button-gradient, linear-gradient(135deg, #0ea5ff, #20e0bd));
+  box-shadow: 0 6px 14px rgba(14, 165, 255, 0.25);
+  color: #fff;
+}
+
+.personal-upgrade-body {
+  padding: 26px 8px 30px;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+}
+.personal-upgrade-plan-card {
+  width: 100%;
+  max-width: 380px;
+  display: grid;
+  gap: 14px;
+  padding: 22px;
+  border: 1px solid var(--theme-module-border, #e2e8f0);
+  border-radius: 16px;
+  background: var(--theme-module-surface, #fff);
+  box-shadow: 0 14px 34px rgba(15, 23, 42, 0.08);
+}
+.personal-upgrade-plan-head {
+  display: flex;
+  align-items: baseline;
+  justify-content: space-between;
+  padding-bottom: 12px;
+  border-bottom: 1px solid var(--theme-module-border, #e2e8f0);
+}
+.personal-upgrade-plan-head b {
+  font-size: 1.15rem;
+  color: var(--theme-text-primary, #0f172a);
+}
+.personal-upgrade-plan-price {
+  font-size: 1.5rem;
+  font-weight: 800;
+  color: var(--theme-primary, #e64a19);
+}
+.personal-upgrade-plan-benefits {
+  display: grid;
+  gap: 8px;
+  margin: 0;
+  padding: 0;
+  list-style: none;
+  color: var(--theme-text-secondary, #475569);
+  font-size: 0.9rem;
+  line-height: 1.55;
+}
+.personal-upgrade-plan-benefits li::before {
+  content: "✓";
+  margin-right: 7px;
+  color: var(--theme-accent, #16a34a);
+  font-weight: 800;
+}
+.personal-upgrade-plan-benefits b {
+  color: var(--theme-text-primary, #0f172a);
+}
+.personal-upgrade-plan-buy {
+  margin-top: 4px;
+  padding: 12px;
+  border: 0;
+  border-radius: 12px;
+  background: var(--theme-primary-button-gradient, linear-gradient(105deg, #0ea5e9, #2563eb));
+  color: var(--theme-on-primary, #fff);
+  font-weight: 800;
+  font-size: 0.98rem;
+  cursor: pointer;
+  transition: transform 0.16s ease, box-shadow 0.16s ease, filter 0.16s ease;
+}
+.personal-upgrade-plan-buy:hover:not(:disabled) {
+  transform: translateY(-1px);
+  box-shadow: 0 10px 22px var(--theme-brand-shadow, rgba(37, 99, 235, 0.25));
+}
+.personal-upgrade-plan-buy:disabled {
+  opacity: 0.6;
+  cursor: not-allowed;
+}
+.personal-upgrade-plan-notice {
+  margin: 0;
+  color: var(--theme-accent, #16a34a);
+  font-size: 0.84rem;
+  line-height: 1.5;
+}
+.personal-upgrade-plan-error {
+  margin: 0;
+  color: #dc2626;
+  font-size: 0.84rem;
+  line-height: 1.5;
+}
+
+/* 体验卡上的基础版到期提示 */
+.personal-plan-expire {
+  margin: 10px 0 0;
+  padding: 7px 10px;
+  border-radius: 8px;
+  background: rgba(217, 93, 120, 0.09);
+  color: var(--theme-primary-strong, #b03a55);
+  font-size: 0.78rem;
+  font-weight: 700;
+  text-align: center;
 }
