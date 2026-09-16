@@ -23,6 +23,16 @@ const POSITION_STORAGE_KEY = "help_agent_ball_pos";
 
 type BallPosition = { x: number; y: number };
 
+type HelpAgentWidgetProps = {
+  /**
+   * 是否提供「去提交问题反馈」入口。
+   *
+   * 反馈面板在「个人中心」里，未登录（注册/登录页）点不到，所以在登录前挂载这个
+   * 组件时要传 ``false``，兜底时改成提示「登录后去哪反馈」，不给一个点了没反应的按钮。
+   */
+  allowFeedback?: boolean;
+};
+
 function readStoredPosition(): BallPosition | null {
   try {
     const raw = window.localStorage.getItem(POSITION_STORAGE_KEY);
@@ -51,7 +61,7 @@ function clampAxis(value: number, max: number, min: number): number {
   return Math.min(Math.max(value, min), Math.max(min, max));
 }
 
-export function HelpAgentWidget() {
+export function HelpAgentWidget({ allowFeedback = true }: HelpAgentWidgetProps = {}) {
   const [open, setOpen] = useState(false);
   const [position, setPosition] = useState<BallPosition>(() => readStoredPosition() ?? defaultPosition());
   const [messages, setMessages] = useState<ChatMessage[]>([]);
@@ -155,13 +165,13 @@ export function HelpAgentWidget() {
       const result = await helpAgentApi.search(question);
       // 兜底时记下原问题，供「去提交问题反馈」预填，省得用户重打一遍。
       if (result.type === "fallback") setLastUnanswered(question);
-      pushMessage(toAssistantMessage(result, makeId("a"), question));
+      pushMessage(toAssistantMessage(result, makeId("a"), question, { allowFeedback }));
     } catch (cause) {
       setError(cause instanceof Error ? cause.message : "查询失败，请稍后重试");
     } finally {
       setPending(false);
     }
-  }, [pushMessage]);
+  }, [allowFeedback, pushMessage]);
 
   const handleSubmit = useCallback(async () => {
     const question = draft.trim();
@@ -248,13 +258,17 @@ export function HelpAgentWidget() {
                       {message.candidates.map((candidate) => (
                         <li key={candidate.faq_id}>
                           <button type="button" onClick={() => void handlePickCandidate(candidate)} disabled={pending}>
-                            {candidate.question}
+                            {/* 候选都长得像，带上分类用户才能一眼选出对的那条 */}
+                            {candidate.category && (
+                              <span className="help-agent-candidate-tag">{categoryLabel(candidate.category)}</span>
+                            )}
+                            <span className="help-agent-candidate-text">{candidate.question}</span>
                           </button>
                         </li>
                       ))}
                     </ul>
                   )}
-                  {message.fallback && (
+                  {message.fallback && allowFeedback && (
                     <button
                       type="button"
                       className="help-agent-feedback-btn"

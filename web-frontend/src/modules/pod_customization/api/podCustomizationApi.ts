@@ -1,4 +1,4 @@
-import { getAuthToken, httpBlob, httpJson } from "../../../transport/http/client";
+import { getAuthToken, httpBlob, httpJson, toUserMessage } from "../../../transport/http/client";
 import { parseDianxiaomiExportFilename, parseDianxiaomiExportHeaderCount } from "../data/dianxiaomiExport";
 import { podStyleTitleRegenerateRequest } from "../data/styleTitleRequest";
 import type { PodBatchRetryRequest } from "../data/podBatchRetry";
@@ -38,7 +38,9 @@ async function uploadTemplate(file: File, name: string): Promise<PodTemplate> {
   const response = await fetch(apiUrl(`${API_BASE}/templates`), { method: "POST", headers, body: form });
   const payload = await response.json().catch(() => ({}));
   if (!response.ok) {
-    throw new Error(typeof payload?.detail === "string" ? payload.detail : `模板上传失败 (HTTP ${response.status})`);
+    // 后端 detail 可能是英文（如 POD billing request was rejected），交给统一翻译层转中文
+    const detail = typeof payload?.detail === "string" ? payload.detail : `模板上传失败 (HTTP ${response.status})`;
+    throw new Error(toUserMessage(detail));
   }
   return payload as PodTemplate;
 }
@@ -96,7 +98,7 @@ async function downloadExportWorkbook(
   if (!response.ok) {
     const payload = await response.json().catch(() => null);
     const detail = typeof payload?.detail === "string" ? payload.detail : `导出失败 (HTTP ${response.status})`;
-    throw new Error(detail);
+    throw new Error(toUserMessage(detail));
   }
   const filename = parseDianxiaomiExportFilename(response.headers.get("content-disposition"), fallbackName);
   saveBlob(await response.blob(), filename);

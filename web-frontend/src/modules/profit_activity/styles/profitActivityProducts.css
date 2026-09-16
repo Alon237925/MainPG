@@ -76,10 +76,21 @@
   gap: 14px;
 }
 
+/* 查询区固定排成一行：商品ID / 店铺 / 地区 / 查询范围 / 按钮组。
+   原来各列最小宽度之和约 900px，而内容区在 1280 窗口下只有约 990px、1100 窗口下
+   约 960px，窗口再窄一点第 5 列就被挤爆，按钮组溢出列外、与左边几个控件对不齐。
+   这里把最小宽度压到约 630px（宁可让下拉收窄，也不让按钮跑出这一行），
+   并统一用 align-items: end，让四个控件的底边和按钮底边落在同一条线上。 */
 .profit-products-search-bar {
   --profit-search-control-height: 44px;
   display: grid;
-  grid-template-columns: minmax(220px, 1.15fr) minmax(150px, .72fr) minmax(150px, .72fr) minmax(165px, .78fr) minmax(156px, .68fr);
+  grid-template-columns:
+    minmax(150px, 1.5fr)
+    minmax(92px, .8fr)
+    minmax(92px, .8fr)
+    minmax(100px, .85fr)
+    /* 按钮组最小宽度 =「查询产品」约 110px + 间距 8px +「刷新」74px，留一点余量 */
+    minmax(200px, auto);
   align-items: end;
   gap: 14px;
 }
@@ -152,19 +163,32 @@
   background: linear-gradient(105deg, #087bf5, #14c8c0);
 }
 
+/* 按钮组与左侧四个控件同高（44px）、底边对齐；右对齐保持和下方表格右边缘成一条线 */
 .profit-products-search-actions {
-  display: grid;
-  grid-template-columns: minmax(120px, 1fr) auto;
+  display: flex;
+  justify-content: flex-end;
+  min-width: 0;
   gap: 8px;
 }
 
 .profit-products-page .profit-products-query-button {
+  flex: 0 0 auto;
   padding-inline: 22px;
+  white-space: nowrap;
+}
+
+/* 全局 .primary-button 带 margin-top: 8px（给上下堆叠的表单用），在查询行里只有
+   「查询产品」命中、「刷新」没有，导致「查询产品」比同排控件低 8px。这里清零，
+   让它和左侧四个控件的底边严格对齐。 */
+.profit-products-search-actions .primary-button {
+  margin-top: 0;
 }
 
 .profit-products-page .profit-products-refresh-button {
+  flex: 0 0 auto;
   min-width: 74px;
   padding-inline: 16px;
+  white-space: nowrap;
 }
 
 .profit-products-message {
@@ -1372,31 +1396,21 @@
 }
 
 @media (max-width: 900px) {
-  .profit-products-search-bar,
   .profit-products-pagination {
     grid-template-columns: 1fr;
   }
 
-  .profit-products-search-bar {
-    grid-template-columns: repeat(2, minmax(0, 1fr));
-  }
-
-  .profit-products-query-button {
-    grid-column: span 2;
-  }
-
-  .profit-products-page-controls {
-    justify-content: flex-start;
-  }
-}
-
-@media (max-width: 560px) {
+  /* 窗口太窄已放不下一行：每个查询控件各占一行，按钮组留在最后一行左对齐 */
   .profit-products-search-bar {
     grid-template-columns: 1fr;
   }
 
-  .profit-products-query-button {
-    grid-column: auto;
+  .profit-products-search-actions {
+    justify-content: flex-start;
+  }
+
+  .profit-products-page-controls {
+    justify-content: flex-start;
   }
 }
 

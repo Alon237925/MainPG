@@ -281,6 +281,32 @@ export function WorkspaceShell({ currentRole = "operator", onSignOut, playEntryA
     setWorkspaceNotice("");
   };
 
+  // 操作答疑兜底按钮「去提交问题反馈」：先打开/切到「个人中心」页签，再把原问题交给它预填。
+  //
+  // 监听必须放在这一层，不能放在 PersonalCenterPage 里：个人中心是页签内容，没打开就不挂载，
+  // 页面内的监听根本收不到事件（用户在别的模块点按钮会毫无反应）。
+  //
+  // 而且这里开了页签也不够——React 是「先切页签、后挂载」，等 PersonalCenterPage 挂载完，
+  // 事件早已派发结束。所以问题原文由本层持有，再以 prop 传下去，挂载时即可直接消费。
+  //
+  // nonce 保证「同一个问题重复点」也能再次触发：只存字符串的话，重复 set 同一个值
+  // 会被 React 判定为无变化而跳过，用户清了输入框再点就预填不上了。
+  const [feedbackPrefill, setFeedbackPrefill] = useState<{ question: string; nonce: number } | null>(null);
+  // openModule 每次渲染都是新函数，用 ref 取最新实现，避免监听被 [] 依赖锁死在首次闭包上
+  // （否则 activateTab 会拿着过期的 activeTabKey 判断，可能不切页签）。
+  const openModuleRef = useRef(openModule);
+  openModuleRef.current = openModule;
+  useEffect(() => {
+    const onOpenFeedback = (event: Event) => {
+      const detail = (event as CustomEvent<{ question?: string }>).detail;
+      const question = typeof detail?.question === "string" ? detail.question.trim() : "";
+      setFeedbackPrefill((current) => ({ question, nonce: (current?.nonce ?? 0) + 1 }));
+      openModuleRef.current("personal_center");
+    };
+    window.addEventListener("mainpg:open-feedback", onOpenFeedback);
+    return () => window.removeEventListener("mainpg:open-feedback", onOpenFeedback);
+  }, []);
+
   const guideTourRef = useRef<ReturnType<typeof startGuideTour> | null>(null);
   const guideAutoStartedRef = useRef(false);
   const [guideBoardPanelOpen, setGuideBoardPanelOpen] = useState(false);
@@ -614,7 +640,7 @@ export function WorkspaceShell({ currentRole = "operator", onSignOut, playEntryA
       case "pod_customization":
         return <PodCustomizationPage isActive={isActive} />;
       case "personal_center":
-        return <PersonalCenterPage />;
+        return <PersonalCenterPage feedbackPrefill={feedbackPrefill} />;
       default:
         return <EmptyModulePage module={modulesById.get(tab.moduleId)!} />;
     }
