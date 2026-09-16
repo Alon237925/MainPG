@@ -30,6 +30,7 @@ import { ComboKitPromptPresetPage } from "../../modules/combo_kit/pages/ComboKit
 import { ComboKitHistoryPage } from "../../modules/combo_kit/pages/ComboKitHistoryPage";
 import { DimensionCanvasPage } from "../../modules/product_processing/pages/DimensionCanvasPage";
 import { PodCustomizationPage } from "../../modules/pod_customization/pages/PodCustomizationPage";
+import { PodSemiCustomizationPage } from "../../modules/pod_semi_customization/pages/PodSemiCustomizationPage";
 import {
   importPreviewItem,
   listDimensionNotifications,
@@ -639,6 +640,8 @@ export function WorkspaceShell({ currentRole = "operator", onSignOut, playEntryA
         return <DimensionCanvasPage initialBatchId={tab.dimensionBatchId} initialItemId={tab.dimensionItemId} onOpenPrecheck={openProcessingPrecheck} isActive={isActive} />;
       case "pod_customization":
         return <PodCustomizationPage isActive={isActive} />;
+      case "pod_semi_customization":
+        return <PodSemiCustomizationPage isActive={isActive} />;
       case "personal_center":
         return <PersonalCenterPage feedbackPrefill={feedbackPrefill} />;
       default:

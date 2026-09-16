@@ -10,12 +10,13 @@ export type WorkspaceModuleId =
   | "combo_history"
   | "dimension_canvas"
   | "pod_customization"
+  | "pod_semi_customization"
   | "profit_activity"
   | "profit_activity_products"
   | "price_verification"
   | "personal_center";
 
-export type WorkspaceNavigationGroupId = "product_workflow" | "combo_workflow" | "sourcing_workflow";
+export type WorkspaceNavigationGroupId = "product_workflow" | "combo_workflow" | "sourcing_workflow" | "pod_workflow";
 
 export type WorkspaceModule = {
   id: WorkspaceModuleId;
@@ -78,10 +79,18 @@ const dimensionCanvas: WorkspaceModule = {
 
 const podCustomization: WorkspaceModule = {
   id: "pod_customization",
-  label: "POD定制",
+  label: "全定制",
   icon: "",
   iconClass: "iconfont icon-skin",
   description: "批量生成 POD 图片与标题并导出店小秘文件",
+};
+
+const podSemiCustomization: WorkspaceModule = {
+  id: "pod_semi_customization",
+  label: "半定制",
+  icon: "",
+  iconClass: "iconfont icon-skin",
+  description: "按提示词生成纯图案花色图，按批次打包下载",
 };
 
 const productProcessingHistory: WorkspaceModule = {
@@ -186,7 +195,15 @@ export const workspaceModules: WorkspaceNavigationItem[] = [
     defaultChildId: "combo_generate",
     children: [comboGenerate, comboPromptPreset, comboHistory],
   },
-  podCustomization,
+  {
+    id: "pod_workflow",
+    label: "POD定制",
+    icon: "",
+    iconClass: "iconfont icon-skin",
+    description: "POD 全定制与半定制",
+    defaultChildId: "pod_customization",
+    children: [podCustomization, podSemiCustomization],
+  },
   {
     id: "sourcing_workflow",
     label: "核价及货源",
@@ -211,6 +228,7 @@ export const workspacePageModules: WorkspaceModule[] = [
   processingTasks,
   dimensionCanvas,
   podCustomization,
+  podSemiCustomization,
   priceVerification,
   profitActivity,
   productLibrary,

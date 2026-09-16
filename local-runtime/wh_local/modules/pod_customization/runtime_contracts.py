@@ -38,11 +38,11 @@ class SceneOptimizationRequest:
 @dataclass(frozen=True)
 class DirectListingGridRequest:
     trial_id: str
-    template_id: str
-    template_image: bytes
-    template_content_type: str
     prompt: str
     attempt: int
+    template_id: str = ""
+    template_image: bytes = b""
+    template_content_type: str = ""
     model_id: str = "gpt-image-2-2k"
     size: str = "1024x1024"
 

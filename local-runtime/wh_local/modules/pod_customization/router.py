@@ -3,6 +3,7 @@ from __future__ import annotations
 import base64
 from pathlib import Path
 from typing import Any
+from urllib.parse import quote
 
 from fastapi import APIRouter, Depends, HTTPException, Query, Request
 from fastapi.responses import FileResponse, Response
@@ -25,6 +26,7 @@ from .contracts import (
     ManualTitleUpdate,
     RegenerateItemCreate,
     SceneOptimizationCreate,
+    SemiBatchCreate,
     SpecCardPreviewRequest,
     SpecCardReprintRequest,
 )
@@ -120,6 +122,83 @@ def create_router(
     def create_batch(body: BatchCreate, actor: Actor = Depends(actor_from_authorization)) -> dict[str, Any]:
         permitted(actor, "pod_customization.create")
         return _call(service.create_batch, actor, body, enqueue=start_workers)
+
+    # --- 半定制（纯图案生成） ---
+    @router.get("/semi/batches")
+    def list_semi_batches(
+        limit: int = Query(default=20, ge=1, le=100),
+        offset: int = Query(default=0, ge=0),
+        actor: Actor = Depends(actor_from_authorization),
+    ) -> dict[str, Any]:
+        permitted(actor, "pod_customization.read")
+        return _call(service.list_semi_batches, actor, limit=limit, offset=offset)
+
+    @router.post("/semi/batches")
+    def create_semi_batch(body: SemiBatchCreate, actor: Actor = Depends(actor_from_authorization)) -> dict[str, Any]:
+        permitted(actor, "pod_customization.create")
+        return _call(service.create_semi_batch, actor, body, enqueue=start_workers)
+
+    @router.get("/semi/batches/{batch_id}")
+    def get_semi_batch(batch_id: str, actor: Actor = Depends(actor_from_authorization)) -> dict[str, Any]:
+        permitted(actor, "pod_customization.read")
+        return _call(service.get_semi_batch, actor, batch_id)
+
+    @router.delete("/semi/batches/{batch_id}")
+    def delete_semi_batch(batch_id: str, actor: Actor = Depends(actor_from_authorization)) -> dict[str, Any]:
+        permitted(actor, "pod_customization.create")
+        return _call(service.delete_batch, actor, batch_id)
+
+    @router.post("/semi/batches/{batch_id}/pause")
+    def pause_semi_batch(batch_id: str, actor: Actor = Depends(actor_from_authorization)) -> dict[str, Any]:
+        permitted(actor, "pod_customization.create")
+        return _call(service.pause_batch, actor, batch_id)
+
+    @router.post("/semi/batches/{batch_id}/cancel")
+    def cancel_semi_batch(batch_id: str, actor: Actor = Depends(actor_from_authorization)) -> dict[str, Any]:
+        permitted(actor, "pod_customization.create")
+        return _call(service.cancel_batch, actor, batch_id)
+
+    @router.post("/semi/batches/{batch_id}/resume")
+    def resume_semi_batch(batch_id: str, actor: Actor = Depends(actor_from_authorization)) -> dict[str, Any]:
+        permitted(actor, "pod_customization.create")
+        return _call(service.resume_batch, actor, batch_id)
+
+    @router.post("/semi/batches/{batch_id}/styles/{style_index}/regenerate")
+    def regenerate_semi_group(
+        batch_id: str,
+        style_index: int,
+        body: RegenerateItemCreate,
+        actor: Actor = Depends(actor_from_authorization),
+    ) -> dict[str, Any]:
+        permitted(actor, "pod_customization.create")
+        return _call(
+            service.regenerate_style,
+            actor,
+            batch_id,
+            style_index,
+            creative_prompt=body.creative_prompt,
+            enqueue=start_workers,
+        )
+
+    @router.get("/semi/batches/{batch_id}/download")
+    def download_semi_zip(batch_id: str, actor: Actor = Depends(actor_from_authorization)) -> Response:
+        permitted(actor, "pod_customization.export")
+        content, filename, item_count = _call(service.download_semi_zip, actor, batch_id)
+        # HTTP 响应头只能是 latin-1，而 zip 名含中文（「…-4款.zip」）：
+        # 直接把中文塞进 Content-Disposition 会让 Starlette 编码响应头时抛异常返回 500。
+        # 因此按 RFC 5987 用 filename*（UTF-8 百分号编码）传中文，并保留纯 ASCII 兜底名。
+        ascii_fallback = f"pod-semi-{batch_id[:8]}-{item_count}.zip"
+        return Response(
+            content=content,
+            media_type="application/zip",
+            headers={
+                "Content-Disposition": (
+                    f'attachment; filename="{ascii_fallback}"; '
+                    f"filename*=UTF-8''{quote(filename)}"
+                ),
+                "X-POD-Semi-Count": str(item_count),
+            },
+        )
 
     @router.post("/brief/fields")
     def generate_brief_fields(

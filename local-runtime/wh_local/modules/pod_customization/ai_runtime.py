@@ -147,7 +147,8 @@ class PodCustomizationAiRuntime(AiRuntime):
         """
         _required_provider_key(grant, "wuyin")
         model = _resolve_pod_image_model()
-        reference_url = self._publish_listing_reference(request)
+        # 半定制纯文生图：没有模板参考图时不发布、不校验公网，提交体也不带 urls。
+        reference_url = self._publish_listing_reference(request) if request.template_image else ""
         try:
             with self.provider_slot():
                 _required_provider_key(grant, "wuyin")
@@ -184,7 +185,7 @@ class PodCustomizationAiRuntime(AiRuntime):
             suffix=_suffix_for_content_type(content_type),
             provider="suchuang",
             model=model,
-            reference_count=1,
+            reference_count=0 if not reference_url else 1,
             attempt_count=1,
         )
 
@@ -235,10 +236,13 @@ class PodCustomizationAiRuntime(AiRuntime):
                 body: dict[str, Any] = {
                     "prompt": request.prompt,
                     "aspectRatio": SUCHUANG_IMAGE_ASPECT_RATIO_2_5.get(size_value, "1024x1024"),
-                    "urls": reference_url,
                 }
+                if reference_url:
+                    body["urls"] = reference_url
             else:
-                body = {"prompt": request.prompt, "size": size_value, "urls": [reference_url]}
+                body = {"prompt": request.prompt, "size": size_value}
+                if reference_url:
+                    body["urls"] = [reference_url]
             response = self.session.post(
                 f"{SUCHUANG_BASE_URL}{submit_path}",
                 params={"key": image_key},

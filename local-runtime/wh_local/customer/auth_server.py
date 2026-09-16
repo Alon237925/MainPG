@@ -31,6 +31,7 @@ from fastapi.responses import HTMLResponse, PlainTextResponse
 
 from ..billing import (
     BATCH_BILLING_PROFILE_POD,
+    BATCH_BILLING_PROFILE_POD_SEMI,
     BATCH_BILLING_PROFILE_PRODUCT,
     TOPUP_PROMOTION_ID,
     TOPUP_PROMOTION_NAME,
@@ -1298,9 +1299,10 @@ def create_auth_app(database_path: Path | None = None) -> FastAPI:
         if billing_profile not in {
             BATCH_BILLING_PROFILE_PRODUCT,
             BATCH_BILLING_PROFILE_POD,
+            BATCH_BILLING_PROFILE_POD_SEMI,
         }:
             raise HTTPException(status_code=400, detail="invalid batch billing profile")
-        if billing_profile == BATCH_BILLING_PROFILE_POD:
+        if billing_profile in {BATCH_BILLING_PROFILE_POD, BATCH_BILLING_PROFILE_POD_SEMI}:
             _require_pod_create_permission(db_path, account)
         freeze = freeze_batch_points(
             db_path,

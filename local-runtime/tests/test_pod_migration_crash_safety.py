@@ -31,6 +31,9 @@ MIGRATION_NAMES = (
     "009_export_records",
     "010_pod_title_source",
     "011_pod_style_export_selection",
+    "012_batch_execution_fencing",
+    "013_style_elements",
+    "014_semi_customization",
 )
 
 

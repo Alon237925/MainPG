@@ -9,6 +9,10 @@ from pydantic import BaseModel, ConfigDict, Field, StrictBool, StrictInt, model_
 SUPPORTED_PATTERN_COUNTS = (20, 40, 100)
 MIN_STYLE_COUNT = 1
 MAX_STYLE_COUNT = 200
+# 半定制：4 格 = 4 款，发起数量必须是 4 的倍数；交付单元 = 单张图案。
+MIN_SEMI_ITEM_COUNT = 4
+MAX_SEMI_ITEM_COUNT = 200
+SEMI_PATTERN_ROLES = ("pattern_1", "pattern_2", "pattern_3", "pattern_4")
 PromptVersion = Literal["v1"]
 
 
@@ -143,6 +147,29 @@ class BatchCreate(BaseModel):
     def validate_product_category(self) -> "BatchCreate":
         if not self.business_fields.product_category.strip():
             raise ValueError("business_fields.product_category is required")
+        return self
+
+
+class SemiBatchCreate(BaseModel):
+    """半定制创建：纯提示词生成图案，不用模板、不用参考图、不用上架字段。
+
+    4 格 = 4 款；``count`` 为交付图案张数，必须是 4 的倍数（4..200）。
+    业务字段只消费图案相关项（主题风格 / 元素 / 配色 / 禁用元素），
+    产品名、品类、市场、人群、卖点对纯图案生成无意义，故不做必填校验。
+    """
+
+    model_config = ConfigDict(extra="forbid")
+
+    count: int = Field(strict=True, ge=MIN_SEMI_ITEM_COUNT, le=MAX_SEMI_ITEM_COUNT)
+    prompt_version: PromptVersion = "v1"
+    business_fields: BusinessFields = Field(default_factory=BusinessFields)
+    creative_prompt: str = Field(default="", max_length=4000)
+    title: str = Field(default="", max_length=120)
+
+    @model_validator(mode="after")
+    def validate_semi_batch(self) -> "SemiBatchCreate":
+        if self.count % 4 != 0:
+            raise ValueError("半定制数量必须是 4 的倍数")
         return self
 
 
