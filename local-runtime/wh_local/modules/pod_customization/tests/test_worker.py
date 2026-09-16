@@ -834,18 +834,39 @@ def test_billing_resume_claim_is_atomic_for_concurrent_requests(tmp_path: Path) 
     runtime.close()
 
 
+def _listing_fields(
+    *,
+    name: str = "Default SKU",
+    declared_price: float = 18.5,
+    weight_g: float = 450,
+    length_cm: float = 30,
+    width_cm: float = 20,
+    height_cm: float = 10,
+    suggested_price_usd: float = 29.99,
+    category_name: str = "家居收纳 > 包袋",
+) -> ListingFields:
+    """新契约的上架信息：申报价在 SKU 上，长宽高由 spec_card 尺寸详情表承载。"""
+
+    return ListingFields(
+        suggested_price_usd=suggested_price_usd,
+        category_name=category_name,
+        skus=[{"name": name, "declared_price": declared_price, "weight_g": weight_g}],
+        spec_card={
+            "cells": [
+                ["尺寸图", "长", "宽", "高"],
+                [name, str(length_cm), str(width_cm), str(height_cm)],
+            ]
+        },
+    )
+
+
 def _batch_request_for_test(template_id: str, *, count: int = 1) -> BatchCreate:
     return BatchCreate(
         template_id=template_id,
         count=count,
         prompt_version="v1",
         business_fields=BusinessFields(product_name="Tote bag", product_category="bags"),
-        listing_fields=ListingFields(
-            declared_price=18.5,
-            suggested_price_usd=29.99,
-            category_name="家居收纳 > 包袋",
-            skus=[{"name": "Default SKU", "length_cm": 30, "width_cm": 20, "height_cm": 10, "weight_g": 450}],
-        ),
+        listing_fields=_listing_fields(),
     )
 
 
@@ -878,12 +899,7 @@ def _create_batch(
             business_fields=BusinessFields(
                 product_name="Tote bag", product_category="bags", design_theme="modern botanical"
             ),
-            listing_fields=ListingFields(
-                declared_price=18.5,
-                suggested_price_usd=29.99,
-                category_name="家居收纳 > 包袋",
-                skus=[{"name": "Default SKU", "length_cm": 30, "width_cm": 20, "height_cm": 10, "weight_g": 450}],
-            ),
+            listing_fields=_listing_fields(),
             creative_prompt="bold but uncluttered",
         ),
         enqueue=False,
@@ -1074,7 +1090,7 @@ def test_batch_retry_billing_resume_reuses_the_persisted_selection(tmp_path: Pat
     runtime.close()
 
 
-def test_batch_retry_rejects_a_style_without_four_failed_images_before_freezing(tmp_path: Path) -> None:
+def test_batch_retry_rejects_a_fully_completed_style_before_freezing(tmp_path: Path) -> None:
     runtime = ListingOnlyRuntime([])
     billing = BillingCoordinator()
     service = _service(tmp_path, runtime, billing)
@@ -1085,7 +1101,7 @@ def test_batch_retry_rejects_a_style_without_four_failed_images_before_freezing(
     freezes_before = len(billing.freezes)
     before = service.get_batch(actor, batch["id"])
 
-    with pytest.raises(PodRepositoryError, match="all four images failed") as captured:
+    with pytest.raises(PodRepositoryError, match="unfinished images") as captured:
         service.retry_failed(
             actor,
             batch["id"],
@@ -1096,6 +1112,39 @@ def test_batch_retry_rejects_a_style_without_four_failed_images_before_freezing(
     assert captured.value.status_code == 409
     assert len(billing.freezes) == freezes_before
     assert service.get_batch(actor, batch["id"])["items"] == before["items"]
+    service.close()
+    runtime.close()
+
+
+def test_batch_retry_accepts_a_partially_completed_style(tmp_path: Path) -> None:
+    """断电中断会留下「部分完成」的款式：该款必须能整款重试，而不是被卡死。"""
+    runtime = ListingOnlyRuntime([])
+    billing = BillingCoordinator()
+    service = _service(tmp_path, runtime, billing, title_runtime=object())
+    actor = _actor()
+    template = _ready_template(service, actor)
+    batch = _create_batch(service, actor, template["id"])
+    _prepare_batch_retry_candidates(service, batch["id"])
+    with service.repository._connect() as connection:
+        connection.execute(
+            """UPDATE pod_customization_style_grid_results
+               SET status = 'completed', pattern_asset_id = 'pattern', composite_asset_id = 'composite'
+               WHERE batch_id = ? AND style_index = 1 AND variant_index = 1""",
+            (batch["id"],),
+        )
+    service.worker.submit_batch_retry = lambda *_args: None
+
+    service.retry_failed(actor, batch["id"], image_style_indices=[1], title_style_indices=[])
+
+    with service.repository._connect() as connection:
+        statuses = [
+            row["status"] for row in connection.execute(
+                """SELECT status FROM pod_customization_style_grid_results
+                   WHERE batch_id = ? AND style_index = 1 ORDER BY variant_index""",
+                (batch["id"],),
+            ).fetchall()
+        ]
+    assert statuses == ["generating_pattern"] * 4
     service.close()
     runtime.close()
 
@@ -1156,10 +1205,9 @@ def _spec_card_batch_request(
         prompt_version="v1",
         business_fields=BusinessFields(product_name="Tote bag", product_category="bags"),
         listing_fields=ListingFields(
-            declared_price=18.5,
             suggested_price_usd=29.99,
             category_name="家居收纳 > 包袋",
-            skus=[{"name": "Default SKU", "length_cm": 30, "width_cm": 20, "height_cm": 10, "weight_g": 450}],
+            skus=[{"name": "Default SKU", "declared_price": 18.5, "weight_g": 450}],
             spec_card={
                 "enabled": enabled,
                 "style": style,
@@ -1991,11 +2039,15 @@ def test_stale_epoch_write_does_not_complete_item_after_reap(tmp_path: Path) -> 
             template_id=template["id"],
             count=1,
             business_fields=BusinessFields(product_name="Test", product_category="test"),
-            listing_fields=ListingFields(
+            listing_fields=_listing_fields(
+                name="SKU",
                 declared_price=10.0,
+                weight_g=100,
+                length_cm=10,
+                width_cm=10,
+                height_cm=10,
                 suggested_price_usd=15.0,
                 category_name="Test",
-                skus=[{"name": "SKU", "length_cm": 10, "width_cm": 10, "height_cm": 10, "weight_g": 100}],
             ),
         ),
         enqueue=False,
@@ -2090,11 +2142,15 @@ def test_reap_increments_epoch_so_current_epoch_differs(tmp_path: Path) -> None:
             template_id=template["id"],
             count=1,
             business_fields=BusinessFields(product_name="Test", product_category="test"),
-            listing_fields=ListingFields(
+            listing_fields=_listing_fields(
+                name="SKU",
                 declared_price=10.0,
+                weight_g=100,
+                length_cm=10,
+                width_cm=10,
+                height_cm=10,
                 suggested_price_usd=15.0,
                 category_name="Test",
-                skus=[{"name": "SKU", "length_cm": 10, "width_cm": 10, "height_cm": 10, "weight_g": 100}],
             ),
         ),
         enqueue=False,
@@ -2144,11 +2200,15 @@ def test_current_epoch_worker_can_still_complete_normally(tmp_path: Path) -> Non
             template_id=template["id"],
             count=1,
             business_fields=BusinessFields(product_name="Test", product_category="test"),
-            listing_fields=ListingFields(
+            listing_fields=_listing_fields(
+                name="SKU",
                 declared_price=10.0,
+                weight_g=100,
+                length_cm=10,
+                width_cm=10,
+                height_cm=10,
                 suggested_price_usd=15.0,
                 category_name="Test",
-                skus=[{"name": "SKU", "length_cm": 10, "width_cm": 10, "height_cm": 10, "weight_g": 100}],
             ),
         ),
         enqueue=False,
@@ -2253,11 +2313,15 @@ def test_coordinator_times_out_when_provider_never_returns(tmp_path: Path) -> No
                 template_id=template["id"],
                 count=1,
                 business_fields=BusinessFields(product_name="Timeout", product_category="test"),
-                listing_fields=ListingFields(
+                listing_fields=_listing_fields(
+                    name="SKU",
                     declared_price=10.0,
+                    weight_g=100,
+                    length_cm=10,
+                    width_cm=10,
+                    height_cm=10,
                     suggested_price_usd=15.0,
                     category_name="Test",
-                    skus=[{"name": "SKU", "length_cm": 10, "width_cm": 10, "height_cm": 10, "weight_g": 100}],
                 ),
             ),
         )
@@ -2320,11 +2384,15 @@ def test_progress_resets_deadline_when_styles_complete(tmp_path: Path) -> None:
                 template_id=template["id"],
                 count=3,
                 business_fields=BusinessFields(product_name="Progress", product_category="test"),
-                listing_fields=ListingFields(
+                listing_fields=_listing_fields(
+                    name="SKU",
                     declared_price=10.0,
+                    weight_g=100,
+                    length_cm=10,
+                    width_cm=10,
+                    height_cm=10,
                     suggested_price_usd=15.0,
                     category_name="Test",
-                    skus=[{"name": "SKU", "length_cm": 10, "width_cm": 10, "height_cm": 10, "weight_g": 100}],
                 ),
             ),
         )

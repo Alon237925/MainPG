@@ -5,6 +5,7 @@ import io
 import json
 import threading
 import uuid
+import zipfile
 from pathlib import Path
 from typing import Any
 
@@ -33,13 +34,17 @@ from .contracts import (
     DirectListingTrialCreate,
     NormalizedPoint,
     NormalizedRect,
+    SEMI_PATTERN_ROLES,
+    SemiBatchCreate,
     validate_spec_card,
 )
 from .brief_runtime import PodBriefRequest
 from .export import (
     DianxiaomiExport,
+    PodWorkbookExport,
     analyze_dianxiaomi_export,
     build_pod_dianxiaomi_export,
+    build_pod_miaoshou_export,
 )
 from .export_records import PodExportRecordStore
 from .errors import image_provider_outcome_for_exception, safe_error_message
@@ -258,6 +263,110 @@ class PodCustomizationService:
         except Exception:  # noqa: BLE001 本地业务日志绝不影响业务
             pass
         return self._batch_payload(batch)
+
+    @staticmethod
+    def _semi_placeholder_png_bytes() -> bytes:
+        """半定制占位图：纯白 PNG。
+
+        尺寸必须满足 ``inspect_pod_image`` 的下限（宽高各 ≥16px），
+        否则建批次会以「image dimensions are outside the supported range」失败。
+        该图永不被读取，仅用于满足 batches 模板列的 NOT NULL + FK。
+        """
+        buffer = io.BytesIO()
+        Image.new("RGB", (256, 256), "#ffffff").save(buffer, "PNG")
+        return buffer.getvalue()
+
+    def _ensure_semi_placeholder(self, actor: Actor) -> tuple[str, str, str]:
+        stored = self.assets.save_image(actor.workspace_id, actor.id, self._semi_placeholder_png_bytes())
+        asset = self.repository.create_asset(
+            workspace_id=actor.workspace_id,
+            owner_user_id=actor.id,
+            kind="template",
+            filename="semi-placeholder.png",
+            relative_path=stored.relative_path,
+            content_type=stored.content_type,
+            byte_size=stored.byte_size,
+            sha256=stored.sha256,
+            width=stored.width,
+            height=stored.height,
+        )
+        return self.repository.ensure_semi_placeholder(actor.workspace_id, actor.id, asset)
+
+    def create_semi_batch(self, actor: Actor, request: SemiBatchCreate, *, enqueue: bool = True) -> dict[str, Any]:
+        batch_id = uuid.uuid4().hex
+        self._ensure_semi_placeholder(actor)
+        billing_run = self._freeze_semi_batch(actor, batch_id, request.count) if (enqueue or self.billing_coordinator) else None
+        try:
+            batch = self.repository.create_semi_batch(actor.workspace_id, actor.id, request, batch_id=batch_id)
+        except Exception:
+            if billing_run is not None:
+                billing_run.settle()
+            raise
+        if billing_run is not None and self.worker is not None:
+            self.worker.register_billing_run(batch_id, billing_run)
+        if enqueue and self.worker is not None:
+            self.worker.submit(batch["batch_id"], billing_run)
+        try:
+            business_logger("pod_processing").info(
+                "========== POD 半定制批次开始 | batch_id=%s | workspace=%s | 用户=%s | "
+                "款数=%d | 组数=%d | 主题风格=%s | 创意提示=%s | 批次标题=%s | 冻结计费=%s ==========",
+                batch["batch_id"], actor.workspace_id, actor.id, request.count, request.count // 4,
+                request.business_fields.design_theme or "-", (request.creative_prompt or "-")[:200],
+                (request.title or "-")[:120], "有" if billing_run is not None else "无")
+        except Exception:  # noqa: BLE001
+            pass
+        return self._batch_payload(batch)
+
+    def list_semi_batches(self, actor: Actor, *, limit: int = 20, offset: int = 0) -> dict[str, Any]:
+        rows, total = self.repository.list_batches(
+            actor.workspace_id,
+            actor.id,
+            limit=max(1, min(limit, 100)),
+            offset=max(0, offset),
+            mode="semi",
+        )
+        return {"batches": [self._batch_summary(row) for row in rows], "total": total}
+
+    def get_semi_batch(self, actor: Actor, batch_id: str) -> dict[str, Any]:
+        batch = self.repository.get_batch(batch_id, actor.workspace_id, actor.id)
+        if batch.get("mode") != "semi":
+            raise PodRepositoryError("POD semi batch not found", 404)
+        return self._batch_payload(batch)
+
+    def download_semi_zip(self, actor: Actor, batch_id: str) -> tuple[bytes, str, int]:
+        batch = self.repository.get_batch(batch_id, actor.workspace_id, actor.id)
+        if batch.get("mode") != "semi":
+            raise PodRepositoryError("POD semi batch not found", 404)
+        completed_items = [
+            item for item in batch["items"]
+            if item.get("status") == "completed" and item.get("pattern_asset_id")
+        ]
+        if not completed_items:
+            raise PodRepositoryError("当前批次没有可下载的图案", 409)
+        buffer = io.BytesIO()
+        with zipfile.ZipFile(buffer, "w", zipfile.ZIP_DEFLATED) as archive:
+            for item in completed_items:
+                index = int(item.get("item_index") or item.get("index") or 0)
+                asset = self.repository.get_asset(
+                    item["pattern_asset_id"], batch["workspace_id"], batch["owner_user_id"]
+                )
+                suffix = Path(asset["filename"]).suffix or ".png"
+                archive.writestr(
+                    f"style_{index:03d}{suffix}",
+                    self.assets.read(asset["relative_path"]),
+                )
+        item_count = len(completed_items)
+        filename = f"POD-SEMI-{batch_id[:8]}-{item_count}款.zip"
+        self.export_records.record_success(
+            batch_id=batch_id,
+            workspace_id=actor.workspace_id,
+            owner_user_id=actor.id,
+            file_name=filename,
+            format="semi_zip",
+            exported_count=item_count,
+            skipped_count=0,
+        )
+        return buffer.getvalue(), filename, item_count
 
     def run_direct_listing_trial(
         self, actor: Actor, request: DirectListingTrialCreate
@@ -488,6 +597,9 @@ class PodCustomizationService:
             actor.id,
             limit=max(1, min(limit, 100)),
             offset=max(0, offset),
+            # 两种模式共表：这里只列全定制批次，否则全定制页会把更晚创建的半定制
+            # 批次当成「最近一批」展开，用全定制界面渲染纯图案批次。
+            mode="full",
         )
         return {"batches": [self._batch_summary(row) for row in rows], "total": total}
 
@@ -575,19 +687,7 @@ class PodCustomizationService:
     def export_dianxiaomi(self, actor: Actor, batch_id: str) -> DianxiaomiExport:
         batch = self.repository.get_batch(batch_id, actor.workspace_id, actor.id)
         copies = self.repository.get_style_copies(batch_id, actor.workspace_id, actor.id)
-        analysis = analyze_dianxiaomi_export(batch, copies)
-        if analysis.block_reason is not None:
-            messages = {
-                "active_batch": "pod 制作尚未完成，请等待全部完成重试",
-                "listing_fields_missing": "POD 批次缺少上架信息快照，无法导出",
-                "style_copy_missing": "POD 款式文案缺失，无法导出",
-                "no_exportable_styles": "POD 批次没有可导出的款式",
-                "all_exportable_styles_unselected": (
-                    "POD 批次没有可导出的款式：所有就绪款式均已被取消勾选"
-                ),
-                "billing_recovery_required": "POD 批次仍有未完成的图片/标题/文案工作",
-            }
-            raise PodRepositoryError(messages[analysis.block_reason], 409)
+        self._ensure_exportable(batch, copies)
         exported = build_pod_dianxiaomi_export(batch, copies)
         record = self.export_records.record_success(
             batch_id=batch_id,
@@ -605,6 +705,46 @@ class PodCustomizationService:
             filename=exported.filename,
             export_id=record["id"],
         )
+
+    def export_miaoshou(self, actor: Actor, batch_id: str, kind: str) -> PodWorkbookExport:
+        """按妙手 Temu 导入模板导出（kind：apparel 服饰类 / general 非服饰类）。"""
+        batch = self.repository.get_batch(batch_id, actor.workspace_id, actor.id)
+        copies = self.repository.get_style_copies(batch_id, actor.workspace_id, actor.id)
+        self._ensure_exportable(batch, copies)
+        exported = build_pod_miaoshou_export(batch, copies, kind)
+        record = self.export_records.record_success(
+            batch_id=batch_id,
+            workspace_id=actor.workspace_id,
+            owner_user_id=actor.id,
+            file_name=exported.filename,
+            format=f"miaoshou_{kind}_xlsx",
+            exported_count=exported.exported_style_count,
+            skipped_count=exported.skipped_style_count,
+        )
+        return PodWorkbookExport(
+            content=exported.content,
+            exported_style_count=exported.exported_style_count,
+            skipped_style_count=exported.skipped_style_count,
+            filename=exported.filename,
+            export_id=record["id"],
+        )
+
+    def _ensure_exportable(self, batch: dict[str, Any], copies: dict[int, Any]) -> None:
+        """导出前置校验：把「不能导出」的原因映射为可读的 409（店小秘/妙手共用）。"""
+        analysis = analyze_dianxiaomi_export(batch, copies)
+        if analysis.block_reason is None:
+            return
+        messages = {
+            "active_batch": "pod 制作尚未完成，请等待全部完成重试",
+            "listing_fields_missing": "POD 批次缺少上架信息快照，无法导出",
+            "style_copy_missing": "POD 款式文案缺失，无法导出",
+            "no_exportable_styles": "POD 批次没有可导出的款式",
+            "all_exportable_styles_unselected": (
+                "POD 批次没有可导出的款式：所有就绪款式均已被取消勾选"
+            ),
+            "billing_recovery_required": "POD 批次仍有未完成的图片/标题/文案工作",
+        }
+        raise PodRepositoryError(messages[analysis.block_reason], 409)
 
     def set_style_export_selection(
         self,
@@ -654,6 +794,9 @@ class PodCustomizationService:
         """
 
         config = self._validated_spec_card_config(config_mapping)
+        if not config.enabled:
+            # 「不印到图上」：预览与生成结果一致 —— 直接给干净底图（无底图时给空白示意底图）。
+            return base_content or blank_spec_card_base_jpeg(self.SPEC_CARD_PREVIEW_BASE_SIDE)
         request = spec_card.SpecCardRequest(
             cells=config.cells, style=config.style, corner=config.corner
         )
@@ -722,15 +865,20 @@ class PodCustomizationService:
             pattern_asset_id, batch["workspace_id"], batch["owner_user_id"]
         )
         base_content = self.assets.read(asset["relative_path"])
-        result = spec_card.render_spec_card(
-            base_content,
-            spec_card.SpecCardRequest(cells=config.cells, style=config.style, corner=config.corner),
-        )
+        if config.enabled:
+            result = spec_card.render_spec_card(
+                base_content,
+                spec_card.SpecCardRequest(cells=config.cells, style=config.style, corner=config.corner),
+            )
+            rendered = result.jpeg_bytes
+        else:
+            # 「不印到图上」：重印即去掉已印的卡片，素材图回到干净母版。
+            rendered = base_content
         self._save_batch_asset(
-            batch, SPEC_CARD_ASSET_KIND, f"style-{style_index}-hero-card.jpg", result.jpeg_bytes
+            batch, SPEC_CARD_ASSET_KIND, f"style-{style_index}-hero-card.jpg", rendered
         )
         public_url = self.ai_runtime.publish_listing_image(
-            build_spec_card_media(result.jpeg_bytes),
+            build_spec_card_media(rendered),
             namespace=batch["workspace_id"],
             role="hero",
         )
@@ -861,8 +1009,10 @@ class PodCustomizationService:
     ) -> dict[str, Any]:
         self._preflight_style_retry(actor, batch_id, style_index)
         action_id = f"{batch_id}:style:{style_index}:retry:{uuid.uuid4().hex}"
+        batch = self.repository.get_batch(batch_id, actor.workspace_id, actor.id)
         billing_run = self._freeze_style_retry(
-            actor, action_id, batch_id, style_index, creative_prompt
+            actor, action_id, batch_id, style_index, creative_prompt,
+            semi=batch.get("mode") == "semi",
         )
         try:
             results = self.repository.claim_style_regeneration(
@@ -1060,8 +1210,8 @@ class PodCustomizationService:
             raise PodRepositoryError("POD style index is outside the batch range", 422)
         for style_index in image_style_indices:
             results = [item for item in batch["items"] if int(item.get("style_index") or 0) == style_index]
-            if len(results) != 4 or any(item.get("status") != "failed" for item in results):
-                raise PodRepositoryError("only styles with all four images failed can be retried", 409)
+            if len(results) != 4 or all(item.get("status") == "completed" for item in results):
+                raise PodRepositoryError("only styles with unfinished images can be retried", 409)
         for style_index in title_style_indices:
             title = next(
                 (row for row in batch["style_titles"] if int(row["style_index"]) == style_index),
@@ -1549,6 +1699,14 @@ class PodCustomizationService:
             actor, plan, action_type="batch_initial", target_id=batch_id, batch_id=batch_id
         )
 
+    def _freeze_semi_batch(self, actor: Actor, batch_id: str, count: int) -> PodBillingRun:
+        if self.billing_coordinator is None:
+            raise RuntimeError("POD billing coordinator is not configured")
+        plan = PodCallPlan.for_semi_batch(batch_id, count=count)
+        return self._freeze_action(
+            actor, plan, action_type="batch_initial", target_id=batch_id, batch_id=batch_id
+        )
+
     def _freeze_paused_batch_remainder(
         self, actor: Actor, batch: dict[str, Any]
     ) -> PodBillingRun:
@@ -1572,17 +1730,26 @@ class PodCustomizationService:
             for style_index in range(1, int(batch["requested_count"]) + 1)
             if completed_images.get(style_index, 0) == 4
             and self.title_runtime is not None
+            and batch.get("mode") != "semi"
             and title_statuses.get(style_index) != "completed"
         )
         if not image_indices and not title_indices:
             raise PodRepositoryError("POD 批次没有待继续的款式", 409)
-        plan = PodCallPlan.for_batch_resume(
-            batch_id,
-            uuid.uuid4().hex,
-            image_style_indices=image_indices,
-            title_style_indices=title_indices,
-            include_title=self.title_runtime is not None,
-        )
+        if batch.get("mode") == "semi":
+            # 半定制按「款」计费：本次续跑冻结 link_count = 剩余组数 × 4。
+            plan = PodCallPlan.for_semi_batch_resume(
+                batch_id,
+                uuid.uuid4().hex,
+                image_style_indices=image_indices,
+            )
+        else:
+            plan = PodCallPlan.for_batch_resume(
+                batch_id,
+                uuid.uuid4().hex,
+                image_style_indices=image_indices,
+                title_style_indices=title_indices,
+                include_title=self.title_runtime is not None,
+            )
         return self._freeze_action(
             actor,
             plan,
@@ -1631,10 +1798,18 @@ class PodCustomizationService:
         batch_id: str,
         style_index: int,
         creative_prompt: str,
+        *,
+        semi: bool = False,
     ) -> PodBillingRun:
         if self.billing_coordinator is None:
             raise RuntimeError("POD billing coordinator is not configured")
-        plan = PodCallPlan.for_style_retry(action_id, include_title=self.title_runtime is not None)
+        plan = (
+            PodCallPlan.for_semi_style_retry(action_id)
+            if semi
+            else PodCallPlan.for_style_retry(
+                action_id, include_title=self.title_runtime is not None
+            )
+        )
         return self._freeze_action(
             actor,
             plan,
@@ -1867,37 +2042,68 @@ class PodCustomizationService:
         }
 
     def _batch_payload(self, batch: dict[str, Any]) -> dict[str, Any]:
-        snapshot = batch["template"]
-        template_payload = {
-            "id": snapshot["template_id"],
-            "name": snapshot["name"],
-            "source": snapshot["source"],
-            "preview_url": f"/api/pod-customization/assets/{snapshot['asset_id']}",
-            "original_url": f"/api/pod-customization/assets/{snapshot['asset_id']}",
-            "width": snapshot["width"],
-            "height": snapshot["height"],
-            "calibration_status": "ready",
-            "calibration": json.loads(snapshot["calibration_json"]),
-            "created_at": snapshot["created_at"],
-            "updated_at": snapshot["created_at"],
-        }
+        semi = batch.get("mode") == "semi"
+        snapshot = batch.get("template")
+        template_payload = None
+        if snapshot:
+            template_payload = {
+                "id": snapshot["template_id"],
+                "name": snapshot["name"],
+                "source": snapshot["source"],
+                "preview_url": f"/api/pod-customization/assets/{snapshot['asset_id']}",
+                "original_url": f"/api/pod-customization/assets/{snapshot['asset_id']}",
+                "width": snapshot["width"],
+                "height": snapshot["height"],
+                "calibration_status": "ready",
+                "calibration": json.loads(snapshot["calibration_json"]),
+                "created_at": snapshot["created_at"],
+                "updated_at": snapshot["created_at"],
+            }
         items = [self._item_payload(item) for item in batch["items"]]
-        copies = self.repository.get_style_copies(
-            batch["batch_id"], batch["workspace_id"], batch["owner_user_id"]
-        )
-        export_analysis = analyze_dianxiaomi_export(batch, copies)
+        # 款（张）级计数：completed_count/failed_count 是按「组」统计的（1 组 4 张全部
+        # 结算才算 1），半定制对外交付单位是「款」，所以另给一份按款的计数。
+        completed_item_count = sum(1 for row in batch["items"] if row.get("status") == "completed")
+        failed_item_count = sum(1 for row in batch["items"] if row.get("status") == "failed")
+        if semi:
+            export_payload: dict[str, Any] = {
+                "ready": False,
+                "exportable_style_count": 0,
+                "selected_exportable_style_count": 0,
+                "user_excluded_style_count": 0,
+                "skipped_style_count": 0,
+                "block_reason": "semi_mode",
+            }
+        else:
+            copies = self.repository.get_style_copies(
+                batch["batch_id"], batch["workspace_id"], batch["owner_user_id"]
+            )
+            export_analysis = analyze_dianxiaomi_export(batch, copies)
+            export_payload = {
+                "ready": export_analysis.ready,
+                "exportable_style_count": len(export_analysis.exportable_styles),
+                "selected_exportable_style_count": export_analysis.selected_exportable_style_count,
+                "user_excluded_style_count": export_analysis.user_excluded_style_count,
+                "skipped_style_count": export_analysis.skipped_style_count,
+                "block_reason": export_analysis.block_reason,
+            }
+        style_count = int(batch["requested_count"])
         return {
             "id": batch["batch_id"],
             "batch_id": batch["batch_id"],
+            "mode": "semi" if semi else "full",
             "title": batch["title"],
             "status": batch["status"],
             "template_id": batch["template_id"],
             "template_snapshot_id": batch["template_snapshot_id"],
             "template_name": batch["template_name"],
-            "count": batch["requested_count"],
+            "count": style_count,
+            "style_count": style_count,
+            "item_count": style_count * 4,
             "processed_count": batch["processed_count"],
             "completed_count": batch["completed_count"],
             "failed_count": batch["failed_count"],
+            "completed_item_count": completed_item_count,
+            "failed_item_count": failed_item_count,
             "title_completed_count": batch.get("title_completed_count", 0),
             "title_failed_count": batch.get("title_failed_count", 0),
             "listing_ready_count": batch.get("listing_ready_count", 0),
@@ -1907,15 +2113,8 @@ class PodCustomizationService:
             "prompt_version": batch["prompt_version"],
             "prompt_snapshot": batch["prompt_snapshot"],
             "business_fields": batch["business_fields"],
-            "listing_fields": batch["listing_fields"],
-            "dianxiaomi_export": {
-                "ready": export_analysis.ready,
-                "exportable_style_count": len(export_analysis.exportable_styles),
-                "selected_exportable_style_count": export_analysis.selected_exportable_style_count,
-                "user_excluded_style_count": export_analysis.user_excluded_style_count,
-                "skipped_style_count": export_analysis.skipped_style_count,
-                "block_reason": export_analysis.block_reason,
-            },
+            "listing_fields": None if semi else batch["listing_fields"],
+            "dianxiaomi_export": export_payload,
             "creative_prompt": batch["creative_prompt"],
             "error_message": batch["error_message"],
             "created_at": batch["created_at"],
@@ -1967,16 +2166,22 @@ class PodCustomizationService:
 
     @staticmethod
     def _batch_summary(batch: dict[str, Any]) -> dict[str, Any]:
+        rows = batch.get("items") or []
         return {
             "id": batch["batch_id"],
+            "mode": batch.get("mode", "full"),
             "title": batch["title"],
             "status": batch["status"],
             "template_id": batch["template_id"],
             "template_name": batch["template_name"],
             "count": batch["requested_count"],
+            "item_count": int(batch["requested_count"]) * 4,
             "processed_count": batch["processed_count"],
             "completed_count": batch["completed_count"],
             "failed_count": batch["failed_count"],
+            # 按「款/张」的计数（completed_count 是按「组」的），半定制列表按款展示。
+            "completed_item_count": sum(1 for row in rows if row.get("status") == "completed"),
+            "failed_item_count": sum(1 for row in rows if row.get("status") == "failed"),
             "title_completed_count": batch.get("title_completed_count", 0),
             "title_failed_count": batch.get("title_failed_count", 0),
             "listing_ready_count": batch.get("listing_ready_count", 0),

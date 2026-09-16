@@ -15,9 +15,13 @@ from ...pod_migrations import (
     recover_interrupted_pod_migrations,
 )
 from .billing_contract import PodCallOutcome, PodCallPlan, PodExecutionGrant
-from .contracts import BatchCreate, Calibration, grid_call_count, style_grid_call_count
+from .contracts import BatchCreate, Calibration, SemiBatchCreate, grid_call_count, style_grid_call_count
 from .errors import PodExecutionExpired, safe_error_message
-from .prompts import assign_style_elements, build_direct_listing_prompt
+from .prompts import assign_style_elements, build_direct_listing_prompt, build_semi_pattern_base
+
+
+SEMI_PLACEHOLDER_TEMPLATE_ID = "semi-pattern-placeholder"
+SEMI_PLACEHOLDER_TEMPLATE_NAME = "半定制占位模板"
 
 
 def _safe_error(value: object) -> str:
@@ -421,6 +425,131 @@ class PodCustomizationRepository:
             )
         return self.get_batch(batch_id, workspace_id, owner_user_id)
 
+    def ensure_semi_placeholder(
+        self,
+        workspace_id: str,
+        owner_user_id: str,
+        asset: dict[str, Any],
+    ) -> tuple[str, str, str]:
+        """惰性创建半定制占位模板（不接模板、只满足 batches 模板列的 NOT NULL + FK）。
+
+        ``deleted_at`` 非空使其不出现在 ``list_templates``（查询过滤 ``deleted_at = ''``），
+        半定制 worker 分支也永不读取该图。幂等：已存在时直接返回既有三元组。
+        """
+        now = _now()
+        with self._connect() as connection:
+            row = connection.execute(
+                """SELECT version FROM pod_customization_templates
+                   WHERE template_id = ? AND workspace_id = ?""",
+                (SEMI_PLACEHOLDER_TEMPLATE_ID, workspace_id),
+            ).fetchone()
+            if row is not None:
+                snapshot = connection.execute(
+                    """SELECT snapshot_id, name FROM pod_customization_template_snapshots
+                       WHERE template_id = ? AND version = ?""",
+                    (SEMI_PLACEHOLDER_TEMPLATE_ID, row["version"]),
+                ).fetchone()
+                return (SEMI_PLACEHOLDER_TEMPLATE_ID, snapshot["snapshot_id"], snapshot["name"])
+            snapshot_id = uuid.uuid4().hex
+            connection.execute(
+                """INSERT INTO pod_customization_templates
+                   (template_id, workspace_id, owner_user_id, name, source, asset_id, width, height,
+                    calibration_status, calibration_json, version, deleted_at, created_at, updated_at)
+                   VALUES (?, ?, ?, ?, 'system', ?, ?, ?, 'ready', 'null', 1, ?, ?, ?)""",
+                (SEMI_PLACEHOLDER_TEMPLATE_ID, workspace_id, owner_user_id, SEMI_PLACEHOLDER_TEMPLATE_NAME,
+                 asset["asset_id"], asset["width"], asset["height"], now, now, now),
+            )
+            connection.execute(
+                """INSERT INTO pod_customization_template_snapshots
+                   (snapshot_id, template_id, workspace_id, owner_user_id, version, name, source,
+                    asset_id, width, height, calibration_json, created_at)
+                   VALUES (?, ?, ?, ?, 1, ?, 'system', ?, ?, ?, 'null', ?)""",
+                (snapshot_id, SEMI_PLACEHOLDER_TEMPLATE_ID, workspace_id, owner_user_id,
+                 SEMI_PLACEHOLDER_TEMPLATE_NAME, asset["asset_id"], asset["width"], asset["height"], now),
+            )
+        return (SEMI_PLACEHOLDER_TEMPLATE_ID, snapshot_id, SEMI_PLACEHOLDER_TEMPLATE_NAME)
+
+    def create_semi_batch(
+        self,
+        workspace_id: str,
+        owner_user_id: str,
+        request: SemiBatchCreate,
+        *,
+        batch_id: str | None = None,
+    ) -> dict[str, Any]:
+        """创建半定制批次：4 格 = 4 款，``requested_count`` 存组数（款数 / 4）。
+
+        只写图片结果与元素分配，**不写 style_titles**；模板指向占位模板。
+        """
+        batch_id = str(batch_id or uuid.uuid4().hex)
+        now = _now()
+        groups = request.count // 4
+        prompt_snapshot = build_semi_pattern_base(request.business_fields, request.creative_prompt)
+        # 半定制没有「产品名」字段（纯图案），批次标题只取用户显式填写的 title。
+        title = request.title.strip() or f"POD-SEMI-{batch_id[:8]}"
+        with self._connect() as connection:
+            placeholder = connection.execute(
+                """SELECT version FROM pod_customization_templates
+                   WHERE template_id = ? AND workspace_id = ?""",
+                (SEMI_PLACEHOLDER_TEMPLATE_ID, workspace_id),
+            ).fetchone()
+            if placeholder is None:
+                raise PodRepositoryError("POD 半定制占位模板不可用", 409)
+            snapshot = connection.execute(
+                """SELECT snapshot_id, name FROM pod_customization_template_snapshots
+                   WHERE template_id = ? AND version = ?""",
+                (SEMI_PLACEHOLDER_TEMPLATE_ID, placeholder["version"]),
+            ).fetchone()
+            connection.execute(
+                """INSERT INTO pod_customization_batches
+                   (batch_id, workspace_id, owner_user_id, title, status, template_id, template_snapshot_id,
+                    template_name, requested_count, initial_call_count, max_refill_calls, prompt_version,
+                    prompt_snapshot, business_fields_json, listing_fields_json, creative_prompt, mode, created_at, updated_at)
+                   VALUES (?, ?, ?, ?, 'queued', ?, ?, ?, ?, ?, 0, ?, ?, ?, ?, ?, 'semi', ?, ?)""",
+                (batch_id, workspace_id, owner_user_id, title[:120], SEMI_PLACEHOLDER_TEMPLATE_ID,
+                 snapshot["snapshot_id"], snapshot["name"], groups, groups, request.prompt_version,
+                 prompt_snapshot, request.business_fields.model_dump_json(), "{}", request.creative_prompt, now, now),
+            )
+            connection.executemany(
+                """INSERT INTO pod_customization_style_grid_results
+                   (result_id, batch_id, workspace_id, owner_user_id, style_index, variant_index, status,
+                    created_at, updated_at)
+                   VALUES (?, ?, ?, ?, ?, ?, 'queued', ?, ?)""",
+                [
+                    (uuid.uuid4().hex, batch_id, workspace_id, owner_user_id, style_index, variant_index, now, now)
+                    for style_index in range(1, groups + 1)
+                    for variant_index in range(1, 5)
+                ],
+            )
+            connection.executemany(
+                """INSERT INTO pod_customization_style_elements
+                   (batch_id, style_index, elements_json, updated_at)
+                   VALUES (?, ?, ?, ?)""",
+                [
+                    (
+                        batch_id,
+                        # 半定制的元素分配按「款」而非按「组」：同组四格要生四份不同图案，
+                        # 所以四格（款号 (group-1)*4+1 .. group*4）各自需要一套主打/辅主/点缀。
+                        item_index,
+                        json.dumps(
+                            assign_style_elements(
+                                request.business_fields.style_keywords,
+                                item_index,
+                                batch_id,
+                            ),
+                            ensure_ascii=False,
+                        ),
+                        now,
+                    )
+                    for item_index in range(1, request.count + 1)
+                ],
+            )
+            connection.execute(
+                """INSERT INTO pod_customization_style_grid_batches (batch_id, created_at) VALUES (?, ?)""",
+                (batch_id, now),
+            )
+        return self.get_batch(batch_id, workspace_id, owner_user_id)
+
     def preflight_batch(self, workspace_id: str, owner_user_id: str, request: BatchCreate) -> None:
         """Validate all stable local prerequisites before remote points are frozen."""
         del owner_user_id
@@ -747,18 +876,21 @@ class PodCustomizationRepository:
         *,
         limit: int,
         offset: int,
+        mode: str | None = None,
     ) -> tuple[list[dict[str, Any]], int]:
+        mode_clause = " AND mode = ?" if mode else ""
+        mode_args = (mode,) if mode else ()
         with self._connect() as connection:
             total = int(connection.execute(
-                """SELECT COUNT(*) FROM pod_customization_batches
-                   WHERE workspace_id = ? AND owner_user_id = ?""",
-                (workspace_id, owner_user_id),
+                f"""SELECT COUNT(*) FROM pod_customization_batches
+                   WHERE workspace_id = ? AND owner_user_id = ?{mode_clause}""",
+                (workspace_id, owner_user_id, *mode_args),
             ).fetchone()[0])
             rows = connection.execute(
-                """SELECT * FROM pod_customization_batches
-                   WHERE workspace_id = ? AND owner_user_id = ?
+                f"""SELECT * FROM pod_customization_batches
+                   WHERE workspace_id = ? AND owner_user_id = ?{mode_clause}
                    ORDER BY created_at DESC, batch_id LIMIT ? OFFSET ?""",
-                (workspace_id, owner_user_id, limit, offset),
+                (workspace_id, owner_user_id, *mode_args, limit, offset),
             ).fetchall()
         return [
             self.get_batch(row["batch_id"], workspace_id, owner_user_id)
@@ -767,13 +899,15 @@ class PodCustomizationRepository:
 
     def recover_interrupted_batches(self) -> int:
         now = _now()
-        message = "POD 批次中断，未完成款式已记为失败，可从失败项重试"
+        message = "上次运行未正常结束（强制关机或断电），批次已停止，未完成款式已记为失败，可整款重试"
         with self._connect() as connection:
+            # 断电/强杀后批次可能停在任意非终态：既有正在生成的阶段，也有
+            # 只入队未开工的 queued，以及暂停/取消请求尚未落地的过渡态。
+            # 三者都必须收敛到终态，否则前端会一直显示「运行中」且无法重试。
             rows = connection.execute(
-                """SELECT batches.batch_id FROM pod_customization_batches AS batches
-                   INNER JOIN pod_customization_style_grid_batches AS style_grids
-                     ON style_grids.batch_id = batches.batch_id
-                   WHERE batches.status IN ('generating_patterns', 'compositing', 'generating_titles')"""
+                """SELECT batch_id FROM pod_customization_batches
+                   WHERE status IN ('queued', 'generating_patterns', 'compositing',
+                                    'generating_titles', 'pausing', 'cancelling')"""
             ).fetchall()
             for row in rows:
                 batch_id = row["batch_id"]
@@ -831,6 +965,36 @@ class PodCustomizationRepository:
                            error_message = ?, updated_at = ?, finished_at = ? WHERE batch_id = ?""",
                     ("partial_failure" if int(counts["completed_count"]) > 0 else "failed", message, now, now, batch_id),
                 )
+            # 关机围栏（pause_billing_runs_for_shutdown）在旧版本里只收敛了批次与在途
+            # 调用，漏掉 style_grid_results：那类批次当时已被判成 partial_failure/failed，
+            # 上面按「非终态批次」收敛的分支永远不会再选中它，剩下的 queued 款式就会
+            # 一直显示「等待生成」且无法整款重试。这里对已终态批次再兜一遍。
+            stranded = connection.execute(
+                """SELECT DISTINCT batches.batch_id FROM pod_customization_batches AS batches
+                   INNER JOIN pod_customization_style_grid_results AS results
+                     ON results.batch_id = batches.batch_id
+                   WHERE batches.status IN ('partial_failure', 'failed')
+                     AND results.status IN ('queued', 'generating_pattern', 'compositing',
+                                            'optimizing_scene')"""
+            ).fetchall()
+            for row in stranded:
+                batch_id = row["batch_id"]
+                connection.execute(
+                    """UPDATE pod_customization_style_grid_results
+                       SET status = CASE
+                             WHEN pattern_asset_id <> '' AND composite_asset_id <> '' THEN 'completed'
+                             ELSE 'failed'
+                           END,
+                           error_message = CASE
+                             WHEN pattern_asset_id <> '' AND composite_asset_id <> '' THEN error_message
+                             ELSE ?
+                           END,
+                           updated_at = ?
+                       WHERE batch_id = ?
+                         AND status IN ('queued', 'generating_pattern', 'compositing', 'optimizing_scene')""",
+                    (message, now, batch_id),
+                )
+                self._refresh_counts(connection, batch_id, now)
             legacy_rows = connection.execute(
                 """SELECT batch_id, completed_count FROM pod_customization_batches
                    WHERE status = 'billing_auth_required'"""
@@ -1193,6 +1357,24 @@ class PodCustomizationRepository:
                         SET status = 'failed', error_message = ?, updated_at = ?
                         WHERE batch_id IN ({placeholders})
                           AND status IN ('queued', 'compositing', 'generating_pattern')""",
+                    (message, now, *active_ids),
+                )
+                # 风格网格（v2）批次的结果行存在 style_grid_results，而不是上面那张
+                # 旧表。漏掉它会让未完成款式永远停在 queued，前端一直显示
+                # 「等待生成」（既不是失败也不能整款重试）。
+                connection.execute(
+                    f"""UPDATE pod_customization_style_grid_results
+                        SET status = CASE
+                              WHEN pattern_asset_id <> '' AND composite_asset_id <> '' THEN 'completed'
+                              ELSE 'failed'
+                            END,
+                            error_message = CASE
+                              WHEN pattern_asset_id <> '' AND composite_asset_id <> '' THEN error_message
+                              ELSE ?
+                            END,
+                            updated_at = ?
+                        WHERE batch_id IN ({placeholders})
+                          AND status IN ('queued', 'generating_pattern', 'compositing', 'optimizing_scene')""",
                     (message, now, *active_ids),
                 )
                 connection.execute(
@@ -2857,8 +3039,8 @@ class PodCustomizationRepository:
                        WHERE batch_id = ? AND style_index = ? ORDER BY variant_index""",
                     (batch_id, style_index),
                 ).fetchall()
-                if len(rows) != 4 or any(row["status"] != "failed" for row in rows):
-                    raise PodRepositoryError("only styles with all four images failed can be retried", 409)
+                if len(rows) != 4 or all(row["status"] == "completed" for row in rows):
+                    raise PodRepositoryError("only styles with unfinished images can be retried", 409)
 
             for style_index in title_style_indices:
                 title = connection.execute(
@@ -2896,14 +3078,16 @@ class PodCustomizationRepository:
                 raise PodRepositoryError("POD batch must settle before retrying failed styles", 409)
 
             for style_index in image_style_indices:
+                # 一款的四张图来自同一次 2×2 生图调用，重试即整款重生成，
+                # 因此这里连同已完成的槽位一起重置（部分完成的款式也能重试）。
                 updated = connection.execute(
                     """UPDATE pod_customization_style_grid_results
                        SET status = 'generating_pattern', error_message = '', updated_at = ?
-                       WHERE batch_id = ? AND style_index = ? AND status = 'failed'""",
+                       WHERE batch_id = ? AND style_index = ?""",
                     (now, batch_id, style_index),
                 )
                 if updated.rowcount != 4:
-                    raise PodRepositoryError("only styles with all four images failed can be retried", 409)
+                    raise PodRepositoryError("POD style must keep its four image slots", 409)
                 title_reset = connection.execute(
                     """UPDATE pod_customization_style_titles
                        SET style_task_id = '', status = 'queued', title = '', normalized_title = NULL,

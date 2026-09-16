@@ -1,6 +1,7 @@
 import { defineConfig } from "vite";
 import react from "@vitejs/plugin-react";
 
+// 本地工作台（workbench）在 8010；8011 是 customer-auth 独立服务，不是页面后端。
 const BACKEND = "http://127.0.0.1:8010";
 
 // 开发模式下页面在 vite(5174) 而 API 在 8010，浏览器会带上 Origin=5174，

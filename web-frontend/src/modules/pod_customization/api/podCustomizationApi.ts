@@ -1,4 +1,4 @@
-import { getAuthToken, httpBlob, httpJson } from "../../../transport/http/client";
+import { getAuthToken, httpBlob, httpJson, toUserMessage } from "../../../transport/http/client";
 import { parseDianxiaomiExportFilename, parseDianxiaomiExportHeaderCount } from "../data/dianxiaomiExport";
 import { podStyleTitleRegenerateRequest } from "../data/styleTitleRequest";
 import type { PodBatchRetryRequest } from "../data/podBatchRetry";
@@ -8,6 +8,7 @@ import type {
   PodBriefFieldsResponse,
   PodBatchItem,
   PodBatchListResponse,
+  PodMiaoshouTemplateKind,
   PodStyleTitle,
   PodTemplate,
   PodTemplateCalibration,
@@ -37,7 +38,9 @@ async function uploadTemplate(file: File, name: string): Promise<PodTemplate> {
   const response = await fetch(apiUrl(`${API_BASE}/templates`), { method: "POST", headers, body: form });
   const payload = await response.json().catch(() => ({}));
   if (!response.ok) {
-    throw new Error(typeof payload?.detail === "string" ? payload.detail : `模板上传失败 (HTTP ${response.status})`);
+    // 后端 detail 可能是英文（如 POD billing request was rejected），交给统一翻译层转中文
+    const detail = typeof payload?.detail === "string" ? payload.detail : `模板上传失败 (HTTP ${response.status})`;
+    throw new Error(toUserMessage(detail));
   }
   return payload as PodTemplate;
 }
@@ -79,23 +82,47 @@ function saveBlob(blob: Blob, filename: string): void {
   triggerBlobDownload(blob, filename);
 }
 
-async function exportDianxiaomi(batchId: string): Promise<PodDianxiaomiExportDownload> {
+async function downloadExportWorkbook(
+  batchId: string,
+  segment: string,
+  query: string,
+  fallbackName: string,
+): Promise<PodDianxiaomiExportDownload> {
   const headers: Record<string, string> = {};
   const token = getAuthToken();
   if (token) headers.authorization = `Bearer ${token}`;
-  const response = await fetch(apiUrl(`${API_BASE}/batches/${encodeURIComponent(batchId)}/exports/dianxiaomi`), { headers });
+  const response = await fetch(
+    apiUrl(`${API_BASE}/batches/${encodeURIComponent(batchId)}/exports/${segment}${query}`),
+    { headers },
+  );
   if (!response.ok) {
     const payload = await response.json().catch(() => null);
     const detail = typeof payload?.detail === "string" ? payload.detail : `导出失败 (HTTP ${response.status})`;
-    throw new Error(detail);
+    throw new Error(toUserMessage(detail));
   }
-  const filename = parseDianxiaomiExportFilename(response.headers.get("content-disposition"), `pod-${batchId}-dianxiaomi.xlsx`);
+  const filename = parseDianxiaomiExportFilename(response.headers.get("content-disposition"), fallbackName);
   saveBlob(await response.blob(), filename);
   return {
     exportedStyles: parseDianxiaomiExportHeaderCount(response.headers.get("x-pod-exported-styles")),
     skippedStyles: parseDianxiaomiExportHeaderCount(response.headers.get("x-pod-skipped-styles")),
     filename,
   };
+}
+
+function exportDianxiaomi(batchId: string): Promise<PodDianxiaomiExportDownload> {
+  return downloadExportWorkbook(batchId, "dianxiaomi", "", `pod-${batchId}-dianxiaomi.xlsx`);
+}
+
+function exportMiaoshou(
+  batchId: string,
+  kind: PodMiaoshouTemplateKind,
+): Promise<PodDianxiaomiExportDownload> {
+  return downloadExportWorkbook(
+    batchId,
+    "miaoshou",
+    `?kind=${encodeURIComponent(kind)}`,
+    `pod-${batchId}-miaoshou-${kind}.xlsx`,
+  );
 }
 
 export const podCustomizationApi = {
@@ -169,5 +196,6 @@ export const podCustomizationApi = {
     { method: "POST", body },
   ),
   exportDianxiaomi,
+  exportMiaoshou,
   downloadAsset,
 };

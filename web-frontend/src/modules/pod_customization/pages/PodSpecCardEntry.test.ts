@@ -56,9 +56,13 @@ test("the spec-card configuration is frozen into the create-batch listing snapsh
   assert.match(modelSource, /export function listingFieldsForApi\(\s*fields: PodListingFieldsDraft,\s*specCard\?: SpecCardConfig \| null,\s*\): PodListingFieldsResult \{/);
   assert.match(modelSource, /\.\.\.\(specCard \? \{ spec_card: specCardForApi\(specCard\) \} : \{\}\)/);
   assert.match(modelSource, /export function isSpecCardConfigured\(config: SpecCardConfig \| null \| undefined\): boolean \{/);
-  assert.match(modelSource, /row\.some\(\(cell\) => typeof cell === "string" && cell\.trim\(\)\.length > 0\)/);
+  assert.match(modelSource, /export const SPEC_CARD_DIMENSION_HEADER = \["SKU", "Length", "Width", "Height"\] as const;/);
+  // 必填口径：每个 SKU 行的长/宽/高（第 2/3/4 列）都要非空，表头行与第 1 列不参与。
+  assert.match(modelSource, /\[1, 2, 3\]\.every\(\(column\) => typeof row\[column\] === "string" && row\[column\]\.trim\(\)\.length > 0\)/);
   assert.match(modelSource, /export function specCardSummaryText\(config: SpecCardConfig \| null \| undefined\): string \{/);
-  assert.match(modelSource, /return `\$\{rows\} 行 · \$\{style\} · \$\{corner\}`;/);
+  // 用户规格（2026-09-12）：关掉「印到图上」时摘要补一句，页面上能看出素材图不带卡片。
+  assert.match(modelSource, /const printing = config\.enabled \? "" : " · 不印图";/);
+  assert.match(modelSource, /return `\$\{rows\} 行 · \$\{style\} · \$\{corner\}\$\{printing\}`;/);
   assert.match(modelSource, /if \(!config \|\| !isSpecCardConfigured\(config\)\) return "未配置";/);
   assert.match(modelSource, /export const EMPTY_SPEC_CARD: SpecCardConfig = \{/);
 });
@@ -78,23 +82,44 @@ test("the drawer mirrors the shared drawer shell with dialog semantics", () => {
 test("the drawer edits the table, the style and the corner through the dedicated sections", () => {
   assert.match(drawerSource, /<SpecCardTableEditor cells=\{cells\} onChange=\{setCells\} disabled=\{readOnly\} \/>/);
   assert.match(drawerSource, /<SpecCardAppearanceControls[\s\S]*?onCornerChange=\{setCorner\}/);
-  assert.match(drawerSource, /<SpecCardPreview cells=\{cells\} style=\{style\} corner=\{corner\} baseTemplateId=\{baseTemplateId\} \/>/);
+  assert.match(drawerSource, /<SpecCardPreview cells=\{cells\} style=\{style\} corner=\{corner\} enabled=\{enabled\} baseTemplateId=\{baseTemplateId\} \/>/);
   assert.match(appearanceSource, /const CORNER_OPTIONS: SpecCardCorner\[\] = \["top-left", "top-right", "bottom-left", "bottom-right"\];/);
+
+  // 用户规格（2026-09-12）：卡片外观里新增「是否印到图上」，关掉后素材图保持干净母版（长/宽/高仍照常导出）。
+  assert.match(appearanceSource, /export function SpecCardAppearanceControls\(\{ style, corner, enabled, onStyleChange, onCornerChange, onEnabledChange, disabled = false \}: Props\)/);
+  assert.match(appearanceSource, /const PRINT_OPTIONS: Array<\{ value: boolean; label: string; hint: string \}> = \[/);
+  assert.match(appearanceSource, /\{ value: true, label: "印到图上", hint: "素材图带尺寸卡片" \}/);
+  assert.match(appearanceSource, /\{ value: false, label: "不印", hint: "素材图保持干净" \}/);
+  assert.match(appearanceSource, /aria-label="是否印到图上"/);
+  assert.match(appearanceSource, /data-print=\{option\.value \? "on" : "off"\}/);
+  assert.match(appearanceSource, /onClick=\{\(\) => onEnabledChange\(option\.value\)\}/);
+  assert.match(drawerSource, /const \[enabled, setEnabled\] = useState\(config\.enabled\);/);
+  assert.match(drawerSource, /setEnabled\(next\.enabled\);/);
+  assert.match(drawerSource, /onEnabledChange=\{setEnabled\}/);
+  assert.match(drawerSource, /const currentConfig = \(\): SpecCardConfig => \(\{\s*enabled,/);
+  assert.match(drawerSource, /enabled: next\.enabled,/);
   assert.match(appearanceSource, /role="radiogroup" aria-label="卡片位置"/);
   assert.match(appearanceSource, /data-corner=\{option\}/);
   assert.match(styles, /\.pod-spec-card-corner-grid \{ display: grid;[\s\S]*?grid-template-columns: repeat\(2, minmax\(0, 1fr\)\);/);
 });
 
-test("the table editor enforces row, column and cell limits without rewriting content", () => {
-  assert.match(modelSource, /export const SPEC_CARD_MAX_ROWS = 12;/);
+test("the table editor enforces the fixed structure and cell limit without rewriting content", () => {
+  // 行数跟随 SKU 数量（1 行表头 + 每个 SKU 一行），列数固定为表头列数。
+  assert.match(modelSource, /export const SPEC_CARD_MAX_ROWS = MAX_POD_SKU_COUNT \+ 1;/);
+  assert.match(modelSource, /export const SPEC_CARD_COLUMNS = SPEC_CARD_DIMENSION_HEADER\.length;/);
   assert.match(modelSource, /export const SPEC_CARD_MAX_COLUMNS = 6;/);
   assert.match(modelSource, /export const SPEC_CARD_CELL_MAX_LENGTH = 120;/);
-  assert.match(editorSource, /maxLength=\{SPEC_CARD_CELL_MAX_LENGTH\}/);
+  assert.match(editorSource, /maxLength=\{forced \? undefined : SPEC_CARD_CELL_MAX_LENGTH\}/);
   assert.match(editorSource, /\{cell\.length\}\/\{SPEC_CARD_CELL_MAX_LENGTH\}/);
   assert.match(editorSource, /if \(value\.length > SPEC_CARD_CELL_MAX_LENGTH\) \{[\s\S]*?return;\s*\}/);
   assert.match(editorSource, /每列居中/);
-  assert.match(editorSource, /disabled=\{disabled \|\| cells\.length >= SPEC_CARD_MAX_ROWS\}/);
-  assert.match(editorSource, /disabled=\{disabled \|\| columns >= SPEC_CARD_MAX_COLUMNS\}/);
+  // 表头行与第 1 列为强制只读单元格，由 SKU 预设自动映射。
+  assert.match(editorSource, /const forced = isForcedCell\(rowIndex, columnIndex\);/);
+  assert.match(editorSource, /disabled=\{disabled \|\| forced\}/);
+  assert.match(editorSource, /readOnly=\{forced\}/);
+  // 结构固定后不再提供「＋ 添加行 / ＋ 添加列」按钮。
+  assert.doesNotMatch(editorSource, /添加行/);
+  assert.doesNotMatch(editorSource, /添加列/);
 });
 
 test("the table editor injects no default table copy and no text processing", () => {
@@ -146,10 +171,13 @@ test("a running batch freezes the drawer while a terminal batch offers the full-
   assert.match(styles, /\.pod-spec-card-frozen-banner \{/);
 });
 
-test("the drawer footer keeps the three local actions and reports reprint progress and results", () => {
+test("the drawer footer keeps the local actions and reports reprint progress and results", () => {
   assert.match(drawerSource, />保存到本批次<\/button>/);
   assert.match(drawerSource, />恢复默认<\/button>/);
-  assert.match(drawerSource, />清空<\/button>/);
+  // 用户规格（2026-09-12）：底栏不再提供「清空」按钮，「恢复默认」只清空已填尺寸。
+  assert.doesNotMatch(drawerSource, />清空<\/button>/);
+  assert.match(drawerSource, /解锁编辑（仅用于下一批次）/);
+  assert.match(drawerSource, /setCells\(buildSpecCardCells\(skuNames\)\)/);
   assert.match(drawerSource, /保存并全批重印/);
   assert.match(drawerSource, /podCustomizationApi\.reprintSpecCard\(batch\.id, \{[\s\S]*?cells: next\.cells,[\s\S]*?style: next\.style,[\s\S]*?corner: next\.corner,[\s\S]*?\}\);/);
   assert.match(drawerSource, /重印中 \{reprintProgress\.done\}\/\{reprintProgress\.total\}/);

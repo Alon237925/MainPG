@@ -4,8 +4,10 @@ import type { SpecCardCorner, SpecCardStyle } from "../types";
 type Props = {
   style: SpecCardStyle;
   corner: SpecCardCorner;
+  enabled: boolean;
   onStyleChange: (style: SpecCardStyle) => void;
   onCornerChange: (corner: SpecCardCorner) => void;
+  onEnabledChange: (enabled: boolean) => void;
   disabled?: boolean;
 };
 
@@ -14,13 +16,40 @@ const STYLE_OPTIONS: Array<{ value: SpecCardStyle; label: string }> = [
   { value: "dark", label: "深色" },
 ];
 
+// 有些品不需要把尺寸印到素材图上：关掉后素材图保持干净母版，长/宽/高数据仍照常导出。
+const PRINT_OPTIONS: Array<{ value: boolean; label: string; hint: string }> = [
+  { value: true, label: "印到图上", hint: "素材图带尺寸卡片" },
+  { value: false, label: "不印", hint: "素材图保持干净" },
+];
+
 // 2×2 排布与图上实际象限一致：左上 / 右上 / 左下 / 右下。
 const CORNER_OPTIONS: SpecCardCorner[] = ["top-left", "top-right", "bottom-left", "bottom-right"];
 
-export function SpecCardAppearanceControls({ style, corner, onStyleChange, onCornerChange, disabled = false }: Props) {
+export function SpecCardAppearanceControls({ style, corner, enabled, onStyleChange, onCornerChange, onEnabledChange, disabled = false }: Props) {
   return (
     <section className="pod-spec-card-appearance" aria-label="卡片外观">
       <div className="pod-spec-card-section-title"><span>APPEARANCE</span><h3>卡片外观</h3></div>
+
+      <div className="pod-spec-card-field">
+        <span className="pod-spec-card-field-label">是否印到图上<em>*</em></span>
+        <div className="pod-spec-card-style-options" role="radiogroup" aria-label="是否印到图上">
+          {PRINT_OPTIONS.map((option) => (
+            <button
+              key={String(option.value)}
+              type="button"
+              role="radio"
+              aria-checked={enabled === option.value}
+              className={enabled === option.value ? "is-active" : ""}
+              data-print={option.value ? "on" : "off"}
+              disabled={disabled}
+              onClick={() => onEnabledChange(option.value)}
+            >
+              <b>{option.label}</b>
+              <i aria-hidden="true">{option.hint}</i>
+            </button>
+          ))}
+        </div>
+      </div>
 
       <div className="pod-spec-card-field">
         <span className="pod-spec-card-field-label">卡片风格<em>*</em></span>

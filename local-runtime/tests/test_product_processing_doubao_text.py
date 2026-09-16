@@ -34,13 +34,16 @@ VALID_TEXT = {
 
 
 class _Response:
-    def __init__(self, payload: dict | str, *, status_code: int = 200) -> None:
+    def __init__(
+        self, payload: dict | str, *, status_code: int = 200, headers: dict | None = None
+    ) -> None:
         self.content = (
             payload.encode("utf-8")
             if isinstance(payload, str)
             else json.dumps(payload).encode("utf-8")
         )
         self.status_code = status_code
+        self.headers = dict(headers or {})
         self.closed = False
 
     def close(self) -> None:
@@ -52,7 +55,7 @@ class _Session:
         self.responses = list(responses)
         self.requests: list[dict] = []
 
-    def post(self, url, *, headers, json, timeout, allow_redirects):
+    def post(self, url, *, headers, json, timeout, allow_redirects, verify=None):
         self.requests.append(
             {
                 "url": url,
@@ -60,6 +63,7 @@ class _Session:
                 "json": json,
                 "timeout": timeout,
                 "allow_redirects": allow_redirects,
+                "verify": verify,
             }
         )
         response = self.responses.pop(0)
@@ -211,6 +215,70 @@ def test_three_invalid_responses_raise_sanitized_retryable_error(monkeypatch) ->
     assert invalid_body not in str(captured.value)
     assert "ark-secret" not in str(captured.value)
     assert len(session.requests) == 3
+
+
+def test_in_flight_gateway_conflict_waits_and_replays_cached_result(monkeypatch) -> None:
+    session = _Session(
+        [
+            _Response(
+                {"detail": "identical gateway request is already in progress"},
+                status_code=409,
+                headers={"Retry-After": "5"},
+            ),
+            _success(),
+        ]
+    )
+    monkeypatch.setenv("ARK_API_KEY", "ark-secret")
+    monkeypatch.setattr(doubao_ark, "_HTTP_SESSION", session)
+    monkeypatch.setattr(doubao_ark.time, "sleep", lambda _seconds: None)
+
+    client = doubao_text.DoubaoTextClient()
+    result = client.generate_listing_text("prompt")
+
+    assert result.optimized_title == VALID_TEXT["optimized_title"]
+    # 在途 409 只说明服务端还在处理同一请求，不能算一次失败的尝试。
+    assert client.last_attempt_count == 1
+    assert len(session.requests) == 2
+    assert {
+        request["json"]["messages"][0]["content"] for request in session.requests
+    } == {"prompt"}
+
+
+def test_exhausted_gateway_budget_is_terminal_and_not_retried(monkeypatch) -> None:
+    detail = "gateway request limit reached for reserved usage"
+    session = _Session([_Response({"detail": detail}, status_code=409)])
+    monkeypatch.setenv("ARK_API_KEY", "ark-secret")
+    monkeypatch.setattr(doubao_ark, "_HTTP_SESSION", session)
+    monkeypatch.setattr(doubao_ark.time, "sleep", lambda _seconds: None)
+
+    with pytest.raises(doubao_text.DoubaoTextError) as captured:
+        doubao_text.DoubaoTextClient().generate_listing_text("prompt")
+
+    assert captured.value.error_kind == "quota_exhausted"
+    assert captured.value.retryable is False
+    assert captured.value.upstream_detail == detail
+    assert captured.value.attempt_count == 1
+    assert len(session.requests) == 1
+
+
+def test_in_flight_conflict_polls_at_a_bounded_interval(monkeypatch) -> None:
+    session = _Session(
+        [
+            _Response(
+                {"detail": "identical gateway request is already in progress"},
+                status_code=409,
+                headers={"Retry-After": "5"},
+            ),
+            _success(),
+        ]
+    )
+    monkeypatch.setattr(doubao_ark, "_HTTP_SESSION", session)
+    sleeps: list[float] = []
+    monkeypatch.setattr(doubao_ark.time, "sleep", sleeps.append)
+
+    doubao_text.DoubaoTextClient().generate_listing_text("prompt")
+
+    assert sleeps == [doubao_ark.GATEWAY_IN_PROGRESS_POLL_SECONDS]
 
 
 def test_old_gateway_retry_limit_preserves_contract_failure(monkeypatch) -> None:

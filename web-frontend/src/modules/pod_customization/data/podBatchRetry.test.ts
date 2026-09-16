@@ -21,16 +21,17 @@ const titleFailed = {
   status: "completed" as const,
 };
 
-test("batch retry candidates separate fully failed images from title-only failures", () => {
+test("batch retry candidates include styles with unfinished images and title-only failures", () => {
   const candidates = batchRetryCandidates([imageFailed, titleFailed, {
     ...imageFailed,
     index: 4,
     results: [{ id: "partial", status: "failed" as const }, { id: "completed", status: "completed" as const }, undefined, undefined],
   }]);
 
-  assert.deepEqual(candidates.image.map((candidate) => candidate.styleIndex), [2]);
+  assert.deepEqual(candidates.image.map((candidate) => candidate.styleIndex), [2, 4]);
   assert.deepEqual(candidates.title.map((candidate) => candidate.styleIndex), [3]);
   assert.equal(candidates.image[0]?.reason, "图片生成失败");
+  assert.equal(candidates.image[1]?.reason, "存在未完成的图片");
   assert.equal(candidates.title[0]?.reason, "标题服务暂时不可用");
 });
 

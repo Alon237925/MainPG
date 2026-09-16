@@ -22,18 +22,24 @@ test("sidebar navigation groups the product workflow around its AI history entry
   assert.equal(productWorkflow?.children?.find((child) => child.id === "product_processing_history")?.iconClass, "iconfont icon-time-circle");
 });
 
-test("POD customization is a top-level section beside product and sourcing workflows", () => {
+test("POD customization is a grouped section with full and semi customization", () => {
   assert.deepEqual(workspaceModules.map((module) => module.id), [
     "dashboard",
     "product_workflow",
-    "pod_customization",
+    "combo_workflow",
+    "pod_workflow",
     "sourcing_workflow",
     "personal_center",
   ]);
 
-  const podCustomization = workspaceModules.find((module) => module.id === "pod_customization");
-  assert.equal(podCustomization?.label, "POD定制");
-  assert.equal(podCustomization?.iconClass, "iconfont icon-skin");
+  const podWorkflow = workspaceModules.find((module) => module.id === "pod_workflow");
+  assert.equal(podWorkflow?.defaultChildId, "pod_customization");
+  assert.deepEqual(podWorkflow?.children?.map((child) => child.id), [
+    "pod_customization",
+    "pod_semi_customization",
+  ]);
+  assert.deepEqual(podWorkflow?.children?.map((child) => child.label), ["全定制", "半定制"]);
+  assert.equal(podWorkflow?.iconClass, "iconfont icon-skin");
 });
 
 test("sidebar navigation prioritizes price and source matching in its default sourcing workflow", () => {

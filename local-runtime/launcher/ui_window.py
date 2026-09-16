@@ -7,18 +7,19 @@
 - 左侧浅色侧边栏卡片
 - 启动时带 Splash 动画
 
-四个功能页通过 QStackedWidget 切换：
+五个功能页通过 QStackedWidget 切换：
   1. 本地环境监测：只告诉用户「就绪 / 未就绪」，逐条输出检查项。
-  2. 本地文件资源缓存：扫描本地个人资产生成物，可清理 / 导出 / 导入。
-  3. 版本更新检查：查询当前版本，非最新则去官网下载最新版。
-  4. 本地报错日志上传：用户账户/密码登录后，将本地 runtime.log 上报到服务器。
+  2. 主程序进程：启动 / 停止 / 重启本地主程序，观测内存占用与运行时长。
+  3. 本地文件资源缓存：扫描本地个人资产生成物，可清理 / 导出 / 导入。
+  4. 版本更新检查：查询当前版本，非最新则去官网下载最新版。
+  5. 本地报错日志上传：用户账户/密码登录后，将本地 runtime.log 上报到服务器。
 
-主界面左侧底部提供「一键启动本地程序」按钮。
+主界面左侧底部提供「启动 / 停止 / 重启主程序」控制组。
 """
 from __future__ import annotations
 
-import os
 import sys
+import time
 from pathlib import Path
 from typing import Any
 
@@ -26,7 +27,7 @@ from PySide6.QtCore import (
     QEasingCurve,
     QEventLoop,
     QPointF,
-    QPropertyAnimation,
+    QRectF,
     Qt,
     QThread,
     QTimer,
@@ -39,10 +40,10 @@ from PySide6.QtGui import (
     QColor,
     QFont,
     QFontDatabase,
+    QIcon,
     QLinearGradient,
     QPainter,
     QPen,
-    QPixmap,
     QTextCursor,
 )
 from PySide6.QtWidgets import (
@@ -51,6 +52,7 @@ from PySide6.QtWidgets import (
     QFileDialog,
     QFrame,
     QGraphicsDropShadowEffect,
+    QGraphicsOpacityEffect,
     QGridLayout,
     QHBoxLayout,
     QHeaderView,
@@ -58,11 +60,8 @@ from PySide6.QtWidgets import (
     QLineEdit,
     QMainWindow,
     QMessageBox,
-    QPlainTextEdit,
     QProgressBar,
     QPushButton,
-    QSizePolicy,
-    QSplashScreen,
     QStackedWidget,
     QTableWidget,
     QTableWidgetItem,
@@ -73,6 +72,12 @@ from PySide6.QtWidgets import (
 from PySide6 import QtWidgets
 
 from . import console, core, logupload, update
+from .process import (
+    STATE_RUNNING,
+    STATE_STARTING,
+    STATE_STOPPED,
+    ProductProcess,
+)
 
 # ----------------------------- 设计令牌 ----------------------------------- #
 
@@ -123,6 +128,19 @@ SIDEBAR_ACTIVE_BG = (
 SIDEBAR_ACTIVE_COLOR = "#056fc8"
 SIDEBAR_TEXT = "#527089"
 
+# 侧边栏宽度（展开 / 折叠）
+SIDEBAR_W = 220
+SIDEBAR_W_COLLAPSED = 96
+SIDEBAR_ANIM_MS = 260
+
+# 环形内存仪表的量程起步值与步进
+GAUGE_MIN_SCALE = 256 * 1024 * 1024
+GAUGE_STEP = 256 * 1024 * 1024
+
+# 页面切换时内容下沉的起始像素，配合淡入形成轻微上移过渡
+PAGE_SLIDE_OFFSET = 14
+PAGE_FADE_MS = 240
+
 # 输入/表单
 INPUT_BORDER = "#d6e2ed"
 INPUT_FOCUS = "#1e91e6"
@@ -163,6 +181,7 @@ ICONS = {
 # 侧边栏导航项
 NAV_ITEMS = [
     ("dashboard", "工作台", "本地环境监测"),
+    ("thunderbolt", "进程", "主程序进程管理"),
     ("folder", "资源", "本地文件资源"),
     ("sync", "更新", "版本更新检查"),
     ("upload", "日志", "日志上报"),
@@ -183,6 +202,22 @@ def _asset_path(name: str) -> str:
     """返回 launcher 包内 assets 目录下文件的绝对路径。"""
     pkg = Path(__file__).resolve().parent
     return str(pkg / "assets" / name)
+
+
+def _app_icon() -> QIcon:
+    """返回应用图标（「界」字 app-icon.ico），用于窗口/任务栏。
+
+    PyInstaller onefile 时资源解包到 sys._MEIPASS；源码运行时在 local-runtime 根目录。
+    """
+    candidates = []
+    meipass = getattr(sys, "_MEIPASS", "")
+    if meipass:
+        candidates.append(Path(meipass) / "app-icon.ico")
+    candidates.append(Path(__file__).resolve().parent.parent / "app-icon.ico")
+    for path in candidates:
+        if path.is_file():
+            return QIcon(str(path))
+    return QIcon()
 
 
 def _load_iconfont() -> int:
@@ -218,6 +253,18 @@ def _fmt_bytes(n: int) -> str:
     return f"{n:.2f} PB"
 
 
+def _fmt_duration(seconds: float) -> str:
+    """把秒数格式化成「x 小时 y 分 / y 分 z 秒 / z 秒」。"""
+    total = int(max(0.0, seconds))
+    hours, remainder = divmod(total, 3600)
+    minutes, secs = divmod(remainder, 60)
+    if hours:
+        return f"{hours} 小时 {minutes} 分"
+    if minutes:
+        return f"{minutes} 分 {secs} 秒"
+    return f"{secs} 秒"
+
+
 def _esc(text: str) -> str:
     return (
         text.replace("&", "&amp;")
@@ -245,8 +292,10 @@ def _friendly_key(key: str) -> str:
 
 
 def _card_style() -> str:
+    # 必须用 #objectName 限定：QFrame 类型选择器会命中子类 QLabel，
+    # 未限定则卡片内所有标签都会被继承上边框。
     return (
-        f"QFrame{{background:{CARD_BG};border:1px solid {CARD_BORDER};"
+        f"QFrame#card{{background:{CARD_BG};border:1px solid {CARD_BORDER};"
         f"border-radius:{CARD_RADIUS}px;}}"
     )
 
@@ -281,6 +330,31 @@ def _danger_button() -> str:
         f"border:1px solid #ffd0d0;border-radius:10px;"
         f"padding:0 14px;font-size:12px;font-weight:700;}}"
         f"QPushButton:hover{{background:#ffeded;border-color:#f5b5b5;}}"
+    )
+
+
+def _nav_button_style(collapsed: bool = False) -> str:
+    """侧边栏导航按钮样式；折叠时图标居中。"""
+    align = "center" if collapsed else "left"
+    return (
+        f"QPushButton{{color:{SIDEBAR_TEXT};background:transparent;"
+        f"border:1px solid transparent;"
+        f"border-radius:12px;padding:0 {'0' if collapsed else '11px'};"
+        f"font-size:13px;font-weight:720;text-align:{align};}}"
+        f"QPushButton:hover{{background:{SIDEBAR_HOVER};color:{TEXT_PRIMARY};}}"
+        f"QPushButton:checked{{background:{SIDEBAR_ACTIVE_BG};"
+        f"color:{SIDEBAR_ACTIVE_COLOR};border-color:#8fd3ec;}}"
+    )
+
+
+def _ghost_button(centered: bool = False) -> str:
+    """侧边栏内的低强调按钮（折叠开关）。"""
+    align = "center" if centered else "left"
+    return (
+        f"QPushButton{{color:{TEXT_MUTED};background:transparent;"
+        f"border:1px solid transparent;border-radius:10px;"
+        f"padding:0 8px;font-size:12px;font-weight:700;text-align:{align};}}"
+        f"QPushButton:hover{{background:{SIDEBAR_HOVER};color:{PRIMARY};}}"
     )
 
 
@@ -365,10 +439,40 @@ class UpdateCheckWorker(QThread):
 
     def run(self) -> None:  # noqa: D102
         try:
-            release = update.check_update()
+            release = update.check_for_update(timeout=12.0)
             self.done.emit(release)
         except Exception as exc:  # noqa: BLE001
             self.error.emit(repr(exc))
+
+
+class ProductActionWorker(QThread):
+    """后台执行主程序启动 / 停止 / 重启，避免等待回收阻塞 UI。"""
+
+    done = Signal(str, str)  # action, message
+    error = Signal(str, str)  # action, message
+
+    def __init__(self, manager: ProductProcess, action: str) -> None:
+        super().__init__()
+        self._manager = manager
+        self._action = action
+
+    def run(self) -> None:  # noqa: D102
+        try:
+            if self._action == "start":
+                ok, message = self._manager.start()
+                if ok:
+                    self._manager.wait_until_ready()
+            elif self._action == "stop":
+                ok, message = self._manager.stop()
+            else:
+                ok, message = self._manager.restart()
+        except Exception as exc:  # noqa: BLE001
+            self.error.emit(self._action, repr(exc))
+            return
+        if ok:
+            self.done.emit(self._action, message)
+        else:
+            self.error.emit(self._action, message)
 
 
 class UpdateDownloadWorker(QThread):
@@ -649,6 +753,103 @@ class HeroBanner(QFrame):
         )
 
 
+class RingGauge(QWidget):
+    """环形内存仪表：外环按自适应量程展示占用比例，中心显示当前读数。
+
+    Qt 的 QPen 不接受 QLinearGradient，必须用 QPen(QBrush(grad), width)，
+    斜向渐变模拟环上的颜色过渡。
+    """
+
+    def __init__(self, parent: QWidget | None = None) -> None:
+        super().__init__(parent)
+        self.setMinimumSize(188, 188)
+        self.setMaximumWidth(206)
+        self._ratio = 0.0
+        self._value_text = "—"
+        self._scale_text = "未运行"
+        self._active = False
+        self._scale_max = GAUGE_MIN_SCALE
+        self._anim = QVariantAnimation(self)
+        self._anim.setDuration(520)
+        self._anim.setEasingCurve(QEasingCurve.Type.OutCubic)
+        self._anim.valueChanged.connect(self._on_tick)
+
+    def _on_tick(self, value: Any) -> None:
+        self._ratio = float(value)
+        self.update()
+
+    def set_reading(self, value: int | None, peak: int | None) -> None:
+        """value / peak 为字节数；value 为 None 表示主程序未运行。"""
+        if value is None:
+            self._value_text = "—"
+            self._scale_text = "未运行"
+            self._active = False
+            self._scale_max = GAUGE_MIN_SCALE
+            target = 0.0
+        else:
+            if value > self._scale_max:
+                self._scale_max = ((value // GAUGE_STEP) + 1) * GAUGE_STEP
+            self._value_text = _fmt_bytes(value)
+            self._scale_text = f"量程 {_fmt_bytes(self._scale_max)}"
+            if peak:
+                self._scale_text += f" · 峰值 {_fmt_bytes(peak)}"
+            self._active = True
+            target = min(1.0, value / self._scale_max)
+
+        self._anim.stop()
+        self._anim.setStartValue(self._ratio)
+        self._anim.setEndValue(target)
+        self._anim.start()
+
+    def paintEvent(self, event: Any = None) -> None:  # noqa: ARG002
+        painter = QPainter(self)
+        painter.setRenderHint(QPainter.RenderHint.Antialiasing)
+
+        side = min(self.width(), self.height())
+        thickness = max(10, int(side * 0.072))
+        inset = thickness / 2 + 6
+        box = QRectF(
+            (self.width() - side) / 2 + inset,
+            (self.height() - side) / 2 + inset,
+            side - inset * 2,
+            side - inset * 2,
+        )
+
+        # 底环
+        track = QPen(QBrush(QColor(228, 238, 245)), thickness)
+        track.setCapStyle(Qt.PenCapStyle.RoundCap)
+        painter.setPen(track)
+        painter.setBrush(Qt.BrushStyle.NoBrush)
+        painter.drawArc(box, 0, 360 * 16)
+
+        # 进度环：从左下到右上的斜向渐变，模拟沿环的颜色过渡
+        if self._ratio > 0.001:
+            grad = QLinearGradient(box.topLeft(), box.bottomRight())
+            grad.setColorAt(0.0, QColor(8, 123, 245))
+            grad.setColorAt(0.55, QColor(16, 168, 226))
+            grad.setColorAt(1.0, QColor(20, 200, 192))
+            arc = QPen(QBrush(grad), thickness)
+            arc.setCapStyle(Qt.PenCapStyle.RoundCap)
+            painter.setPen(arc)
+            painter.drawArc(box, 90 * 16, -int(360 * 16 * self._ratio))
+
+        center = self.rect().center()
+        value_rect = QRectF(0, center.y() - 38, self.width(), 42)
+        caption_rect = QRectF(0, center.y() + 2, self.width(), 22)
+        scale_rect = QRectF(0, center.y() + 24, self.width(), 20)
+
+        painter.setPen(QColor(TEXT_PRIMARY) if self._active else QColor(TEXT_MUTED))
+        painter.setFont(QFont("Microsoft YaHei", 17, QFont.Weight.Bold))
+        painter.drawText(value_rect, Qt.AlignmentFlag.AlignCenter, self._value_text)
+
+        painter.setPen(QColor(TEXT_MUTED))
+        painter.setFont(QFont("Microsoft YaHei", 10))
+        painter.drawText(caption_rect, Qt.AlignmentFlag.AlignCenter, "内存占用")
+
+        painter.setFont(QFont("Microsoft YaHei", 8))
+        painter.drawText(scale_rect, Qt.AlignmentFlag.AlignCenter, self._scale_text)
+
+
 # --------------------------- 主窗口 --------------------------------------- #
 
 
@@ -665,6 +866,13 @@ class MainWindow(QMainWindow):
         self._update_download_worker: UpdateDownloadWorker | None = None
         self._login_worker: LogLoginWorker | None = None
         self._upload_worker: LogUploadWorker | None = None
+        self._proc_worker: ProductActionWorker | None = None
+        self._product = ProductProcess()
+        self._proc_action = ""
+        self._collapsed = False
+        self._page_effects: dict[int, QGraphicsOpacityEffect] = {}
+        self._page_anim: QVariantAnimation | None = None
+        self._sidebar_anim: QVariantAnimation | None = None
         self._update_release: update.UpdateRelease | None = None
         self._report: core.LauncherReport | None = None
         self._remote_token: str | None = None
@@ -697,6 +905,7 @@ class MainWindow(QMainWindow):
         self.stack = QStackedWidget()
         self.stack.setStyleSheet(f"background:{PAGE_BG};")
         self.stack.addWidget(self._build_env_page())
+        self.stack.addWidget(self._build_process_page())
         self.stack.addWidget(self._build_resource_page())
         self.stack.addWidget(self._build_update_page())
         self.stack.addWidget(self._build_log_page())
@@ -704,14 +913,18 @@ class MainWindow(QMainWindow):
         right.addWidget(self._build_status_bar())
         outer.addLayout(right, 1)
 
+        # 构造完成后再做首帧状态同步（此时进程页组件已就绪）
+        QTimer.singleShot(0, self._refresh_sidebar_status)
+
     def _build_sidebar(self) -> QFrame:
         side = QFrame()
         side.setObjectName("sidebar")
-        side.setFixedWidth(220)
+        side.setFixedWidth(SIDEBAR_W)
         side.setStyleSheet(
             f"QFrame#sidebar{{background:{SIDEBAR_BG};border:1px solid {CARD_BORDER};"
             f"border-radius:{CARD_RADIUS}px;}}"
         )
+        self._sidebar = side
         shadow = QVBoxLayout(side)
         shadow.setContentsMargins(14, 20, 14, 18)
         shadow.setSpacing(10)
@@ -719,6 +932,7 @@ class MainWindow(QMainWindow):
         # 品牌区
         brand = QHBoxLayout()
         brand.setSpacing(10)
+        brand.addStretch(0)  # 折叠时置为 1，把品牌图标挤到水平居中
         brand_icon = QLabel("界")
         brand_icon.setFont(QFont("Microsoft YaHei", 16, QFont.Weight.Bold))
         brand_icon.setStyleSheet(
@@ -727,7 +941,10 @@ class MainWindow(QMainWindow):
         )
         brand_icon.setFixedSize(40, 40)
         brand_icon.setAlignment(Qt.AlignmentFlag.AlignCenter)
-        brand_text = QVBoxLayout()
+        brand_text_box = QWidget()
+        brand_text_box.setStyleSheet("background:transparent;")
+        brand_text = QVBoxLayout(brand_text_box)
+        brand_text.setContentsMargins(0, 0, 0, 0)
         brand_text.setSpacing(2)
         brand_name = QLabel("MainPG")
         brand_name.setStyleSheet(
@@ -740,9 +957,19 @@ class MainWindow(QMainWindow):
         brand_text.addWidget(brand_name)
         brand_text.addWidget(brand_sub)
         brand.addWidget(brand_icon)
-        brand.addLayout(brand_text, 1)
+        brand.addWidget(brand_text_box, 1)
         shadow.addLayout(brand)
-        shadow.addSpacing(18)
+        self._brand_row = brand
+        self._brand_text_box = brand_text_box
+
+        # 折叠 / 展开开关
+        self.btn_collapse = QPushButton("«  收起")
+        self.btn_collapse.setCursor(Qt.CursorShape.PointingHandCursor)
+        self.btn_collapse.setFixedHeight(30)
+        self.btn_collapse.setStyleSheet(_ghost_button())
+        self.btn_collapse.clicked.connect(self._toggle_sidebar)
+        shadow.addWidget(self.btn_collapse)
+        shadow.addSpacing(8)
 
         # 导航
         self._nav_buttons: list[QPushButton] = []
@@ -753,42 +980,48 @@ class MainWindow(QMainWindow):
             btn.setCheckable(True)
             btn.setCursor(Qt.CursorShape.PointingHandCursor)
             btn.setFixedHeight(44)
-            btn.setStyleSheet(
-                f"QPushButton{{color:{SIDEBAR_TEXT};background:transparent;"
-                f"border:1px solid transparent;"
-                f"border-radius:12px;padding:0 11px;font-size:13px;font-weight:720;"
-                f"text-align:left;}}"
-                f"QPushButton:hover{{background:{SIDEBAR_HOVER};color:{TEXT_PRIMARY};}}"
-                f"QPushButton:checked{{background:{SIDEBAR_ACTIVE_BG};"
-                f"color:{SIDEBAR_ACTIVE_COLOR};border-color:#8fd3ec;}}"
-            )
+            btn.setStyleSheet(_nav_button_style())
             btn.clicked.connect(lambda _=False, i=idx: self._switch_page(i))
             shadow.addWidget(btn)
             self._nav_buttons.append(btn)
 
         shadow.addStretch(1)
 
-        # 系统状态
+        # 主程序运行状态
         status_box = QFrame()
+        status_box.setObjectName("statusBox")
         status_box.setStyleSheet(
-            "background:#f4f9ff;border-radius:12px;border:1px solid #d9ecfa;"
+            "QFrame#statusBox{background:#f4f9ff;border-radius:12px;border:1px solid #d9ecfa;}"
         )
         status_lay = QVBoxLayout(status_box)
         status_lay.setContentsMargins(12, 12, 12, 12)
         status_lay.setSpacing(6)
-        running_lbl = QLabel(f"{ICONS['cloud_server']}  服务状态")
+        running_lbl = QLabel(f"{ICONS['cloud_server']}  主程序状态")
         running_lbl.setFont(_icon_font(12))
         running_lbl.setStyleSheet(f"color:{TEXT_SECONDARY};font-size:12px;font-weight:700;")
         self.sidebar_status = QLabel("检测中…")
+        self.sidebar_status.setWordWrap(True)
         self.sidebar_status.setStyleSheet(f"color:{TEXT_MUTED};font-size:11px;")
-        self._refresh_sidebar_status()
         status_lay.addWidget(running_lbl)
         status_lay.addWidget(self.sidebar_status)
+        # 主程序启动 / 停止 / 重启期间的进度反馈：等待端口就绪期间保持不确定态动画
+        self.sidebar_progress = QProgressBar()
+        self.sidebar_progress.setTextVisible(False)
+        self.sidebar_progress.setRange(0, 0)
+        self.sidebar_progress.setFixedHeight(4)
+        self.sidebar_progress.setStyleSheet(
+            "QProgressBar{background:#dbe9f5;border:none;border-radius:2px;}"
+            f"QProgressBar::chunk{{background:{PRIMARY_GRADIENT};border-radius:2px;}}"
+        )
+        self.sidebar_progress.setVisible(False)
+        status_lay.addWidget(self.sidebar_progress)
         shadow.addWidget(status_box)
         shadow.addSpacing(10)
+        self._status_box = status_box
+        self._status_caption = running_lbl
 
-        # 一键启动按钮
-        self.btn_launch = QPushButton(f"{ICONS['play']}  一键启动本地程序")
+        # 进程控制：启动 / 停止 / 重启
+        self.btn_launch = QPushButton(f"{ICONS['play']}  启动主程序")
         self.btn_launch.setFont(_icon_font(14))
         self.btn_launch.setCursor(Qt.CursorShape.PointingHandCursor)
         self.btn_launch.setFixedHeight(46)
@@ -802,36 +1035,176 @@ class MainWindow(QMainWindow):
         self.btn_launch.setGraphicsEffect(launch_shadow)
         shadow.addWidget(self.btn_launch)
 
+        ctl_row = QHBoxLayout()
+        ctl_row.setSpacing(8)
+        self.btn_stop = QPushButton(f"{ICONS['close_circle']}  停止")
+        self.btn_restart = QPushButton(f"{ICONS['reload']}  重启")
+        for btn, slot in ((self.btn_stop, self.on_stop), (self.btn_restart, self.on_restart)):
+            btn.setFont(_icon_font(12))
+            btn.setFixedHeight(36)
+            btn.setCursor(Qt.CursorShape.PointingHandCursor)
+            btn.setStyleSheet(_secondary_button())
+            btn.clicked.connect(slot)
+            ctl_row.addWidget(btn)
+        shadow.addLayout(ctl_row)
+
         # 默认选中第一页
         if self._nav_buttons:
             self._nav_buttons[0].setChecked(True)
 
-        # 定时刷新状态
+        # 定时刷新主程序状态与进程页
         self._status_timer = QTimer(self)
-        self._status_timer.setInterval(5000)
+        self._status_timer.setInterval(2000)
         self._status_timer.timeout.connect(self._refresh_sidebar_status)
         self._status_timer.start()
 
         return side
 
+    # ------------------------------------------------------------ 侧边栏折叠
+    def _toggle_sidebar(self) -> None:
+        """折叠 / 展开侧边栏，宽度用 QVariantAnimation 过渡。"""
+        self._apply_sidebar_state(not self._collapsed)
+        target = SIDEBAR_W_COLLAPSED if self._collapsed else SIDEBAR_W
+        anim = QVariantAnimation(self)
+        anim.setDuration(SIDEBAR_ANIM_MS)
+        anim.setStartValue(float(self._sidebar.width()))
+        anim.setEndValue(float(target))
+        anim.setEasingCurve(QEasingCurve.Type.InOutCubic)
+        anim.valueChanged.connect(lambda v: self._sidebar.setFixedWidth(int(v)))
+        self._sidebar_anim = anim
+        anim.start()
+
+    def _apply_sidebar_state(self, collapsed: bool) -> None:
+        """按折叠状态重写侧边栏内的文案、对齐与可见性。"""
+        self._collapsed = collapsed
+        self._brand_text_box.setVisible(not collapsed)
+        # 折叠时两侧同时伸缩，把品牌图标挤到水平居中
+        self._brand_row.setStretch(0, 1 if collapsed else 0)
+
+        self._status_caption.setText(
+            ICONS["cloud_server"] if collapsed else f"{ICONS['cloud_server']}  主程序状态"
+        )
+        self._status_caption.setAlignment(
+            Qt.AlignmentFlag.AlignCenter
+            if collapsed
+            else Qt.AlignmentFlag.AlignLeft | Qt.AlignmentFlag.AlignVCenter
+        )
+        self.sidebar_status.setVisible(not collapsed)
+        if collapsed:
+            self.sidebar_progress.setVisible(False)
+        self._status_box.setToolTip(self.sidebar_status.text())
+
+        self.btn_collapse.setText("»" if collapsed else "«  收起")
+        self.btn_collapse.setToolTip("展开侧边栏" if collapsed else "收起侧边栏")
+        self.btn_collapse.setStyleSheet(_ghost_button(centered=collapsed))
+
+        for (icon_key, label, tooltip), btn in zip(NAV_ITEMS, self._nav_buttons):
+            icon = ICONS.get(icon_key, "")
+            btn.setText(icon if collapsed else f"{icon}   {label}")
+            btn.setToolTip(label if collapsed else tooltip)
+            btn.setStyleSheet(_nav_button_style(collapsed))
+
+        self.btn_launch.setText(ICONS["play"] if collapsed else f"{ICONS['play']}  启动主程序")
+        self.btn_stop.setText(
+            ICONS["close_circle"] if collapsed else f"{ICONS['close_circle']}  停止"
+        )
+        self.btn_restart.setText(ICONS["reload"] if collapsed else f"{ICONS['reload']}  重启")
+        for btn, tip in (
+            (self.btn_launch, "启动主程序"),
+            (self.btn_stop, "停止主程序"),
+            (self.btn_restart, "重启主程序"),
+        ):
+            btn.setToolTip(tip)
+
     def _refresh_sidebar_status(self) -> None:
-        running = console.is_product_running()
-        if running:
-            self.sidebar_status.setText("主程序运行中")
-            self.sidebar_status.setStyleSheet(f"color:{SUCCESS_TEXT};font-size:11px;font-weight:700;")
+        state = self._product.state()
+        # 优先本启动器持有的句柄，否则按端口反查，保证外部启动的实例也能显示 PID / 停止
+        pid = self._product.active_pid()
+        # 启动 / 停止 / 重启由后台线程执行，期间用进度条给出明确的进行中反馈
+        busy = self._proc_worker is not None and self._proc_worker.isRunning()
+        self.sidebar_progress.setVisible(busy and not self._collapsed)
+        if busy:
+            self.sidebar_status.setText(f"正在{self._proc_action}主程序…")
+            self.sidebar_status.setStyleSheet(
+                f"color:{WARN_TEXT};font-size:11px;font-weight:700;"
+            )
+        elif state == STATE_RUNNING:
+            self.sidebar_status.setText(
+                f"主程序运行中（PID {pid}）" if pid is not None else "主程序运行中"
+            )
+            self.sidebar_status.setStyleSheet(
+                f"color:{SUCCESS_TEXT};font-size:11px;font-weight:700;"
+            )
+        elif state == STATE_STARTING:
+            self.sidebar_status.setText("主程序启动中…")
+            self.sidebar_status.setStyleSheet(
+                f"color:{WARN_TEXT};font-size:11px;font-weight:700;"
+            )
         else:
             self.sidebar_status.setText("主程序未运行")
             self.sidebar_status.setStyleSheet(f"color:{TEXT_MUTED};font-size:11px;")
 
+        # 同步控制组可用态：停止 / 重启按端口反查 PID，对非本启动器拉起的实例同样可用
+        running = state != STATE_STOPPED
+        self.btn_launch.setEnabled(not busy and state == STATE_STOPPED)
+        self.btn_stop.setEnabled(not busy and running)
+        self.btn_restart.setEnabled(not busy and running)
+        if self._collapsed:
+            self._status_box.setToolTip(self.sidebar_status.text())
+        self._refresh_process_page(state)
+
     def _switch_page(self, idx: int) -> None:
-        self.stack.setCurrentIndex(idx)
         for i, b in enumerate(self._nav_buttons):
             b.setChecked(i == idx)
+        if idx == self.stack.currentIndex():
+            return
+        self.stack.setCurrentIndex(idx)
+        self._fade_in_page(self.stack.currentWidget())
+
+    def _fade_in_page(self, page: QWidget | None) -> None:
+        """页面切换过渡：新页面淡入并轻微上移，避免生硬跳变。
+
+        QStackedWidget 不支持转场动画，这里给页面挂一个常驻的
+        QGraphicsOpacityEffect 做透明度过渡，同时把页面顶部内边距
+        从 PAGE_SLIDE_OFFSET 收回到 0，形成轻微上移。
+        """
+        if page is None:
+            return
+        key = id(page)
+        effect = self._page_effects.get(key)
+        if effect is None:
+            effect = QGraphicsOpacityEffect(page)
+            page.setGraphicsEffect(effect)
+            self._page_effects[key] = effect
+
+        def _tick(value: object) -> None:
+            ratio = float(value)
+            effect.setOpacity(ratio)
+            self._slide_page(page, ratio)
+
+        anim = QVariantAnimation(self)
+        anim.setDuration(PAGE_FADE_MS)
+        anim.setStartValue(0.0)
+        anim.setEndValue(1.0)
+        anim.setEasingCurve(QEasingCurve.Type.OutCubic)
+        anim.valueChanged.connect(_tick)
+        anim.finished.connect(lambda: _tick(1.0))
+        self._page_anim = anim
+        anim.start()
+
+    def _slide_page(self, page: QWidget, ratio: float) -> None:
+        """过渡期把页面内容从下方推入；``ratio`` 为 1 时完全归位。"""
+        layer = page.layout()
+        if layer is None:
+            return
+        offset = max(0, int(PAGE_SLIDE_OFFSET * (1.0 - ratio)))
+        layer.setContentsMargins(0, offset, 0, 0)
 
     def _build_status_bar(self) -> QFrame:
         bar = QFrame()
+        bar.setObjectName("statusBar")
         bar.setStyleSheet(
-            f"QFrame{{background:{CARD_BG};border:1px solid {CARD_BORDER};"
+            f"QFrame#statusBar{{background:{CARD_BG};border:1px solid {CARD_BORDER};"
             f"border-radius:16px;}}"
         )
         lay = QHBoxLayout(bar)
@@ -870,6 +1243,7 @@ class MainWindow(QMainWindow):
     def _card(self, parent: QWidget, title: str | None = None) -> tuple[QFrame, QVBoxLayout]:
         """创建一个内容卡片。"""
         card = QFrame()
+        card.setObjectName("card")
         card.setStyleSheet(_card_style())
         lay = QVBoxLayout(card)
         lay.setContentsMargins(22, 20, 22, 20)
@@ -1002,7 +1376,191 @@ class MainWindow(QMainWindow):
         self.env_log.setTextCursor(cursor)
         self.env_log.ensureCursorVisible()
 
-    # --------------------------- 板块二：资源管理 -------------------------- #
+    # --------------------------- 板块二：进程管理 -------------------------- #
+    def _build_process_page(self) -> QWidget:
+        page, outer = self._page(
+            "主程序进程",
+            "启动、停止或重启本地主程序，并实时观测内存占用与运行时长。",
+        )
+
+        # 运行状态卡片：左侧环形内存仪表，右侧状态文案与操作
+        state_card, state_lay = self._card(page, "运行状态")
+        state_row = QHBoxLayout()
+        state_row.setSpacing(22)
+
+        self.proc_gauge = RingGauge()
+        state_row.addWidget(self.proc_gauge)
+
+        right_col = QVBoxLayout()
+        right_col.setSpacing(12)
+        badge_row = QHBoxLayout()
+        badge_row.setSpacing(12)
+        self.proc_badge = QLabel("检测中…")
+        self.proc_badge.setStyleSheet(
+            f"font-size:13px;font-weight:750;color:{TEXT_MUTED};"
+            f"background:#f4f8fb;border-radius:10px;padding:6px 14px;"
+        )
+        badge_row.addWidget(self.proc_badge)
+        self.proc_hint = QLabel("正在读取进程状态…")
+        self.proc_hint.setWordWrap(True)
+        self.proc_hint.setStyleSheet(
+            f"font-size:12px;color:{TEXT_MUTED};background:transparent;"
+        )
+        badge_row.addWidget(self.proc_hint, 1)
+        right_col.addLayout(badge_row)
+        right_col.addStretch(1)
+
+        # 操作按钮
+        action_row = QHBoxLayout()
+        action_row.setSpacing(10)
+        self.btn_proc_start = QPushButton(f"{ICONS['play']}  启动主程序")
+        self.btn_proc_stop = QPushButton(f"{ICONS['close_circle']}  停止")
+        self.btn_proc_restart = QPushButton(f"{ICONS['reload']}  重启")
+        self.btn_proc_start.setStyleSheet(_primary_button())
+        self.btn_proc_stop.setStyleSheet(_danger_button())
+        self.btn_proc_restart.setStyleSheet(_secondary_button())
+        for btn in (self.btn_proc_start, self.btn_proc_stop, self.btn_proc_restart):
+            btn.setFont(_icon_font(12))
+            btn.setFixedHeight(36)
+            btn.setCursor(Qt.CursorShape.PointingHandCursor)
+        self.btn_proc_start.clicked.connect(self.on_start)
+        self.btn_proc_stop.clicked.connect(self.on_stop)
+        self.btn_proc_restart.clicked.connect(self.on_restart)
+        action_row.addWidget(self.btn_proc_start)
+        action_row.addWidget(self.btn_proc_stop)
+        action_row.addWidget(self.btn_proc_restart)
+        action_row.addStretch(1)
+        self.btn_proc_refresh = QPushButton(f"{ICONS['reload']}  刷新状态")
+        self.btn_proc_refresh.setFont(_icon_font(12))
+        self.btn_proc_refresh.setFixedHeight(36)
+        self.btn_proc_refresh.setStyleSheet(_secondary_button())
+        self.btn_proc_refresh.clicked.connect(lambda: self._refresh_process_page())
+        action_row.addWidget(self.btn_proc_refresh)
+        right_col.addLayout(action_row)
+
+        state_row.addLayout(right_col, 1)
+        state_lay.addLayout(state_row)
+        outer.addWidget(state_card)
+
+        # 指标卡片：PID / 端口 / 运行时长 / 内存占用 / 内存峰值
+        metric_card, metric_lay = self._card(page, "运行指标")
+        metric_row = QHBoxLayout()
+        metric_row.setSpacing(12)
+        self.proc_metrics: dict[str, QLabel] = {}
+        for key, caption in (
+            ("pid", "进程 PID"),
+            ("port", "监听端口"),
+            ("uptime", "运行时长"),
+            ("memory", "内存占用"),
+            ("peak", "内存峰值"),
+        ):
+            box = QFrame()
+            box.setObjectName("metricBox")
+            box.setStyleSheet(
+                "QFrame#metricBox{background:#f7fbfd;border:1px solid #e4eef5;border-radius:14px;}"
+            )
+            box_lay = QVBoxLayout(box)
+            box_lay.setContentsMargins(14, 12, 14, 12)
+            box_lay.setSpacing(4)
+            cap = QLabel(caption)
+            cap.setStyleSheet(
+                f"font-size:11px;color:{TEXT_MUTED};background:transparent;"
+            )
+            value = QLabel("—")
+            value.setStyleSheet(
+                f"font-size:15px;font-weight:800;color:{TEXT_PRIMARY};background:transparent;"
+            )
+            box_lay.addWidget(cap)
+            box_lay.addWidget(value)
+            metric_row.addWidget(box, 1)
+            self.proc_metrics[key] = value
+        metric_lay.addLayout(metric_row)
+        outer.addWidget(metric_card)
+
+        # 进程事件卡片
+        log_card, log_lay = self._card(page, "进程事件")
+        self.proc_log = QTextEdit()
+        self.proc_log.setReadOnly(True)
+        self.proc_log.setFrameShape(QFrame.Shape.NoFrame)
+        self.proc_log.setStyleSheet(_log_view_style(light=True))
+        log_lay.addWidget(self.proc_log, 1)
+        outer.addWidget(log_card, 1)
+        return page
+
+    def _refresh_process_page(self, state: str | None = None) -> None:
+        """刷新进程页指标与按钮可用态；``state`` 已知时复用，避免重复探测端口。"""
+        if not hasattr(self, "proc_badge"):
+            return
+        if state is None:
+            state = self._product.state()
+        pid = self._product.active_pid()
+        memory = self._product.memory_bytes() if pid is not None else None
+        peak = self._product.peak_memory_bytes()
+        owned = self._product.is_owned()
+
+        if state == STATE_RUNNING:
+            self.proc_badge.setText(f"{ICONS['check_circle']}  运行中")
+            self.proc_badge.setStyleSheet(
+                f"font-size:13px;font-weight:750;color:{SUCCESS_TEXT};"
+                f"background:{SUCCESS_BG};border-radius:10px;padding:6px 14px;"
+            )
+            if owned:
+                self.proc_hint.setText(f"主程序正在监听端口 {self._product.port}。")
+            elif pid is not None:
+                self.proc_hint.setText(
+                    f"主程序在运行（PID {pid}），由端口 {self._product.port} 识别，可直接停止。"
+                )
+            else:
+                self.proc_hint.setText(f"主程序在运行，端口 {self._product.port} 已被占用。")
+        elif state == STATE_STARTING:
+            self.proc_badge.setText(f"{ICONS['sync']}  启动中")
+            self.proc_badge.setStyleSheet(
+                f"font-size:13px;font-weight:750;color:{WARN_TEXT};"
+                f"background:{WARN_BG};border-radius:10px;padding:6px 14px;"
+            )
+            self.proc_hint.setText(f"已拉起进程，等待端口 {self._product.port} 就绪…")
+        else:
+            self.proc_badge.setText(f"{ICONS['close_circle']}  未运行")
+            self.proc_badge.setStyleSheet(
+                f"font-size:13px;font-weight:750;color:{TEXT_MUTED};"
+                f"background:#f4f8fb;border-radius:10px;padding:6px 14px;"
+            )
+            saved = self._product.saved_memory_bytes()
+            self.proc_hint.setText(
+                f"主程序未运行，上次退出已释放约 {_fmt_bytes(saved)} 内存。"
+                if saved
+                else "主程序未运行，点击「启动主程序」开始。"
+            )
+
+        uptime = self._product.uptime()
+        self.proc_metrics["pid"].setText(str(pid) if pid is not None else "—")
+        self.proc_metrics["port"].setText(str(self._product.port))
+        self.proc_metrics["uptime"].setText(
+            _fmt_duration(uptime) if uptime and (pid is not None or state == STATE_RUNNING) else "—"
+        )
+        self.proc_metrics["memory"].setText(_fmt_bytes(memory) if memory else "—")
+        self.proc_metrics["peak"].setText(_fmt_bytes(peak) if peak else "—")
+        self.proc_gauge.set_reading(memory, peak)
+
+        busy = self._proc_worker is not None and self._proc_worker.isRunning()
+        if busy:
+            self.proc_hint.setText(f"正在{self._proc_action}主程序，请稍候…")
+        running = state != STATE_STOPPED
+        self.btn_proc_start.setEnabled(not busy and state == STATE_STOPPED)
+        self.btn_proc_stop.setEnabled(not busy and running)
+        self.btn_proc_restart.setEnabled(not busy and running)
+
+    def _append_proc_log(self, text: str, color: str) -> None:
+        if not hasattr(self, "proc_log"):
+            return
+        stamp = time.strftime("%H:%M:%S")
+        cursor = self.proc_log.textCursor()
+        cursor.movePosition(QTextCursor.MoveOperation.End)
+        cursor.insertHtml(f"<span style='color:{color};'>[{stamp}] {_esc(text)}</span><br>")
+        self.proc_log.setTextCursor(cursor)
+        self.proc_log.ensureCursorVisible()
+
+    # --------------------------- 板块三：资源管理 -------------------------- #
     def _build_resource_page(self) -> QWidget:
         page, outer = self._page(
             "本地文件资源",
@@ -1205,7 +1763,7 @@ class MainWindow(QMainWindow):
         QMessageBox.information(self, headline, res.get("message", str(res)))
         self.console_scan()
 
-    # --------------------------- 板块三：版本更新 -------------------------- #
+    # --------------------------- 板块四：版本更新 -------------------------- #
     def _build_update_page(self) -> QWidget:
         page, outer = self._page(
             "版本更新检查",
@@ -1237,8 +1795,177 @@ class MainWindow(QMainWindow):
         self.update_result.setMaximumHeight(200)
         self.update_result.setPlainText("启动时已自动检查更新，正在检测最新版本…")
         result_lay.addWidget(self.update_result, 1)
-        outer.addWidget(result_card, 1)
+        outer.addWidget(result_card)
+
+        # 已下载安装包卡片：支持安装 / 重装 / 回滚
+        pkg_card, pkg_lay = self._card(page, "已下载安装包")
+        pkg_hint = QLabel(
+            f"下载过的历史安装包会保留最近 {update.UPDATE_KEEP} 个，"
+            f"新版异常时可回滚到旧版本。双击行可直接安装。"
+        )
+        pkg_hint.setStyleSheet(f"font-size:12px;color:{TEXT_MUTED};background:transparent;")
+        pkg_lay.addWidget(pkg_hint)
+
+        self.pkg_table = QTableWidget(0, 4)
+        self.pkg_table.setHorizontalHeaderLabels(["版本", "大小", "下载时间", "状态"])
+        self.pkg_table.setAlternatingRowColors(True)
+        self.pkg_table.setShowGrid(False)
+        self.pkg_table.setSelectionBehavior(QAbstractItemView.SelectionBehavior.SelectRows)
+        self.pkg_table.setSelectionMode(QAbstractItemView.SelectionMode.SingleSelection)
+        self.pkg_table.setEditTriggers(QAbstractItemView.EditTrigger.NoEditTriggers)
+        self.pkg_table.verticalHeader().setVisible(False)
+        self.pkg_table.verticalHeader().setDefaultSectionSize(34)
+        pkg_header = self.pkg_table.horizontalHeader()
+        pkg_header.setSectionResizeMode(0, QHeaderView.ResizeMode.Stretch)
+        pkg_header.setSectionResizeMode(1, QHeaderView.ResizeMode.ResizeToContents)
+        pkg_header.setSectionResizeMode(2, QHeaderView.ResizeMode.ResizeToContents)
+        pkg_header.setSectionResizeMode(3, QHeaderView.ResizeMode.ResizeToContents)
+        self.pkg_table.setStyleSheet(_table_style())
+        self.pkg_table.itemDoubleClicked.connect(lambda _item: self.on_pkg_install())
+        pkg_lay.addWidget(self.pkg_table, 1)
+
+        pkg_row = QHBoxLayout()
+        pkg_row.setSpacing(10)
+        self.btn_pkg_install = QPushButton(f"{ICONS['play']}  安装 / 重装")
+        self.btn_pkg_rollback = QPushButton(f"{ICONS['reload']}  回滚到该版本")
+        self.btn_pkg_delete = QPushButton(f"{ICONS['delete']}  删除安装包")
+        self.btn_pkg_refresh = QPushButton(f"{ICONS['sync']}  刷新列表")
+        self.btn_pkg_install.setStyleSheet(_primary_button())
+        self.btn_pkg_rollback.setStyleSheet(_secondary_button())
+        self.btn_pkg_delete.setStyleSheet(_danger_button())
+        self.btn_pkg_refresh.setStyleSheet(_secondary_button())
+        for btn in (
+            self.btn_pkg_install,
+            self.btn_pkg_rollback,
+            self.btn_pkg_delete,
+            self.btn_pkg_refresh,
+        ):
+            btn.setFont(_icon_font(12))
+            btn.setFixedHeight(34)
+            btn.setCursor(Qt.CursorShape.PointingHandCursor)
+        self.btn_pkg_install.clicked.connect(self.on_pkg_install)
+        self.btn_pkg_rollback.clicked.connect(self.on_pkg_rollback)
+        self.btn_pkg_delete.clicked.connect(self.on_pkg_delete)
+        self.btn_pkg_refresh.clicked.connect(self._refresh_installers)
+        pkg_row.addWidget(self.btn_pkg_install)
+        pkg_row.addWidget(self.btn_pkg_rollback)
+        pkg_row.addWidget(self.btn_pkg_delete)
+        pkg_row.addStretch(1)
+        pkg_row.addWidget(self.btn_pkg_refresh)
+        pkg_lay.addLayout(pkg_row)
+        outer.addWidget(pkg_card, 1)
+
+        QTimer.singleShot(200, self._refresh_installers)
         return page
+
+    def _refresh_installers(self) -> None:
+        """刷新已下载安装包列表。"""
+        if not hasattr(self, "pkg_table"):
+            return
+        items = update.downloaded_installers()
+        self.pkg_table.setRowCount(0)
+        for item in items:
+            row = self.pkg_table.rowCount()
+            self.pkg_table.insertRow(row)
+            version_item = QTableWidgetItem("v" + item["version"])
+            version_item.setData(Qt.ItemDataRole.UserRole, item["path"])
+            self.pkg_table.setItem(row, 0, version_item)
+            self.pkg_table.setItem(row, 1, QTableWidgetItem(_fmt_bytes(item["size"])))
+            self.pkg_table.setItem(
+                row,
+                2,
+                QTableWidgetItem(
+                    time.strftime("%Y-%m-%d %H:%M", time.localtime(item["modified"]))
+                ),
+            )
+            state_item = QTableWidgetItem("当前运行版本" if item["current"] else "可安装 / 回滚")
+            if item["current"]:
+                state_item.setForeground(QColor(TEXT_MUTED))
+            self.pkg_table.setItem(row, 3, state_item)
+        if items:
+            self.pkg_table.selectRow(0)
+        for btn in (
+            self.btn_pkg_install,
+            self.btn_pkg_rollback,
+            self.btn_pkg_delete,
+        ):
+            btn.setEnabled(bool(items))
+
+    def _selected_installer(self) -> tuple[str, str] | None:
+        """返回当前选中行的 (安装包路径, 展示名)。"""
+        row = self.pkg_table.currentRow()
+        if row < 0:
+            return None
+        item = self.pkg_table.item(row, 0)
+        if item is None:
+            return None
+        path = item.data(Qt.ItemDataRole.UserRole)
+        if not path:
+            return None
+        return str(path), item.text()
+
+    def on_pkg_install(self) -> None:
+        self._launch_selected_installer("安装")
+
+    def on_pkg_rollback(self) -> None:
+        self._launch_selected_installer("回滚")
+
+    def _launch_selected_installer(self, action: str) -> None:
+        selected = self._selected_installer()
+        if selected is None:
+            QMessageBox.information(self, action, "请先在列表中选择一个安装包。")
+            return
+        path, label = selected
+        if not Path(path).is_file():
+            QMessageBox.warning(self, action, "安装包已不存在，已刷新列表。")
+            self._refresh_installers()
+            return
+        if self._product.is_listening():
+            QMessageBox.warning(
+                self,
+                action,
+                "主程序正在运行，请先停止后再安装，避免替换文件失败。",
+            )
+            return
+        ok = QMessageBox.question(
+            self,
+            f"{action}更新",
+            f"将启动 {label} 的安装程序：\n\n{path}\n\n"
+            f"安装会替换当前版本的程序文件，请确认已保存工作内容。是否继续？",
+            QMessageBox.StandardButton.Yes | QMessageBox.StandardButton.No,
+            QMessageBox.StandardButton.No,
+        )
+        if ok != QMessageBox.StandardButton.Yes:
+            return
+        try:
+            update.launch_installer(Path(path))
+        except OSError as exc:
+            QMessageBox.critical(self, f"{action}失败", str(exc))
+            return
+        self.update_result.setPlainText(f"已启动 {label} 的安装程序：{path}")
+        self.lbl_update.setText(f"启动自检更新：正在{action} {label}")
+
+    def on_pkg_delete(self) -> None:
+        selected = self._selected_installer()
+        if selected is None:
+            QMessageBox.information(self, "删除", "请先在列表中选择一个安装包。")
+            return
+        path, label = selected
+        ok = QMessageBox.question(
+            self,
+            "删除安装包",
+            f"确定删除本地保存的 {label} 安装包？\n\n{path}\n\n删除后需要重新下载才能安装。",
+            QMessageBox.StandardButton.Yes | QMessageBox.StandardButton.No,
+            QMessageBox.StandardButton.No,
+        )
+        if ok != QMessageBox.StandardButton.Yes:
+            return
+        try:
+            Path(path).unlink()
+        except OSError as exc:
+            QMessageBox.warning(self, "删除失败", str(exc))
+            return
+        self._refresh_installers()
 
     def run_update_check(self) -> None:
         self._update_bar("checking")
@@ -1395,7 +2122,7 @@ class MainWindow(QMainWindow):
             bar.setRange(0, 1000)
             bar.setValue(0)
 
-    # --------------------------- 板块四：日志上传 -------------------------- #
+    # --------------------------- 板块五：日志上传 -------------------------- #
     def _build_log_page(self) -> QWidget:
         page, outer = self._page(
             "日志上报",
@@ -1405,8 +2132,9 @@ class MainWindow(QMainWindow):
         # 登录卡片
         login_card, login_lay = self._card(page, "账号登录")
         login_box = QFrame()
+        login_box.setObjectName("loginBox")
         login_box.setStyleSheet(
-            f"QFrame{{background:#f7fbfd;border-radius:14px;border:1px solid #e4eef5;}}"
+            f"QFrame#loginBox{{background:#f7fbfd;border-radius:14px;border:1px solid #e4eef5;}}"
             f"QLineEdit{{{_input_style()}}}"
         )
         l_lay = QGridLayout(login_box)
@@ -1548,28 +2276,138 @@ class MainWindow(QMainWindow):
         self.log_result.append(f"上传失败：{msg}")
         QMessageBox.critical(self, "上传失败", msg)
 
-    # ------------------------------------------------------------ 一键启动
+    # ------------------------------------------------------ 主程序进程控制
     def on_start(self) -> None:
-        exe = core.find_product()
-        if not exe:
+        self._run_product_action("start")
+
+    def on_stop(self) -> None:
+        # 句柄不可用时按端口反查，用户手动启动的实例同样可以直接停止
+        pid = self._product.active_pid()
+        if pid is None:
+            if self._product.is_listening():
+                QMessageBox.warning(
+                    self,
+                    "无法停止",
+                    f"端口 {self._product.port} 已被占用，但无法定位对应进程，请手动关闭。",
+                )
+            else:
+                QMessageBox.information(self, "停止", "主程序当前未运行。")
+            return
+        ok = QMessageBox.question(
+            self,
+            "停止主程序",
+            f"将结束主程序（PID {pid}）并回收其内存与子进程。是否继续？",
+            QMessageBox.StandardButton.Yes | QMessageBox.StandardButton.No,
+            QMessageBox.StandardButton.No,
+        )
+        if ok != QMessageBox.StandardButton.Yes:
+            return
+        self._run_product_action("stop")
+
+    def on_restart(self) -> None:
+        self._run_product_action("restart")
+
+    def _run_product_action(self, action: str) -> None:
+        """把启动 / 停止 / 重启放到后台线程执行，避免等待进程回收阻塞界面。"""
+        if self._proc_worker is not None and self._proc_worker.isRunning():
+            QMessageBox.information(self, "请稍候", "上一个进程操作尚未完成，请稍候。")
+            return
+        if action == "start" and core.find_product() is None:
             QMessageBox.warning(
                 self,
                 "未找到主程序",
                 "未找到 MainPG.exe。请确认产品已安装，或用 WH_APP_EXE 指定路径。",
             )
             return
-        try:
-            os.startfile(str(exe))  # type: ignore[attr-defined]
-        except OSError as exc:
-            QMessageBox.critical(self, "启动失败", str(exc))
+        self._proc_action = {"start": "启动", "stop": "停止", "restart": "重启"}[action]
+        self._append_proc_log(f"正在{self._proc_action}主程序…", TEXT_MUTED)
+        self._proc_worker = ProductActionWorker(self._product, action)
+        self._proc_worker.done.connect(self._on_proc_done)
+        self._proc_worker.error.connect(self._on_proc_error)
+        self._proc_worker.start()
+        self._refresh_sidebar_status()
+
+    def _on_proc_done(self, _action: str, message: str) -> None:
+        self._proc_worker = None
+        self._proc_action = ""
+        self._append_proc_log(f"{ICONS['check_circle']}  {message}", SUCCESS_TEXT)
+        self._refresh_sidebar_status()
+
+    def _on_proc_error(self, _action: str, message: str) -> None:
+        self._proc_worker = None
+        self._proc_action = ""
+        self._append_proc_log(f"{ICONS['close_circle']}  {message}", ERROR_TEXT)
+        self._refresh_sidebar_status()
+        QMessageBox.warning(self, "进程操作未完成", message)
+
+    def closeEvent(self, event: Any) -> None:  # noqa: N802 - Qt 命名约定
+        """退出前处理主程序：本启动器拉起的实例可一并结束并回收内存。"""
+        if self._proc_worker is not None and self._proc_worker.isRunning():
+            QMessageBox.information(self, "请稍候", "进程操作正在进行，请稍候再退出。")
+            event.ignore()
+            return
+        pid = self._product.active_pid()
+        if pid is None and not self._product.is_listening():
+            event.accept()
+            return
+
+        box = QMessageBox(self)
+        box.setWindowTitle("退出启动器")
+        box.setIcon(QMessageBox.Icon.Question)
+        stop_btn = None
+        if pid is not None:
+            box.setText("主程序正在运行，退出启动器时如何处理？")
+            box.setInformativeText("选择「结束主程序」会回收其内存与子进程。")
+            stop_btn = box.addButton("结束主程序并退出", QMessageBox.ButtonRole.AcceptRole)
+            box.addButton("仅退出启动器", QMessageBox.ButtonRole.DestructiveRole)
+        else:
+            box.setText(f"端口 {self._product.port} 已被占用，但无法定位对应进程。")
+            box.setInformativeText("退出启动器不会结束该实例。")
+            box.addButton("退出启动器", QMessageBox.ButtonRole.AcceptRole)
+        cancel_btn = box.addButton("取消", QMessageBox.ButtonRole.RejectRole)
+        box.setDefaultButton(cancel_btn)
+        box.exec()
+
+        clicked = box.clickedButton()
+        if clicked is cancel_btn:
+            event.ignore()
+            return
+        if stop_btn is not None and clicked is stop_btn:
+            self._product.stop()
+        event.accept()
 
 
 # --------------------------- 入口 ----------------------------------------- #
 
 
+def _use_light_titlebar(window: QWidget) -> None:
+    """把原生标题栏固定为浅色。
+
+    系统处于深色模式时 Qt 会把标题栏画成黑色，与浅色界面之间形成一条黑边，
+    这里直接关掉 DWM 的深色标题栏标记。
+    """
+    if sys.platform != "win32":
+        return
+    try:
+        import ctypes
+
+        value = ctypes.c_int(0)  # 0 = 浅色标题栏
+        hwnd = int(window.winId())
+        for attr in (20, 19):  # 20: Win11 22H2+ / 19: 早期 Win10
+            if ctypes.windll.dwmapi.DwmSetWindowAttribute(
+                hwnd, attr, ctypes.byref(value), ctypes.sizeof(value)
+            ) == 0:
+                break
+    except Exception:  # noqa: BLE001
+        pass
+
+
 def main() -> int:
     app = QtWidgets.QApplication(sys.argv)
     app.setFont(QFont("Microsoft YaHei", 10))
+
+    # 应用图标（标题栏 + 任务栏，含 splash 与主窗口）
+    app.setWindowIcon(_app_icon())
 
     # 加载图标字体
     _load_iconfont()
@@ -1592,6 +2430,7 @@ def main() -> int:
 
     # 创建主窗口
     win = MainWindow()
+    _use_light_titlebar(win)
 
     # 淡出 splash 后显示主窗口
     def _show_main() -> None:

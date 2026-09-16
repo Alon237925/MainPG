@@ -2,15 +2,16 @@ import { useEffect, useMemo, useRef, useState } from 'react';
 import { createPortal } from 'react-dom';
 import { useChangePoller } from '../../../shared/hooks/useChangePoller';
 import { SkuBatchManager } from '../components/SkuBatchManager';
+import { ProductFlowCard } from '../components/ProductFlowSteps';
 import { ppRequest, type ApiContext } from '../api/client';
 import { productProcessingApiContext } from '../api/context';
-import { addDraftComboSource } from '../api/comboApi';
-import type { DraftCollectionBatch } from '../api/productProcessingApi';
+import { type DraftCollectionBatch } from '../api/productProcessingApi';
 import { variantPresentation } from '../data/skuPresentation';
 import type {
   DraftSummary,
   DraftVariant,
   ProductProcessingOptions,
+  TaskHistoryItem,
 } from '../types';
 import '../styles/ProductProcessingVerifyPage.css';
 
@@ -26,11 +27,14 @@ type DraftEdit = {
 type DeletedDraftBatch = {
   ids: number[];
   selectedIds: number[];
-  premiumIds: number[];
 };
 
 type Props = {
   onStartProcessing?: (draftIds: number[], options: ProductProcessingOptions, premiumDraftIds: number[]) => boolean;
+  /** 打开「结果预检」页（工作流第 03 步） */
+  onOpenPrecheck?: (taskId: number) => void;
+  /** 空态 CTA：跳到「采集」页把商品入池 */
+  onOpenCollection?: () => void;
   isActive?: boolean;
 };
 
@@ -70,7 +74,7 @@ function draftDirty(draft: DraftSummary, edits: Record<number, DraftEdit>): bool
   );
 }
 
-export function ProductProcessingVerifyPage({ onStartProcessing, isActive = true }: Props) {
+export function ProductProcessingVerifyPage({ onStartProcessing, onOpenPrecheck, onOpenCollection, isActive = true }: Props) {
   const ctx = api();
   const [options, setOptions] = useState<ProductProcessingOptions>({
     targetSite: 'US',
@@ -86,8 +90,6 @@ export function ProductProcessingVerifyPage({ onStartProcessing, isActive = true
   });
   const [drafts, setDrafts] = useState<DraftSummary[]>([]);
   const [selectedIds, setSelectedIds] = useState<Set<number>>(new Set());
-  // 精品模式：勾选后该草稿走一次 4K 智能生图，本地拆成四张高清独立图。
-  const [premiumIds, setPremiumIds] = useState<Set<number>>(new Set());
   const [expandedId, setExpandedId] = useState<number | null>(null);
   // SKU 管理抽屉：当前正在管理的草稿 id（null 表示关闭）
   const [skuDrawerDraftId, setSkuDrawerDraftId] = useState<number | null>(null);
@@ -99,13 +101,16 @@ export function ProductProcessingVerifyPage({ onStartProcessing, isActive = true
   const [skuBatchOpen, setSkuBatchOpen] = useState(false);
   const [edits, setEdits] = useState<Record<number, DraftEdit>>({});
   const [loading, setLoading] = useState(false);
+  // 草稿列表自身的加载态：与「开始处理/删除/保存」的 loading 分开，轮询静默刷新时
+  // 不置位，避免空列表在每次自动刷新时闪回「正在拉取新数据中」。
+  const [listLoading, setListLoading] = useState(true);
+  const [listError, setListError] = useState('');
   const [message, setMessage] = useState('');
   const [error, setError] = useState('');
   const [page, setPage] = useState(1);
   const [jumpPage, setJumpPage] = useState('');
   // 单页展示数量：10 / 30 / 50 / 100
   const [pageSize, setPageSize] = useState(10);
-  const [viewMode, setViewMode] = useState<'all' | 'selected'>('all');
   const [searchTerm, setSearchTerm] = useState('');
   // SKU 数量筛选：0 = 全部，否则为最大变种数（少于 N）
   const [skuCountFilter, setSkuCountFilter] = useState(0);
@@ -117,10 +122,12 @@ export function ProductProcessingVerifyPage({ onStartProcessing, isActive = true
   const [draftBatches, setDraftBatches] = useState<DraftCollectionBatch[]>([]);
   const [selectedBatchIds, setSelectedBatchIds] = useState<Set<string>>(new Set());
   const [activeBatchId, setActiveBatchId] = useState<string | null>(null);
-  const [batchesOpen, setBatchesOpen] = useState(true);
+  const [batchesOpen, setBatchesOpen] = useState(false);
   const [batchBusy, setBatchBusy] = useState(false);
   // 批次列表是否还有更多（后端 limit 上限 200，超出时提示，避免以为“只有这么多”）
   const [batchesHasMore, setBatchesHasMore] = useState(false);
+  // 最近一次 AI 处理任务：工作流第 03 步「结果预检」的入口与可用性判断依据。
+  const [latestTask, setLatestTask] = useState<TaskHistoryItem | null>(null);
   const draftListRef = useRef<HTMLDivElement>(null);
   const stickyToolbarRef = useRef<HTMLDivElement>(null);
   const stickySpacerRef = useRef<HTMLDivElement>(null);
@@ -239,11 +246,10 @@ export function ProductProcessingVerifyPage({ onStartProcessing, isActive = true
     () => drafts.filter((d) => selectedIds.has(d.id) && d.status !== 'deleted' && d.status !== 'processed' && d.status !== 'processing'),
     [drafts, selectedIds]
   );
+  // SKU 原图可用性判断已移到「处理设置」页（点开始处理之后的页面）自动执行
   const filteredDrafts = useMemo(() => {
     const keyword = searchTerm.trim().toLowerCase();
     return selectableDrafts.filter((d) => {
-      // 「只看已选」视图下过滤掉未勾选草稿，直接呈现全部所选链接
-      if (viewMode === 'selected' && !selectedIds.has(d.id)) return false;
       const raw = d.raw_payload || {};
       const variantCount = Array.isArray(raw.source_variant_records) ? raw.source_variant_records.length : 0;
       // SKU 数量筛选：少于 N 个变种
@@ -256,7 +262,7 @@ export function ProductProcessingVerifyPage({ onStartProcessing, isActive = true
         .filter(Boolean)
         .some((value) => String(value).toLowerCase().includes(keyword));
     });
-  }, [selectableDrafts, viewMode, selectedIds, searchTerm, skuCountFilter, hideSingleSpec]);
+  }, [selectableDrafts, searchTerm, skuCountFilter, hideSingleSpec]);
   const totalDrafts = filteredDrafts.length;
   const totalPages = Math.max(1, Math.ceil(totalDrafts / pageSize));
   const pageStart = (page - 1) * pageSize;
@@ -287,31 +293,32 @@ export function ProductProcessingVerifyPage({ onStartProcessing, isActive = true
   const notify = (ok: string) => { setMessage(ok); setError(''); };
   const fail = (err: unknown) => { setError(err instanceof Error ? err.message : String(err)); setMessage(''); };
 
-  // 加入组合定制：把该条草稿的图片存入「商品自定义组合」来源图暂存区（服务端持久化）
-  const addToCombo = async (draft: DraftSummary) => {
+  // 加入组合定制已收敛到「商品自定义组合」页，草稿池不再提供入口。
+  // quiet=true 用于轮询等静默刷新：不动 listLoading，避免列表闪回加载态。
+  const refresh = async (quiet = false) => {
+    if (!quiet) { setListLoading(true); setListError(''); }
     try {
-      const rawTitle = String(draft.raw_payload?.source_title || '').trim();
-      await addDraftComboSource(ctx, draft.id, draft.title || rawTitle || `草稿 #${draft.id}`);
-      notify(`已加入「商品自定义组合」来源图暂存区，可在组合页统一管理`);
-    } catch (err) { fail(err); }
-  };
-
-  const refresh = async () => {
-    const batchQuery = activeBatchId ? `&selection_run_id=${encodeURIComponent(activeBatchId)}` : '';
-    const draftData = await ppRequest<{ drafts: DraftSummary[] }>(ctx, `${API_BASE}/drafts?view=summary&limit=500${batchQuery}`);
-    const nextDrafts = draftData.drafts || [];
-    setDrafts(nextDrafts);
-    // 勾选只保留仍在本次加载结果里的草稿：切换批次、批次被清理/删除、或外部
-    // 已提交处理时，残留的隐藏 id 不参与「已勾选」计数，也不会被「开始处理」一起提交。
-    const visible = new Set(nextDrafts.map((draft) => draft.id));
-    const prune = (prev: Set<number>) => {
-      if (!prev.size) return prev;
-      const kept = new Set<number>();
-      for (const id of prev) if (visible.has(id)) kept.add(id);
-      return kept.size === prev.size ? prev : kept;
-    };
-    setSelectedIds(prune);
-    setPremiumIds(prune);
+      const batchQuery = activeBatchId ? `&selection_run_id=${encodeURIComponent(activeBatchId)}` : '';
+      const draftData = await ppRequest<{ drafts: DraftSummary[] }>(ctx, `${API_BASE}/drafts?view=summary&limit=500${batchQuery}`);
+      const nextDrafts = draftData.drafts || [];
+      setDrafts(nextDrafts);
+      // 勾选只保留仍在本次加载结果里的草稿：切换批次、批次被清理/删除、或外部
+      // 已提交处理时，残留的隐藏 id 不参与「已勾选」计数，也不会被「开始处理」一起提交。
+      const visible = new Set(nextDrafts.map((draft) => draft.id));
+      const prune = (prev: Set<number>) => {
+        if (!prev.size) return prev;
+        const kept = new Set<number>();
+        for (const id of prev) if (visible.has(id)) kept.add(id);
+        return kept.size === prev.size ? prev : kept;
+      };
+      setSelectedIds(prune);
+      setListError('');
+    } catch (err) {
+      if (!quiet) setListError(err instanceof Error ? err.message : String(err));
+      throw err;
+    } finally {
+      if (!quiet) setListLoading(false);
+    }
   };
 
   const refreshBatches = async () => {
@@ -326,6 +333,16 @@ export function ProductProcessingVerifyPage({ onStartProcessing, isActive = true
     } catch (err) {
       // 批次面板失败不影响草稿池主流程
       console.warn('draft batches refresh failed', err);
+    }
+  };
+
+  // 工作流第 03 步的可用性依赖最近一次处理任务；失败不影响草稿池主流程。
+  const refreshLatestTask = async () => {
+    try {
+      const data = await ppRequest<{ tasks: TaskHistoryItem[] }>(ctx, `${API_BASE}/tasks/history?limit=1&offset=0`);
+      setLatestTask(data.tasks?.[0] ?? null);
+    } catch (err) {
+      console.warn('latest task refresh failed', err);
     }
   };
 
@@ -384,6 +401,7 @@ export function ProductProcessingVerifyPage({ onStartProcessing, isActive = true
   useEffect(() => {
     refresh().catch(fail);
     refreshBatches();
+    refreshLatestTask();
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, []);
 
@@ -399,7 +417,7 @@ export function ProductProcessingVerifyPage({ onStartProcessing, isActive = true
   useChangePoller({
     url: `${API_BASE}/drafts/revision`,
     headers: { "X-Workspace-ID": ctx.workspaceId },
-    onChange: () => { refresh().catch(() => undefined); refreshBatches(); },
+    onChange: () => { refresh(true).catch(() => undefined); refreshBatches(); refreshLatestTask(); },
   });
 
   const toggleDraft = (id: number) => {
@@ -414,16 +432,9 @@ export function ProductProcessingVerifyPage({ onStartProcessing, isActive = true
 
   const selectAll = () => setSelectedIds(new Set(pageDrafts.slice(0, 100).map((d) => d.id)));
   const clearSelection = () => setSelectedIds(new Set());
-
-  // 精品模式勾选：可独立于「选中处理」勾选，两者互不影响；取消选中处理不清除精品标记
-  const togglePremium = (id: number) => {
-    setPremiumIds((prev) => {
-      const next = new Set(prev);
-      if (next.has(id)) { next.delete(id); }
-      else { next.add(id); }
-      return next;
-    });
-  };
+  // 本页是否已全选：单按钮切换「全选本页 / 取消全选」
+  const allPageSelected = pageDrafts.length > 0 && pageDrafts.every((d) => selectedIds.has(d.id));
+  const toggleSelectAllPage = () => { if (allPageSelected) clearSelection(); else selectAll(); };
 
   const beginEdit = (draft: DraftSummary) => {
     const raw = draft.raw_payload || {};
@@ -540,26 +551,6 @@ export function ProductProcessingVerifyPage({ onStartProcessing, isActive = true
     } catch (err) { fail(err); } finally { setLoading(false); }
   };
 
-  const saveDrafts = async (onlySelected = false) => {
-    const targets = drafts.filter((d) => {
-      if (!draftDirty(d, edits)) return false;
-      return onlySelected ? selectedIds.has(d.id) : true;
-    });
-    if (!targets.length) { notify(onlySelected ? '没有需要保存的已选修改' : '没有未保存的修改'); return; }
-    setLoading(true);
-    try {
-      const updated: DraftSummary[] = [];
-      for (const draft of targets) { const saved = await saveOneDraft(draft); if (saved) updated.push(saved); }
-      // 原位合并更新，保持列表顺序不变
-      if (updated.length) setDrafts((prev) => prev.map((d) => {
-        const hit = updated.find((u) => u.id === d.id);
-        return hit ? { ...d, title: hit.title, image_url: hit.image_url } : d;
-      }));
-      setEdits((prev) => { const next = { ...prev }; for (const d of targets) delete next[d.id]; return next; });
-      notify(`已保存 ${targets.length} 条草稿修改`);
-    } catch (err) { fail(err); } finally { setLoading(false); }
-  };
-
   // 批量删除勾选草稿；单条删除时传入目标 id（targetIds），删除后同步从勾选集中移除
   const deleteSelected = async (targetIds?: Iterable<number>) => {
     const ids = targetIds ? Array.from(targetIds) : Array.from(selectedIds);
@@ -580,29 +571,14 @@ export function ProductProcessingVerifyPage({ onStartProcessing, isActive = true
       setDeletedBatch({
         ids: deletedIds,
         selectedIds: Array.from(selectedIds).filter((id) => deletedSet.has(id)),
-        premiumIds: Array.from(premiumIds).filter((id) => deletedSet.has(id)),
       });
-      if (targetIds) {
-        setSelectedIds((prev) => {
-          const next = new Set(prev);
-          for (const id of deletedIds) next.delete(id);
-          return next;
-        });
-        setPremiumIds((prev) => {
-          const next = new Set(prev);
-          for (const id of deletedIds) next.delete(id);
-          return next;
-        });
-      } else {
-        setSelectedIds(new Set());
-        setPremiumIds((prev) => {
-          const next = new Set(prev);
-          for (const id of deletedIds) next.delete(id);
-          return next;
-        });
-      }
+      setSelectedIds((prev) => {
+        const next = new Set(prev);
+        for (const id of deletedIds) next.delete(id);
+        return next;
+      });
       await refresh();
-      notify(`已移除 ${deletedIds.length} 条草稿，可点击“撤回删除”恢复`);
+      notify(`已移除 ${deletedIds.length} 条草稿，再次点击该按钮可撤回`);
     } catch (err) { fail(err); } finally { setLoading(false); }
   };
 
@@ -624,16 +600,16 @@ export function ProductProcessingVerifyPage({ onStartProcessing, isActive = true
         }
         return next;
       });
-      setPremiumIds((prev) => {
-        const next = new Set(prev);
-        for (const id of batch.premiumIds) {
-          if (restoredSet.has(id)) next.add(id);
-        }
-        return next;
-      });
       await refresh();
       notify(`已撤回删除，恢复 ${restoredIds.length} 条草稿`);
     } catch (err) { fail(err); } finally { setLoading(false); }
+  };
+
+  // 「删除选择 / 撤回删除」合并为单个按钮：有勾选时删除，没有新勾选时再点一次即撤回上次删除。
+  const canUndoDelete = !selectedIds.size && Boolean(deletedBatch);
+  const handleDeleteOrUndo = () => {
+    if (selectedIds.size) { void deleteSelected(); return; }
+    if (deletedBatch) void undoDelete();
   };
 
   const handleProcess = async (preflightOnly = false) => {
@@ -670,24 +646,39 @@ export function ProductProcessingVerifyPage({ onStartProcessing, isActive = true
       ...options,
       ...(preflightOnly ? { preflightOnly: true } as Partial<ProductProcessingOptions> : {}),
     };
-    // 精品标记只对本次选中的草稿生效（被取消选中的精品标记暂留，方便下次一并处理）
-    const premiumIdsInSelection = Array.from(premiumIds).filter((id) => ids.includes(id));
-    const opened = onStartProcessing?.(ids, processOptions, premiumIdsInSelection);
+    // 精品标记已从草稿池移除，不再向后端提交 premium_draft_ids。
+    const opened = onStartProcessing?.(ids, processOptions, []);
     if (opened === false) return; // 任务面板未打开（如已达上限），草稿保持原样
     // 提交处理即让勾选草稿从池中消失：本地同步置 processing（后端同样置位），
     // 处理完成置 processed 保持隐藏，失败回退 draft 后会自动重新出现。
     setDrafts((prev) => prev.map((d) => (ids.includes(d.id) ? { ...d, status: 'processing' as const } : d)));
     setSelectedIds(new Set());
-    setPremiumIds((prev) => {
-      const next = new Set(prev);
-      for (const id of premiumIdsInSelection) next.delete(id);
-      return next;
-    });
     setEdits((prev) => { const next = { ...prev }; for (const id of ids) delete next[id]; return next; });
   };
 
+  // 工作流步骤可用性：草稿池常驻；处理设置需要勾选；结果预检需要已有处理任务。
+  const canOpenFlowStep = (id: string) => {
+    if (id === 'settings') return selectedIds.size > 0;
+    if (id === 'precheck') return Boolean(latestTask && onOpenPrecheck);
+    return true;
+  };
+
+  const openFlowStep = (id: string) => {
+    if (!canOpenFlowStep(id)) {
+      setError(id === 'settings' ? '请先勾选需要处理的草稿，再进入处理设置。' : '暂无处理任务，完成一次 AI 处理后即可查看结果预检。');
+      setMessage('');
+      return;
+    }
+    if (id === 'settings') { void handleProcess(false); return; }
+    if (id === 'precheck') { if (latestTask) onOpenPrecheck?.(latestTask.task_id); return; }
+    draftListRef.current?.scrollIntoView({ behavior: 'smooth', block: 'start' });
+  };
+
+  // 草稿池为空时整页纵向撑满内容区，把下方留白收进空态块里居中展示。
+  const isPoolEmpty = totalDrafts === 0;
+
   return (
-    <div className="verify-page">
+    <div className={`verify-page${isPoolEmpty ? ' is-pool-empty' : ''}`}>
       <header className="verify-commandbar">
         <div className="verify-command-title">
           <h1>产品处理草稿池</h1>
@@ -700,24 +691,27 @@ export function ProductProcessingVerifyPage({ onStartProcessing, isActive = true
         </div>
       </header>
 
+      <ProductFlowCard
+        activeId="pool"
+        canOpen={canOpenFlowStep}
+        onOpen={openFlowStep}
+      />
+
       {(message || error) && (
         <div className={`verify-message ${error ? 'error' : ''}`}>{error || message}</div>
       )}
 
-      <section className="verify-section" ref={draftListRef}>
+      <section className={`verify-section${isPoolEmpty ? ' is-empty' : ''}`} ref={draftListRef}>
         <div className="verify-sticky-toolbar-spacer" ref={stickySpacerRef}>
         <div className={`verify-sticky-toolbar ${isStickyToolbar ? 'is-stuck' : ''}`} ref={stickyToolbarRef}>
         <div className="verify-section-head">
           <h2><i className="iconfont icon-database" aria-hidden="true" />草稿池</h2>
           <div className="verify-actions">
             <button className={batchesOpen ? 'is-active' : ''} onClick={() => { setBatchesOpen((value) => !value); if (!batchesOpen) refreshBatches(); }} disabled={batchBusy}><i className="iconfont icon-appstore" aria-hidden="true" />采集批次{draftBatches.length ? `（${draftBatches.length}）` : ''}</button>
-            <button onClick={selectAll}><i className="iconfont icon-select" aria-hidden="true" />全选本页</button>
-            <button onClick={clearSelection}><i className="iconfont icon-close-circle" aria-hidden="true" />取消选择</button>
+            <button onClick={toggleSelectAllPage} disabled={!pageDrafts.length}><i className={`iconfont ${allPageSelected ? 'icon-close-circle' : 'icon-select'}`} aria-hidden="true" />{allPageSelected ? '取消全选' : '全选本页'}</button>
             <button onClick={openSkuBatch} disabled={!selectedIds.size}><i className="iconfont icon-barcode" aria-hidden="true" />批量管理 SKU</button>
-            <button onClick={() => saveDrafts(true)} disabled={loading}><i className="iconfont icon-save" aria-hidden="true" />保存已选</button>
             <button className="primary" onClick={() => handleProcess(false)} disabled={loading || !selectedIds.size}><i className="iconfont icon-rocket" aria-hidden="true" />开始处理</button>
-            <button onClick={() => deleteSelected()} disabled={loading || !selectedIds.size}><i className="iconfont icon-delete" aria-hidden="true" />删除选择</button>
-            <button className="undo-delete" onClick={undoDelete} disabled={loading || !deletedBatch} title={deletedBatch ? `恢复最近删除的 ${deletedBatch.ids.length} 条草稿` : '暂无可撤回的删除'}><span aria-hidden="true">↶</span>撤回删除{deletedBatch ? `（${deletedBatch.ids.length}）` : ''}</button>
+            <button className={canUndoDelete ? 'undo-delete' : ''} onClick={handleDeleteOrUndo} disabled={loading || (!selectedIds.size && !deletedBatch)} title={canUndoDelete ? `恢复最近删除的 ${deletedBatch?.ids.length || 0} 条草稿` : '删除已勾选草稿'}>{canUndoDelete ? <span aria-hidden="true">↶</span> : <i className="iconfont icon-delete" aria-hidden="true" />}{canUndoDelete ? `撤回删除（${deletedBatch?.ids.length || 0}）` : '删除选择'}</button>
             <button onClick={() => refresh().catch(fail)} disabled={loading}><i className="iconfont icon-sync" aria-hidden="true" />刷新</button>
           </div>
         </div>
@@ -729,12 +723,21 @@ export function ProductProcessingVerifyPage({ onStartProcessing, isActive = true
               <i className="iconfont icon-check-circle" aria-hidden="true" />已选 <strong>{selectedIds.size}</strong>
               {hiddenSelectedCount > 0 && <em>（{hiddenSelectedCount} 条被筛选隐藏）</em>}
             </span>
-            <span><i className="iconfont icon-gem" aria-hidden="true" />精品 <strong>{premiumIds.size}</strong></span>
             <span><i className="iconfont icon-file-text" aria-hidden="true" />本页 <strong>{pageDrafts.length}</strong></span>
-            {(skuCountFilter > 1 || hideSingleSpec || viewMode === 'selected') && (
+            {(skuCountFilter > 1 || hideSingleSpec) && (
               <span><i className="iconfont icon-filter" aria-hidden="true" />筛选后 <strong>{totalDrafts}</strong></span>
             )}
             {dirtyCount > 0 && <span className="dirty"><i className="iconfont icon-save" aria-hidden="true" />未保存修改 <strong>{dirtyCount}</strong></span>}
+          </div>
+          <div className="verify-pool-search-wrap">
+            <i className="iconfont icon-search" aria-hidden="true" />
+            <input
+              type="search"
+              className="verify-pool-search"
+              placeholder="搜索标题 / SKC / SKU / 来源..."
+              value={searchTerm}
+              onChange={(e) => { setSearchTerm(e.target.value); setPage(1); }}
+            />
           </div>
           <div className="verify-pool-controls">
             <div className="verify-page-size">
@@ -773,28 +776,6 @@ export function ProductProcessingVerifyPage({ onStartProcessing, isActive = true
                 />
                 不看单规格
               </label>
-            </div>
-            <div className="verify-view-toggle" role="group" aria-label="草稿视图">
-              <button
-                type="button"
-                className={viewMode === 'all' ? 'is-active' : ''}
-                onClick={() => { setViewMode('all'); setPage(1); }}
-              ><i className="iconfont icon-appstore" aria-hidden="true" />全部草稿</button>
-              <button
-                type="button"
-                className={viewMode === 'selected' ? 'is-active' : ''}
-                onClick={() => { setViewMode('selected'); setPage(1); }}
-              ><i className="iconfont icon-check-circle" aria-hidden="true" />只看已选{selectedIds.size > 0 ? `（${selectedIds.size}）` : ''}</button>
-            </div>
-            <div className="verify-pool-search-wrap">
-              <i className="iconfont icon-search" aria-hidden="true" />
-              <input
-                type="search"
-                className="verify-pool-search"
-                placeholder="搜索标题 / SKC / SKU / 来源..."
-                value={searchTerm}
-                onChange={(e) => { setSearchTerm(e.target.value); setPage(1); }}
-              />
             </div>
           </div>
         </div>
@@ -859,22 +840,61 @@ export function ProductProcessingVerifyPage({ onStartProcessing, isActive = true
           )}
         </div>
 
-        {viewMode === 'selected' && (
-          <div className="verify-selected-banner">
-            <span>正在核对已勾选草稿，共 <strong>{totalDrafts}</strong> 条（未勾选已过滤）</span>
-            <div className="verify-selected-banner-acts">
-              <button type="button" onClick={() => { setViewMode('all'); setPage(1); }}>查看全部</button>
-              <button type="button" onClick={clearSelection}>清空已选</button>
-            </div>
+        {isPoolEmpty && (
+          <div className={`verify-empty-state${listError ? ' is-error' : ''}`}>
+            <span className={`verify-empty-icon${listLoading ? ' is-loading' : ''}`} aria-hidden="true">
+              <i
+                className={`iconfont ${
+                  listError ? 'icon-warning-circle' : listLoading ? 'icon-sync' : selectableDrafts.length > 0 ? 'icon-search' : 'icon-appstore'
+                }`}
+              />
+            </span>
+            <strong className="verify-empty-title">
+              {listError
+                ? '草稿加载失败'
+                : listLoading
+                  ? '正在加载草稿…'
+                  : selectableDrafts.length > 0
+                    ? '没有匹配的草稿'
+                    : '草稿池还是空的'}
+            </strong>
+            <p className="verify-empty-desc">
+              {listError
+                ? `${listError}（可点击右上方「刷新」重试）`
+                : listLoading
+                  ? '正在同步本地草稿池数据，请稍候。'
+                  : selectableDrafts.length > 0
+                    ? '当前搜索 / 筛选条件下没有结果，换个关键词或清空筛选再看看。'
+                    : '从「采集」或「每日选品」把商品入池，再回到这里刷新，即可开始 AI 处理。'}
+            </p>
+            {!listLoading && (
+              <div className="verify-empty-actions">
+                {listError ? (
+                  <button type="button" className="primary" onClick={() => refresh().catch(fail)} disabled={loading}>
+                    <i className="iconfont icon-sync" aria-hidden="true" />重新加载
+                  </button>
+                ) : selectableDrafts.length > 0 ? (
+                  <button
+                    type="button"
+                    onClick={() => { setSearchTerm(''); setSkuCountFilter(0); setHideSingleSpec(false); setPage(1); }}
+                  >
+                    <i className="iconfont icon-reload" aria-hidden="true" />清空筛选
+                  </button>
+                ) : (
+                  <>
+                    {onOpenCollection && (
+                      <button type="button" className="primary" onClick={onOpenCollection}>
+                        <i className="iconfont icon-appstore" aria-hidden="true" />去采集商品
+                      </button>
+                    )}
+                    <button type="button" onClick={() => refresh().catch(fail)} disabled={loading}>
+                      <i className="iconfont icon-sync" aria-hidden="true" />刷新草稿池
+                    </button>
+                  </>
+                )}
+              </div>
+            )}
           </div>
-        )}
-
-        {totalDrafts === 0 && (
-          <p className="verify-empty">
-            {viewMode === 'selected'
-              ? '还没有勾选草稿。先勾选目标草稿，再切换「只看已选」即可核对全部所选链接。'
-              : '正在拉取新数据中....'}
-          </p>
         )}
         <div className="verify-draft-list">
           {pageDrafts.map((draft) => {
@@ -893,22 +913,12 @@ export function ProductProcessingVerifyPage({ onStartProcessing, isActive = true
             const copy = (t: string) => { navigator.clipboard.writeText(t).catch(() => undefined); };
             const onSelect = () => toggleDraft(draft.id);
             const isSelected = selectedIds.has(draft.id);
-            const isPremium = premiumIds.has(draft.id);
             return (
-              <article key={draft.id} className={`pool-card ${isSelected ? 'selected' : ''} ${isPremium ? 'premium' : ''}`}>
+              <article key={draft.id} className={`pool-card ${isSelected ? 'selected' : ''}`}>
                 <div className="pool-card-body">
                   <label className="pool-check">
                     <input type="checkbox" checked={isSelected} onChange={onSelect} />
                   </label>
-                  {/* 精品模式：独立于「选中处理」的勾选入口，走一次 4K 智能生图并本地拆成四张高清图。 */}
-                  <div className="pool-premium">
-                    <button
-                      type="button"
-                      className={`premium-toggle ${isPremium ? 'active' : ''}`}
-                      onClick={() => togglePremium(draft.id)}
-                      title={isPremium ? '取消精品处理' : '精品处理:四张高清独立图'}
-                    ><i className="iconfont icon-gem" aria-hidden="true" />{isPremium ? '已选精品' : '精品'}</button>
-                  </div>
                   <div className="pool-thumb" onClick={onSelect}>
                     {imgUrl ? (
                       <img src={imgUrl} alt="" referrerPolicy="no-referrer" />
@@ -921,11 +931,9 @@ export function ProductProcessingVerifyPage({ onStartProcessing, isActive = true
                     <div className="pool-title-row">
                       <strong title={displayTitle}>{displayTitle}</strong>
                       {isSelected && <span className="pool-selected-tag"><i className="iconfont icon-check" aria-hidden="true" />已选</span>}
-                      {isPremium && <span className="pool-premium-tag"><i className="iconfont icon-gem" aria-hidden="true" />精品</span>}
                       <div className="pool-inline-acts">
                         <button className="btn-mini" onClick={() => copy(displayTitle)}><i className="iconfont icon-file-copy" aria-hidden="true" />复制</button>
                         <button className="btn-mini" onClick={() => beginEdit(draft)} title="修改后续 AI 处理优先参考的中文标题"><i className="iconfont icon-edit" aria-hidden="true" />{isExpanded ? '收起' : '编辑标题'}</button>
-                        <button className="btn-mini primary" onClick={() => void addToCombo(draft)} title="把该条草稿图片加入「商品自定义组合」来源图暂存区"><i className="iconfont icon-skin" aria-hidden="true" />加入组合定制</button>
                         <button className="btn-mini danger" onClick={() => { if (window.confirm('确认删除该草稿？')) deleteSelected([draft.id]); }}><i className="iconfont icon-delete" aria-hidden="true" />删除</button>
                       </div>
                     </div>

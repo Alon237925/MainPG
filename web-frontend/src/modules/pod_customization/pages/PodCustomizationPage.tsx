@@ -12,9 +12,9 @@ import { TemplateLibraryDrawer } from "../components/TemplateLibraryDrawer";
 import { PodUnsavedTemplateConfirmDialog } from "../components/PodUnsavedTemplateConfirmDialog";
 import {
   POD_BATCH_COUNTS,
-  POD_STYLE_PLANNING_OPTIONS,
   EMPTY_SPEC_CARD,
   buildPromptV1,
+  buildSpecCardCells,
   businessFieldsForApi,
   canDeletePodBatch,
   isPristineCreativeEdit,
@@ -24,7 +24,6 @@ import {
   isActivePodStyleTitleStatus,
   isSpecCardConfigured,
   groupPodStyleRows,
-  normalizeStylePlanning,
   resolveCreativePrompt,
   listingFieldsForApi,
   shouldPollPodBatch,
@@ -39,6 +38,7 @@ import {
   removePodSystemTemplate,
   resolvePodSystemTemplate,
   savePodCustomizationDraft,
+  POD_CUSTOMIZATION_DRAFT_VERSION,
   type PodSystemTemplate,
 } from "../data/podCustomizationDraft";
 import { usePodAssetUrl } from "../data/usePodAssetUrl";
@@ -51,6 +51,7 @@ import type {
   PodBriefHistoryItem,
   PodBusinessFieldsDraft,
   PodListingFieldsDraft,
+  PodMiaoshouTemplateKind,
   PodTemplate,
   PodTemplateCalibration,
   SpecCardConfig,
@@ -68,14 +69,12 @@ type PodDraftAccount = {
   workspace_code?: string;
 };
 
-type SkuField = "name" | "length_cm" | "width_cm" | "height_cm" | "weight_g";
+type SkuField = "name" | "declared_price" | "weight_g";
 type SkuFieldErrors = Record<string, string>;
 
 const SKU_FIELD_LABELS: Record<SkuField, string> = {
   name: "名称",
-  length_cm: "长度",
-  width_cm: "宽度",
-  height_cm: "高度",
+  declared_price: "申报价",
   weight_g: "重量",
 };
 
@@ -107,7 +106,7 @@ const BUSINESS_FIELDS: Array<{
   multiline?: boolean;
   required?: boolean;
   hint?: string;
-  control?: "style-planning";
+  placeholder?: string;
 }> = [
   { key: "product_name", label: "产品名称", required: true },
   { key: "product_category", label: "产品品类", required: true },
@@ -119,13 +118,6 @@ const BUSINESS_FIELDS: Array<{
     label: "主题整批统一风格",
     required: true,
     hint: "整批统一的创意主题与风格基调，例如：美式西南复古牛仔荒野风、复古手绘插画风",
-  },
-  {
-    key: "style_planning",
-    label: "样式规划",
-    required: true,
-    control: "style-planning",
-    hint: "图案在包身的覆盖范围：全覆盖＝满版铺满；半覆盖＝局部铺满、其余留白。",
   },
   {
     key: "style_keywords",
@@ -144,6 +136,13 @@ const BUSINESS_FIELDS: Array<{
     multiline: true,
     hint: "尽量多写，且务必覆盖侵权类（品牌 logo、商标、球队或联盟标识、影视动漫游戏角色、卡通 IP 形象、名人肖像、奢侈品牌老花、平台水印、受版权保护的海报封面）与危险违禁类（武器弹药、管制刀具、爆炸物、毒品、赌博、烟草电子烟、酒精、暴力血腥、恐怖或仇恨符号、纳粹标志、宗教或政治符号、国旗国徽、成人或色情内容、钞票图样、身份证件、二维码、真人照片），避免商品下架或店铺被封",
   },
+  {
+    key: "copy_restrictions",
+    label: "标题/描述限制",
+    multiline: true,
+    placeholder: "谨慎填写：如「标题不要出现刺绣」「明确带上 2D Flat」",
+    hint: "选填，建议留空、谨慎填写。填了就请写明确说法，例如「标题不要出现刺绣」「标题和描述都要明确带上 2D Flat」；该限制只作用于 AI 生成的标题与描述，不影响图片，也不会放宽平台的违禁词、品牌、长度等硬性规则",
+  },
 ];
 
 function autoGrowBusinessTextarea(textarea: HTMLTextAreaElement): void {
@@ -152,11 +151,10 @@ function autoGrowBusinessTextarea(textarea: HTMLTextAreaElement): void {
 }
 
 const LISTING_FIELDS: Array<{
-  key: "declared_price" | "suggested_price_usd" | "category_name";
+  key: "suggested_price_usd" | "category_name";
   label: string;
   inputMode?: "decimal" | "numeric";
 }> = [
-  { key: "declared_price", label: "申报价", inputMode: "decimal" },
   { key: "suggested_price_usd", label: "建议售价（USD）", inputMode: "decimal" },
   { key: "category_name", label: "店小秘类目" },
 ];
@@ -177,18 +175,17 @@ const EMPTY_BUSINESS_FIELDS_FOR_SWITCH: Record<keyof PodBusinessFieldsDraft, str
   target_audience: "",
   core_selling_points: "",
   design_theme: "",
-  style_planning: "",
   style_keywords: "",
   color_preferences: "",
   excluded_elements: "",
+  copy_restrictions: "",
 };
 
 const EMPTY_LISTING_FIELDS_FOR_SWITCH: PodListingFieldsDraft = {
   title_mode: "long",
-  declared_price: "",
   suggested_price_usd: "",
   category_name: "",
-  skus: [{ name: "", length_cm: "", width_cm: "", height_cm: "", weight_g: "" }],
+  skus: [{ name: "", declared_price: "", weight_g: "" }],
 };
 
 function replaceTemplate(templates: PodTemplate[], updated: PodTemplate): PodTemplate[] {
@@ -214,10 +211,8 @@ export function PodCustomizationPage({ isActive = true }: Props) {
   const [selectedTemplateId, setSelectedTemplateId] = useState(initialDraft.state.selected_template_id);
   const [selectedTemplateSnapshot, setSelectedTemplateSnapshot] = useState<PodTemplate | null>(null);
   const [selectedItemId, setSelectedItemId] = useState<string>();
-  // 旧草稿里的 style_planning 可能是自由文本：二选一后只接受「全覆盖 / 半覆盖」，其余视为未选择。
   const [businessFields, setBusinessFields] = useState<PodBusinessFieldsDraft>(() => ({
     ...initialDraft.state.business_fields,
-    style_planning: normalizeStylePlanning(initialDraft.state.business_fields.style_planning),
   }));
   const [briefHistory, setBriefHistory] = useState<PodBriefHistoryItem[]>(initialDraft.state.brief_history ?? []);
   const [listingFields, setListingFields] = useState<PodListingFieldsDraft>(initialDraft.state.listing_fields);
@@ -377,7 +372,7 @@ export function PodCustomizationPage({ isActive = true }: Props) {
   useEffect(() => {
     if (!draftScope) return;
     const result = savePodCustomizationDraft(draftScope.accountId, draftScope.workspaceId, {
-      version: 3,
+      version: POD_CUSTOMIZATION_DRAFT_VERSION,
       business_fields: businessFields,
       listing_fields: listingFields,
       spec_card: specCard,
@@ -396,6 +391,14 @@ export function PodCustomizationPage({ isActive = true }: Props) {
       lastDraftSaveErrorRef.current = "";
     }
   }, [batchCount, briefHistory, businessFields, currentBatchEdit, customCountInput, customCountMode, draftScope?.accountId, draftScope?.workspaceId, listingFields, selectedTemplateId, specCard, systemTemplates]);
+
+  // 尺寸详情表格与 SKU 预设联动：SKU 增减或改名时按顺序重建表头与 SKU 行；
+  // 已填的长/宽/高按 SKU 名（退化时按位置）保留，避免重建时清掉用户输入。
+  const skuNamesSignature = JSON.stringify(listingFields.skus.map((sku) => sku.name));
+  useEffect(() => {
+    const names = JSON.parse(skuNamesSignature) as string[];
+    setSpecCard((current) => ({ ...current, cells: buildSpecCardCells(names, current.cells) }));
+  }, [skuNamesSignature]);
 
   // Resize multiline business textareas on mount and whenever their values change.
   // onChange handles live typing; this effect handles initial load and draft restore.
@@ -433,7 +436,7 @@ export function PodCustomizationPage({ isActive = true }: Props) {
     setBusinessFields((current) => mergeBusinessFields(current, item.fields));
   };
 
-  const updateListingField = (key: "title_mode" | "declared_price" | "suggested_price_usd" | "category_name", value: string) => {
+  const updateListingField = (key: "title_mode" | "suggested_price_usd" | "category_name", value: string) => {
     setListingFields((current) => ({ ...current, [key]: value }));
   };
 
@@ -441,7 +444,7 @@ export function PodCustomizationPage({ isActive = true }: Props) {
     if (skuLimitReached) return;
     setListingFields((current) => ({
       ...current,
-      skus: [...current.skus, { name: "", length_cm: "", width_cm: "", height_cm: "", weight_g: "" }],
+      skus: [...current.skus, { name: "", declared_price: "", weight_g: "" }],
     }));
   };
 
@@ -468,7 +471,7 @@ export function PodCustomizationPage({ isActive = true }: Props) {
     }
     const currentTemplateHasArchive = systemTemplates.some((template) => template.templateId === selectedTemplateId);
     const formHasContent = Object.values(businessFields).some((value) => value.trim())
-      || listingFields.declared_price.trim() || listingFields.suggested_price_usd.trim()
+      || listingFields.suggested_price_usd.trim()
       || listingFields.category_name.trim() || listingFields.skus.some((sku) => Object.values(sku).some((value) => value.trim()));
     if (!currentTemplateHasArchive && selectedTemplateId && formHasContent) {
       setPendingTemplateSwitch(templateId);
@@ -881,6 +884,21 @@ export function PodCustomizationPage({ isActive = true }: Props) {
     }
   };
 
+  const exportMiaoshou = async (kind: PodMiaoshouTemplateKind) => {
+    if (!activeBatch) return;
+    setBusyAction(`export-miaoshou:${kind}`);
+    clearMessages();
+    try {
+      const exported = await podCustomizationApi.exportMiaoshou(activeBatch.id, kind);
+      const label = kind === "apparel" ? "服饰类" : "非服饰类";
+      setNotice(`已导出妙手${label}表格：${exported.exportedStyles} 款、跳过 ${exported.skippedStyles} 款。`);
+    } catch (cause) {
+      setError(cause instanceof Error ? cause.message : String(cause));
+    } finally {
+      setBusyAction("");
+    }
+  };
+
   const retryFailed = async (request: PodBatchRetryRequest) => {
     if (!activeBatch) return;
     setBusyAction("retry-failed");
@@ -922,17 +940,10 @@ export function PodCustomizationPage({ isActive = true }: Props) {
             <PodBriefInput onGenerated={handleBriefGenerated} history={briefHistory} onSelectHistory={selectBriefHistory} />
             <div className="pod-business-fields">
               {BUSINESS_FIELDS.map((field, fieldIndex) => (
-                field.control === "style-planning"
-                  ? <div key={field.key} className="pod-style-planning" role="radiogroup" aria-label={field.label}>
-                    <span>{field.label}{field.required && <em>*</em>}{field.hint && <i className="pod-field-info" data-tip={field.hint} aria-hidden="true">ⓘ</i>}</span>
-                    <div>
-                      {POD_STYLE_PLANNING_OPTIONS.map((option) => <button key={option} type="button" role="radio" aria-checked={businessFields.style_planning === option} className={businessFields.style_planning === option ? "is-active" : ""} onClick={() => updateBusinessField("style_planning", option)}>{option}</button>)}
-                    </div>
-                  </div>
-                  : <label key={field.key} className={field.multiline ? "is-multiline" : ""}><span>{field.label}{field.required && <em>*</em>}{field.hint && <i className="pod-field-info" data-tip={field.hint} aria-hidden="true">ⓘ</i>}</span><textarea rows={1} ref={(el) => { businessTextareasRef.current[fieldIndex] = el; }} value={businessFields[field.key]} onChange={(event) => {
-                    updateBusinessField(field.key, event.currentTarget.value);
-                    autoGrowBusinessTextarea(event.currentTarget);
-                  }} /></label>
+                <label key={field.key} className={field.multiline ? "is-multiline" : ""}><span>{field.label}{field.required && <em>*</em>}{field.hint && <i className="pod-field-info" data-tip={field.hint} aria-hidden="true">ⓘ</i>}</span><textarea rows={1} placeholder={field.placeholder} ref={(el) => { businessTextareasRef.current[fieldIndex] = el; }} value={businessFields[field.key]} onChange={(event) => {
+                  updateBusinessField(field.key, event.currentTarget.value);
+                  autoGrowBusinessTextarea(event.currentTarget);
+                }} /></label>
               ))}
             </div>
             <div className="pod-advanced-prompt">
@@ -952,14 +963,12 @@ export function PodCustomizationPage({ isActive = true }: Props) {
                 {LISTING_FIELDS.map((field) => <label key={field.key}><span>{field.label}<em>*</em></span><input value={listingFields[field.key]} inputMode={field.inputMode} onChange={(event) => updateListingField(field.key, event.target.value)} /></label>)}
               </div>
               <div className="pod-sku-editor" aria-label="SKU 预设">
-                <div className="pod-sku-editor-heading"><span>SKU 预设<small>每个 SKU 需填写名称、长、宽、高与重量</small></span><button type="button" onClick={addSku} disabled={skuLimitReached} aria-describedby={skuLimitReached ? "pod-sku-limit-notice" : undefined} title={skuLimitReached ? "最多可添加 100 个 SKU" : undefined}><span className="iconfont icon-plus" aria-hidden="true" />新增 SKU</button></div>
+                <div className="pod-sku-editor-heading"><span>SKU 预设<small>每个 SKU 需填写名称、申报价与重量</small></span><button type="button" onClick={addSku} disabled={skuLimitReached} aria-describedby={skuLimitReached ? "pod-sku-limit-notice" : undefined} title={skuLimitReached ? "最多可添加 100 个 SKU" : undefined}><span className="iconfont icon-plus" aria-hidden="true" />新增 SKU</button></div>
                 {skuLimitReached && <p id="pod-sku-limit-notice" className="pod-sku-limit-notice" role="status">已达到 100 个 SKU 上限。</p>}
                 <div className="pod-sku-inputs">
                   {listingFields.skus.map((sku, index) => <div key={index} className="pod-sku-input-row">
                     <label><span>SKU 名称 {index + 1}</span><input value={sku.name} onChange={(event) => updateSku(index, "name", event.target.value)} aria-label="SKU 名称" aria-invalid={Boolean(skuFieldErrors[skuErrorKey(index, "name")])} aria-describedby={skuFieldErrors[skuErrorKey(index, "name")] ? `pod-sku-error-${index}-name` : undefined} />{skuFieldErrors[skuErrorKey(index, "name")] && <small id={`pod-sku-error-${index}-name`} className="pod-sku-field-error">{skuFieldErrors[skuErrorKey(index, "name")]}</small>}</label>
-                    <label><span>长（cm）</span><input value={sku.length_cm} inputMode="decimal" onChange={(event) => updateSku(index, "length_cm", event.target.value)} aria-label="SKU 长（cm）" aria-invalid={Boolean(skuFieldErrors[skuErrorKey(index, "length_cm")])} aria-describedby={skuFieldErrors[skuErrorKey(index, "length_cm")] ? `pod-sku-error-${index}-length_cm` : undefined} />{skuFieldErrors[skuErrorKey(index, "length_cm")] && <small id={`pod-sku-error-${index}-length_cm`} className="pod-sku-field-error">{skuFieldErrors[skuErrorKey(index, "length_cm")]}</small>}</label>
-                    <label><span>宽（cm）</span><input value={sku.width_cm} inputMode="decimal" onChange={(event) => updateSku(index, "width_cm", event.target.value)} aria-label="SKU 宽（cm）" aria-invalid={Boolean(skuFieldErrors[skuErrorKey(index, "width_cm")])} aria-describedby={skuFieldErrors[skuErrorKey(index, "width_cm")] ? `pod-sku-error-${index}-width_cm` : undefined} />{skuFieldErrors[skuErrorKey(index, "width_cm")] && <small id={`pod-sku-error-${index}-width_cm`} className="pod-sku-field-error">{skuFieldErrors[skuErrorKey(index, "width_cm")]}</small>}</label>
-                    <label><span>高（cm）</span><input value={sku.height_cm} inputMode="decimal" onChange={(event) => updateSku(index, "height_cm", event.target.value)} aria-label="SKU 高（cm）" aria-invalid={Boolean(skuFieldErrors[skuErrorKey(index, "height_cm")])} aria-describedby={skuFieldErrors[skuErrorKey(index, "height_cm")] ? `pod-sku-error-${index}-height_cm` : undefined} />{skuFieldErrors[skuErrorKey(index, "height_cm")] && <small id={`pod-sku-error-${index}-height_cm`} className="pod-sku-field-error">{skuFieldErrors[skuErrorKey(index, "height_cm")]}</small>}</label>
+                    <label><span>申报价</span><input value={sku.declared_price} inputMode="decimal" onChange={(event) => updateSku(index, "declared_price", event.target.value)} aria-label="SKU 申报价" aria-invalid={Boolean(skuFieldErrors[skuErrorKey(index, "declared_price")])} aria-describedby={skuFieldErrors[skuErrorKey(index, "declared_price")] ? `pod-sku-error-${index}-declared_price` : undefined} />{skuFieldErrors[skuErrorKey(index, "declared_price")] && <small id={`pod-sku-error-${index}-declared_price`} className="pod-sku-field-error">{skuFieldErrors[skuErrorKey(index, "declared_price")]}</small>}</label>
                     <label><span>重量（g）</span><input value={sku.weight_g} inputMode="decimal" onChange={(event) => updateSku(index, "weight_g", event.target.value)} aria-label="SKU 重量（g）" aria-invalid={Boolean(skuFieldErrors[skuErrorKey(index, "weight_g")])} aria-describedby={skuFieldErrors[skuErrorKey(index, "weight_g")] ? `pod-sku-error-${index}-weight_g` : undefined} />{skuFieldErrors[skuErrorKey(index, "weight_g")] && <small id={`pod-sku-error-${index}-weight_g`} className="pod-sku-field-error">{skuFieldErrors[skuErrorKey(index, "weight_g")]}</small>}</label>
                     <button type="button" onClick={() => removeSku(index)} aria-label="删除 SKU">×</button>
                   </div>)}
@@ -1008,6 +1017,7 @@ export function PodCustomizationPage({ isActive = true }: Props) {
             onUpdateExportSelection={(styleIndex, selected) => void updateExportSelection(styleIndex, selected)}
             onSaveTitle={(styleIndex, title) => saveManualTitle(styleIndex, title)}
             onExportDianxiaomi={() => void exportDianxiaomi()}
+            onExportMiaoshou={(kind) => void exportMiaoshou(kind)}
             onOpenFailedRetry={() => setFailedRetryOpen(true)}
             onPauseBatch={() => void pauseBatch()}
             onCancelBatch={() => void cancelBatch()}

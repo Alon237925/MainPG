@@ -85,6 +85,7 @@ from .domain.models import DEFAULT_PROMPTS, DailySelectionHandoffEnvelope, Daily
 from .domain.physical_dimensions import extract_physical_dimensions
 from .domain.policy import PolicyIssue, is_safe_external_url, product_policy_issue, strict_external_url_issue
 from .domain.preview_images import task_item_result_version
+from .domain import sku_availability as sku_availability_domain
 from .domain.prompts import (
     GRID_RUNTIME_CONTRACT,
     SINGLE_IMAGE_RUNTIME_CONTRACT,
@@ -92,14 +93,20 @@ from .domain.prompts import (
     format_prompt,
 )
 from .domain.visual_planner import listing_prompt_context
-from .domain.workbooks import is_variant_value_noise, read_product_workbook
+from .domain.workbooks import (
+    is_variant_value_noise,
+    read_product_workbook,
+    variant_export_key,
+)
 from .infrastructure.assets import ProductProcessingAssets
 from .infrastructure.ocr_gate import (
     detect_chinese_text,
+    inspect_sku_text,
     inspect_visible_text,
     max_repair_rounds,
     ocr_diagnostics,
     ocr_gate_enabled,
+    ocr_worker_limit,
 )
 from .infrastructure.repository import ProductProcessingRepository
 from .infrastructure.dimension_template_repository import DimensionTemplateRepository
@@ -370,8 +377,15 @@ def _cos_enc_config_paths() -> list[Path]:
 
 def _ai_error_reason(exc: Exception) -> str:
     """将 AI 失败异常转成可展示的原因（超时/HTTP 状态/语言违规等）。"""
-    message = str(exc).strip()
-    return message[:200] if message else type(exc).__name__
+    message = str(exc).strip() or type(exc).__name__
+    # 网关 4xx/5xx 的真实原因在 upstream_detail 里：同为 409，「identical gateway
+    # request is already in progress」（在途）与「gateway request limit reached for
+    # reserved usage」（额度耗尽）是完全不同的两种故障。不透出它，诊断里只能看到
+    # 一个不透光的 HTTP 409。
+    detail = getattr(exc, "upstream_detail", None)
+    if isinstance(detail, str) and detail.strip() and detail.strip() not in message:
+        message = f"{message}（{detail.strip()}）"
+    return message[:200]
 
 
 def _billing_call_with_retry(
@@ -2300,33 +2314,38 @@ USER-REQUESTED PANEL PLANNING ADDITIONS (user extra requirements only; they MUST
     ) -> dict[str, Any]:
         receipts: list[dict[str, Any]] = []
         drafts: list[dict[str, Any]] = []
-        created_count = 0
+        replayed: list[tuple[DailySelectionHandoffEnvelope, dict[str, Any]]] = []
+        requests: list[dict[str, Any]] = []
+        # 重放判定整批一次查：回执唯一约束仍是幂等边界。
+        existing = self.repository.handoff_receipts([handoff.handoff_id for handoff in handoffs])
         for handoff in handoffs:
-            existing_receipt = self.repository.handoff_receipt(handoff.handoff_id, handoff.workspace_id)
-            if existing_receipt is not None:
-                receipts.append(existing_receipt)
-                draft = self.repository.get_draft(
-                    existing_receipt["product_draft_id"],
-                    include_deleted=True,
-                    workspace_id=handoff.workspace_id,
-                )
-                if draft:
-                    drafts.append(draft)
+            receipt = existing.get(handoff.handoff_id)
+            if receipt is not None:
+                replayed.append((handoff, receipt))
                 continue
             if handoff.status == "failed":
                 raise ValueError("failed daily-selection handoffs cannot be consumed")
-            # A new handoff creates a V2 draft with its media assets and bindings
-            # in one transaction. Only replaying this exact handoff is idempotent.
-            draft, receipt = self.create_draft_with_media(handoff)
-            created_count += 1
+            requests.append(self._draft_request_from_handoff(handoff))
+        # 整批一个事务建池：多 SKU 入池不再「一个商品一次 commit」。
+        created = self.repository.create_drafts_with_media(requests)
+        for handoff, receipt in replayed:
+            receipts.append(receipt)
+            draft = self.repository.get_draft(
+                receipt["product_draft_id"],
+                include_deleted=True,
+                workspace_id=handoff.workspace_id,
+            )
+            if draft:
+                drafts.append(draft)
+        for draft, receipt in created:
             receipts.append(receipt)
             drafts.append(draft)
         return {
             "contract_version": "daily-selection-handoff-consumer-v1",
             "consumer_status": "consumed",
             "received": len(handoffs),
-            "created": created_count,
-            "replayed": len(handoffs) - created_count,
+            "created": len(created),
+            "replayed": len(replayed),
             "receipts": receipts,
             "drafts": drafts,
             "upstream_ack_required": True,
@@ -2394,20 +2413,24 @@ USER-REQUESTED PANEL PLANNING ADDITIONS (user extra requirements only; they MUST
         self, handoff: DailySelectionHandoffEnvelope
     ) -> tuple[dict[str, Any], dict[str, Any]]:
         """Create a V2 draft with registered media assets and bindings atomically."""
+        return self.repository.create_draft_with_media(**self._draft_request_from_handoff(handoff))
+
+    def _draft_request_from_handoff(
+        self, handoff: DailySelectionHandoffEnvelope
+    ) -> dict[str, Any]:
+        """把 handoff 编译成 ``repository.create_drafts_with_media`` 的单个请求项。"""
         raw = self._draft_payload_from_handoff(handoff)
-        draft_values = self._draft_values_from_handoff(handoff, raw)
-        media_entries = self._handoff_media_entries(raw)
-        return self.repository.create_draft_with_media(
-            draft_values=draft_values,
-            media_entries=media_entries,
-            handoff_id=handoff.handoff_id,
-            idempotency_key=handoff.idempotency_key,
-            workspace_id=handoff.workspace_id,
-            run_id=handoff.run_id,
-            candidate_id=handoff.candidate_id,
-            source_status=handoff.status,
-            payload_sha256=hashlib.sha256(handoff.payload_json.encode("utf-8")).hexdigest(),
-        )
+        return {
+            "draft_values": self._draft_values_from_handoff(handoff, raw),
+            "media_entries": self._handoff_media_entries(raw),
+            "handoff_id": handoff.handoff_id,
+            "idempotency_key": handoff.idempotency_key,
+            "workspace_id": handoff.workspace_id,
+            "run_id": handoff.run_id,
+            "candidate_id": handoff.candidate_id,
+            "source_status": handoff.status,
+            "payload_sha256": hashlib.sha256(handoff.payload_json.encode("utf-8")).hexdigest(),
+        }
 
     def _draft_values_from_handoff(
         self,
@@ -2638,6 +2661,19 @@ USER-REQUESTED PANEL PLANNING ADDITIONS (user extra requirements only; they MUST
                     "failed_count": 0,
                     "skipped_count": 0,
                 }
+            # 处理设置页的 SKU 原图可用性分类：先写入草稿预检覆盖，导出最终版时按
+            # variant_image_mode 分流（source=规格原图 / main=商品主图）。
+            self._apply_variant_image_classification(
+                payload.get("variant_image_classification"),
+                drafts,
+                workspace_id=workspace_id,
+            )
+            # 「优化链接 SKU」：把检出中文的 SKU 变种并入预检排除，剩余干净 SKU 改用规格原图。
+            self._apply_variant_image_exclusions(
+                payload.get("variant_image_exclusions"),
+                drafts,
+                workspace_id=workspace_id,
+            )
             preflight_only = bool(payload.get("preflight_only") or payload.get("category_preflight_only"))
             task = self.repository.create_task(
                 title=self._text(payload.get("title")) or "产品处理任务-草稿池商品",
@@ -3429,8 +3465,22 @@ USER-REQUESTED PANEL PLANNING ADDITIONS (user extra requirements only; they MUST
                 ),
                 "media_contract_version": int((draft or {}).get("media_contract_version") or 1),
                 "excluded": bool(draft_id) and int(draft_id) in excluded_ids,
+                # auto 档在预检侧要讲清「未判定 ⇒ 会全部回退主图」，需要结论随行下发。
+                "sku_availability": (
+                    self.preview_images.sku_availability_state(int(draft_id), workspace_id)
+                    if draft_id else None
+                ),
                 **projected,
             })
+        # SKU 原图中文复核：预检页要展示「待审核」名单，这里顺带触发一次后台检测
+        # （同任务去重，检测在独立线程跑，不拖慢本接口）。结果落库后由下一次
+        # task_preview 带回；前端可轮询 sku_text_review_status 看进度。
+        if any(
+            str(asset.get("source_kind") or "") == "sku"
+            for item in items
+            for asset in (item.get("assets") or [])
+        ):
+            self.preview_images.start_sku_text_review(task_id, workspace_id=workspace_id)
         return {
             "task_id": task_id,
             "task": {
@@ -3731,6 +3781,59 @@ USER-REQUESTED PANEL PLANNING ADDITIONS (user extra requirements only; they MUST
         except LookupError as exc:
             raise ProductProcessingNotFound(str(exc)) from exc
 
+    def import_preview_image_from_url(
+        self,
+        task_id: int,
+        draft_id: int,
+        url: str,
+        *,
+        workspace_id: str = "local",
+    ) -> dict[str, Any]:
+        """把外部图片经图床转存为预览资产。
+
+        前端框选裁剪需要读取像素，外部跨域地址（如 1688 商品图）会让 canvas 变脏
+        无法导出；转存后拿到本服务签名的同源地址即可裁剪，导出时随发布流程换成公网地址。
+        """
+        from urllib.parse import urlsplit  # noqa: PLC0415
+
+        from .infrastructure.preview_image_files import (  # noqa: PLC0415
+            MAX_PREVIEW_IMAGE_BYTES,
+        )
+
+        normalized = str(url or "").strip()
+        if not normalized.lower().startswith("https://") or not is_safe_external_url(normalized):
+            raise ProductProcessingValidationError("只能转存可公开访问的 https 图片地址")
+        self.require_preview_target(task_id, draft_id, workspace_id=workspace_id)
+        try:
+            image = fetch_public_image(
+                normalized,
+                max_bytes=MAX_PREVIEW_IMAGE_BYTES,
+                timeout_seconds=30,
+            )
+        except Exception as exc:  # noqa: BLE001 - 统一转成校验错误回给前端
+            raise ProductProcessingValidationError(f"图片转存失败：{exc}") from exc
+        content = bytes(getattr(image, "content", b"") or b"")
+        if not content:
+            raise ProductProcessingValidationError("图片转存失败：未取到图片内容")
+        filename = Path(urlsplit(normalized).path).name or "imported-image.jpg"
+        return self.register_preview_upload(
+            task_id,
+            draft_id,
+            content,
+            filename,
+            str(getattr(image, "media_type", "") or ""),
+            workspace_id=workspace_id,
+        )
+
+    def sku_text_review_status(
+        self, task_id: int, *, workspace_id: str = "local"
+    ) -> dict[str, int]:
+        """SKU 原图中文复核进度（预检页「待审核」计数与轮询用）。"""
+        self._require_task(task_id, workspace_id)
+        return self.preview_images.sku_text_review_progress(
+            task_id, workspace_id=workspace_id
+        )
+
     def draft_media(self, draft_id: int, *, workspace_id: str = "local") -> dict[str, Any]:
         draft = self.get_draft(draft_id, workspace_id)
         if int(draft.get("media_contract_version") or 1) < 2:
@@ -3740,6 +3843,393 @@ USER-REQUESTED PANEL PLANNING ADDITIONS (user extra requirements only; they MUST
             "draft_id": draft_id,
             "groups": self.media_assets.list_draft_media(workspace_id, draft_id),
         }
+
+    # 处理设置页「SKU 规格图可用性判断」：单条链接参与检测的 SKU 规格图数达到该值即整条跳过，
+    # 避免一条链接几十张图把整批判断拖成分钟级。跳过的链接按「用商品主图」处理。
+    _SKU_AVAILABILITY_MAX_IMAGES = 50
+
+    def _apply_variant_image_classification(
+        self,
+        classification: Any,
+        drafts: list[dict[str, Any]],
+        *,
+        workspace_id: str = "local",
+    ) -> int:
+        """把处理设置页的 SKU 原图可用性分类写入草稿预检覆盖。
+
+        ``classification`` 形如 ``{draft_id: "source" | "main"}``：判定「可用原图」的链接
+        记 ``source``（每个 SKU 用规格原图），其余（中文水印 / 无规格图 / 规格图过多）记
+        ``main``（统一用商品主图）。写入后预检页与导出最终版据此分流，用户仍可在预检页改。
+        返回实际写入的草稿数。
+        """
+        if not isinstance(classification, dict) or not classification:
+            return 0
+        allowed = {int(draft["id"]) for draft in drafts}
+        updated = 0
+        for raw_draft_id, raw_mode in classification.items():
+            try:
+                draft_id = int(raw_draft_id)
+            except (TypeError, ValueError):
+                continue
+            mode = str(raw_mode or "").strip().lower()
+            if draft_id not in allowed or mode not in {"source", "main"}:
+                continue
+            try:
+                draft = self.get_draft(draft_id, workspace_id)
+            except ProductProcessingNotFound:
+                continue
+            overrides = dict(draft.get("preview_overrides") or {})
+            if str(overrides.get("variant_image_mode") or "") == mode:
+                continue
+            overrides["variant_image_mode"] = mode
+            self.repository.save_draft_preview_overrides(
+                draft_id, overrides, workspace_id=workspace_id
+            )
+            updated += 1
+        return updated
+
+    def _apply_variant_image_exclusions(
+        self,
+        exclusions: Any,
+        drafts: list[dict[str, Any]],
+        *,
+        workspace_id: str = "local",
+    ) -> int:
+        """把「优化链接 SKU」勾选结果并入草稿预检覆盖的 ``excluded_variant_keys``。
+
+        ``exclusions`` 形如 ``{draft_id: [variant_key, ...]}``：命中的来源变种在导出表格
+        里整行剔除（与用户在预检页手工排除取并集）。剩余干净 SKU 改用各自的规格原图，
+        因此同步把 ``variant_image_mode`` 置为 ``source``。整条链接全是中文图（前端判定
+        ``all_sku_chinese``）时不提交剔除键，此处自然跳过、保留商品走商品主图。
+        返回实际写入的草稿数。
+        """
+        if not isinstance(exclusions, dict) or not exclusions:
+            return 0
+        allowed = {int(draft["id"]) for draft in drafts}
+        updated = 0
+        for raw_draft_id, raw_keys in exclusions.items():
+            try:
+                draft_id = int(raw_draft_id)
+            except (TypeError, ValueError):
+                continue
+            if draft_id not in allowed or not isinstance(raw_keys, (list, tuple, set)):
+                continue
+            keys = [str(key).strip() for key in raw_keys if str(key or "").strip()]
+            if not keys:
+                continue
+            try:
+                draft = self.get_draft(draft_id, workspace_id)
+            except ProductProcessingNotFound:
+                continue
+            overrides = dict(draft.get("preview_overrides") or {})
+            merged = list(overrides.get("excluded_variant_keys") or [])
+            merged_set = {str(key) for key in merged}
+            changed = False
+            for key in keys:
+                if key not in merged_set:
+                    merged.append(key)
+                    merged_set.add(key)
+                    changed = True
+            if str(overrides.get("variant_image_mode") or "") != "source":
+                overrides["variant_image_mode"] = "source"
+                changed = True
+            if not changed:
+                continue
+            overrides["excluded_variant_keys"] = merged
+            self.repository.save_draft_preview_overrides(
+                draft_id, overrides, workspace_id=workspace_id
+            )
+            updated += 1
+        return updated
+
+    def check_draft_sku_availability(
+        self,
+        draft_ids: list[int],
+        *,
+        workspace_id: str = "local",
+        force: bool = False,
+        persist: bool = True,
+    ) -> dict[str, Any]:
+        """处理设置页级「SKU 规格图可用性判断」（严格口径 + 并行 OCR）。
+
+        - 只检测 role="sku" 且已 ready 的规格图；本身没有规格图的链接判为不可用；
+        - 只统计「当前仍保留在草稿里」的 SKU（``raw_payload.source_variant_records``）
+          对应的规格图，已删除 SKU 的历史绑定不计入；
+        - 有规格图的 SKU 数 ≥ ``_SKU_AVAILABILITY_MAX_IMAGES``（50）的链接直接跳过，
+          除非 ``force=True``（前台「强制检测」入口）；
+        - 严格口径：所有规格图都不含中文才算可用；任一张检出中文、或 OCR 推理失败
+          （返回 ``None``）都判为不可用，不显示标签；
+        - 所有图片一次性提交线程池并行 OCR，实际并发受 ocr_gate 推理上限约束；
+        - 返回 ``chinese_variant_keys``（检出中文的变种导出键）与 ``all_sku_chinese``
+          （全部有图 SKU 都含中文），供前端「优化链接 SKU」决定剔除哪些变种；
+        - ``persist=True``（默认）时把结论落库到 ``drafts.sku_availability_json``，
+          并写入 ``fingerprint``（参与检测图片的 content_hash 集合）供导出侧校验有效性。
+        """
+        unique_ids = list(dict.fromkeys(int(draft_id) for draft_id in draft_ids if int(draft_id) > 0))
+        plans: list[dict[str, Any]] = []
+        plan_by_draft: dict[int, dict[str, Any]] = {}
+        tasks: list[tuple[int, str, str]] = []
+        for draft_id in unique_ids:
+            plan = self._new_sku_availability_plan(draft_id)
+            plan_by_draft[draft_id] = plan
+            plans.append(plan)
+            try:
+                draft = self.get_draft(draft_id, workspace_id)
+            except ProductProcessingNotFound:
+                plan.update(status="missing", reason="draft_not_found")
+                continue
+            if int(draft.get("media_contract_version") or 1) < 2:
+                plan.update(status="missing", reason="media_registry_unavailable")
+                continue
+            groups = self.media_assets.list_draft_media(workspace_id, draft_id)
+            raw = draft.get("raw_payload") or {}
+            sku_views, scope_relaxed = self._keep_active_sku_views(groups.get("sku", []), raw)
+            plan["scope_relaxed"] = scope_relaxed
+            ready_views = [
+                view
+                for view in sku_views
+                if str(view.get("status") or "") == "ready" and str(view.get("asset_id") or "")
+            ]
+            # 指纹用「全部已 ready 规格图」的 content_hash 集合（含超阈值被跳过的），
+            # 这样标签页重跑、图被替换/增删时都能被导出侧检出失效。
+            plan["fingerprint"] = self._sku_availability_fingerprint(ready_views)
+            sku_targets = [
+                (str(view["asset_id"]), self._sku_view_variant_key(view, raw))
+                for view in ready_views
+            ]
+            plan["sku_image_count"] = len(sku_targets)
+            if len(sku_targets) >= self._SKU_AVAILABILITY_MAX_IMAGES and not force:
+                plan.update(status="skipped", reason="too_many_sku_images")
+                continue
+            if not sku_targets:
+                plan.update(status="unavailable", reason="no_sku_image")
+                continue
+            plan["status"] = "pending"
+            plan["_sku_keys"] = {key for _asset_id, key in sku_targets if key}
+            tasks.extend(
+                (draft_id, asset_id, variant_key) for asset_id, variant_key in sku_targets
+            )
+
+        if tasks:
+            from concurrent.futures import ThreadPoolExecutor  # noqa: PLC0415
+
+            workers = max(1, ocr_worker_limit())
+            with ThreadPoolExecutor(max_workers=workers, thread_name_prefix="sku-availability") as pool:
+                outcomes = list(
+                    pool.map(lambda task: self._inspect_sku_asset(task[1], workspace_id), tasks)
+                )
+            for (draft_id, _asset_id, variant_key), outcome in zip(tasks, outcomes):
+                plan = plan_by_draft[draft_id]
+                if outcome is None:
+                    plan["failed"] += 1
+                    continue
+                plan["checked"] += 1
+                if outcome.get("has_chinese"):
+                    plan["chinese"].extend(str(item) for item in outcome.get("chinese") or [])
+                    if variant_key:
+                        plan["_chinese_keys"].add(variant_key)
+
+        for plan in plans:
+            sku_keys = plan.pop("_sku_keys", set())
+            chinese_keys = plan.pop("_chinese_keys", set())
+            # 该链接所有有规格图的 SKU 都检出中文：不做 SKU 级剔除（否则整条商品在导出
+            # 表格里消失），改为回退商品主图。前端据此决定是否提交剔除键。
+            plan["all_sku_chinese"] = bool(sku_keys) and sku_keys <= chinese_keys
+            plan["chinese_variant_keys"] = sorted(chinese_keys)
+            if plan["status"] != "pending":
+                continue
+            if plan["failed"]:
+                plan.update(status="unavailable", reason="text_check_failed")
+            elif plan["chinese"]:
+                plan.update(status="unavailable", reason="chinese_detected")
+            else:
+                plan.update(status="clean", clean=True)
+            plan["chinese"] = plan["chinese"][:5]
+
+        # 落库：每条草稿覆盖写自己的结论。fallback 语义由导出侧按 status 解释——
+        # clean 才用原规格图，其余（含 skipped / missing / 未判定）一律维持现状。
+        if persist:
+            judged_at = _iso_utc_now()
+            for plan in plans:
+                plan["judged_at"] = judged_at
+                if plan["status"] in {"pending", "clean", "unavailable", "skipped"}:
+                    try:
+                        self.repository.save_draft_sku_availability(
+                            int(plan["draft_id"]), plan, workspace_id=workspace_id,
+                        )
+                    except Exception:  # noqa: BLE001 - 落库失败不应让判断结果整体失败
+                        plan["persisted"] = False
+
+        return {
+            "results": plans,
+            "summary": {
+                "total": len(plans),
+                "clean": sum(1 for plan in plans if plan["clean"]),
+                "unavailable": sum(1 for plan in plans if plan["status"] == "unavailable"),
+                "skipped": sum(1 for plan in plans if plan["status"] == "skipped"),
+            },
+        }
+
+    @staticmethod
+    def _sku_availability_fingerprint(sku_views: list[dict[str, Any]]) -> str:
+        """参与检测的规格图内容指纹（实现见 domain.sku_availability）。"""
+        return sku_availability_domain.fingerprint_of(sku_views)
+
+    def sku_availability_state(self, draft_id: int, *, workspace_id: str = "local") -> dict[str, Any]:
+        """读取某草稿的可用性结论并校验有效性（供导出侧 auto 策略使用）。
+
+        返回 ``{"judged": bool, "clean": bool, "usable_source": bool, "reason": str}``。
+        ``usable_source=True`` 表示明确判定过、判定干净且结论对当前图集仍然有效。
+        """
+        try:
+            stored = self.repository.load_draft_sku_availability(draft_id, workspace_id=workspace_id)
+        except Exception:  # noqa: BLE001 - 读取失败按未判定处理
+            return {"judged": False, "clean": False, "usable_source": False, "reason": "load_failed"}
+        if not stored:
+            return sku_availability_domain.resolve_draft_usable(
+                None, current_fingerprint=None,
+            )
+        if bool(stored.get("scope_relaxed")):
+            return sku_availability_domain.resolve_draft_usable(
+                stored, current_fingerprint=None,
+            )
+        try:
+            draft = self.get_draft(draft_id, workspace_id)
+            groups = self.media_assets.list_draft_media(workspace_id, draft_id)
+            sku_views, _relaxed = self._keep_active_sku_views(
+                groups.get("sku", []), draft.get("raw_payload") or {},
+            )
+            current = self._sku_availability_fingerprint(
+                [
+                    view
+                    for view in sku_views
+                    if str(view.get("status") or "") == "ready" and str(view.get("asset_id") or "")
+                ]
+            )
+        except Exception:  # noqa: BLE001 - 当前图集读不出来时保守按未判定
+            return sku_availability_domain.resolve_draft_usable(
+                stored, current_fingerprint=None, fingerprint_error=True,
+            )
+        return sku_availability_domain.resolve_draft_usable(
+            stored, current_fingerprint=current,
+        )
+
+    def mark_row_sku_availability(
+        self,
+        row: dict[str, Any],
+        draft_id: int | None,
+        *,
+        workspace_id: str = "local",
+    ) -> None:
+        """给导出行注入草稿 SKU 结论派生的两件事（就地改写 ``row``）。
+
+        1. ``sku_source_usable``：``variant_image_mode == "auto"`` 时工作簿据此决定「用规格
+           原图」还是「回退商品主图」。只有「明确判定过、判定干净且指纹未失效」才为 True；
+           其余（不可用 / 未判定 / 跳过 / 口径放宽）一律 False，即维持与现状一致的保守行为。
+        2. ``preview_overrides.excluded_variant_keys``：把「SKU 规格图检出中文」的变种并入
+           剔除键，作为服务端兜底——前端没提交（关掉「优化链接 SKU」）、手工清除或老批次
+           数据也照样不导出这些 SKU。``all_sku_chinese``（整条链接全部 SKU 含中文）时结论里
+           不含剔除键，按现状回退商品主图、商品仍导出。
+        """
+        state: dict[str, Any] = {}
+        if draft_id:
+            try:
+                state = self.sku_availability_state(int(draft_id), workspace_id=workspace_id)
+            except Exception:  # noqa: BLE001 - 取不到结论时保守回退，不影响导出
+                state = {}
+        row["sku_source_usable"] = bool(state.get("usable_source"))
+        chinese_keys = state.get("chinese_variant_keys") or []
+        if not chinese_keys:
+            return
+        overrides = row.get("preview_overrides")
+        overrides = dict(overrides) if isinstance(overrides, Mapping) else {}
+        row["preview_overrides"] = sku_availability_domain.merge_excluded_variant_keys(
+            overrides, chinese_keys,
+        )
+
+    @staticmethod
+    def _keep_active_sku_views(
+        sku_views: list[dict[str, Any]], raw: dict[str, Any],
+    ) -> tuple[list[dict[str, Any]], bool]:
+        """只保留「当前仍保留在草稿里」的 SKU 对应的规格图绑定。
+
+        实现见 ``domain.sku_availability.keep_active_sku_views``（与导出侧共用同一份
+        口径，避免判定范围和使用范围不一致）。返回 ``(过滤后的视图, 是否放宽口径)``。
+        """
+        views, relaxed = sku_availability_domain.keep_active_sku_views(sku_views, raw)
+        return [dict(view) for view in views], relaxed
+
+    @staticmethod
+    def _sku_view_variant_key(view: dict[str, Any], raw: dict[str, Any]) -> str:
+        """把 SKU 规格图绑定反查为变种导出键（与 ``variant_export_key`` 同口径）。
+
+        规格图绑定只记 ``sku_id`` / ``variant_label``，而导出侧的排除键取自
+        ``raw_payload.source_variant_records``。这里先按 ``sku_id``、再按规格文本（或
+        属性拼接）反查回原变种记录，用 ``variant_export_key`` 生成键；都反查不到时退回
+        绑定自身的 ``sku_id``，尽量让「含中文的图」映射到正确的变种。
+        """
+        view_sku_id = str(view.get("sku_id") or "").strip()
+        view_label = str(view.get("variant_label") or "").strip()
+        records = raw.get("source_variant_records")
+        if isinstance(records, list):
+            if view_sku_id:
+                for record in records:
+                    if not isinstance(record, Mapping):
+                        continue
+                    record_sku_id = str(
+                        record.get("sku_id") or record.get("source_sku_id") or ""
+                    ).strip()
+                    if record_sku_id and record_sku_id == view_sku_id:
+                        return variant_export_key(record)
+            if view_label:
+                for record in records:
+                    if not isinstance(record, Mapping):
+                        continue
+                    label = str(record.get("spec_text") or "").strip()
+                    if not label:
+                        attributes = record.get("attributes")
+                        if isinstance(attributes, Mapping):
+                            label = "/".join(
+                                str(value) for value in attributes.values() if value
+                            )
+                    if label and label == view_label:
+                        return variant_export_key(record)
+        return view_sku_id
+
+    @staticmethod
+    def _new_sku_availability_plan(draft_id: int) -> dict[str, Any]:
+        return {
+            "draft_id": draft_id,
+            "status": "pending",
+            "clean": False,
+            "sku_image_count": 0,
+            "checked": 0,
+            "chinese": [],
+            "failed": 0,
+            "reason": "",
+            # 检出中文的 SKU 变种导出键；all_sku_chinese=该链接所有有规格图的 SKU 都含中文
+            # （此时不做 SKU 级剔除，回退商品主图，避免整条商品在导出表格里消失）。
+            "chinese_variant_keys": [],
+            "all_sku_chinese": False,
+            "_sku_keys": set(),
+            "_chinese_keys": set(),
+            "fingerprint": "",
+            "scope_relaxed": False,
+        }
+
+    def _inspect_sku_asset(self, asset_id: str, workspace_id: str) -> dict[str, Any] | None:
+        """读取草稿池 SKU 规格图字节并做中文检测；读不到或推理失败返回 ``None``。"""
+        try:
+            path, _content_type = self.media_assets.require_ready_managed_file(
+                asset_id, workspace_id=workspace_id
+            )
+            content = Path(path).read_bytes()
+        except Exception:  # noqa: BLE001 - 单张图读取失败按检测失败处理，不影响其它 SKU
+            return None
+        try:
+            return inspect_sku_text(content)
+        except Exception:  # noqa: BLE001 - 推理异常统一按检测失败处理
+            return None
 
     def media_asset_content(
         self,
@@ -4215,6 +4705,9 @@ USER-REQUESTED PANEL PLANNING ADDITIONS (user extra requirements only; they MUST
             draft = self.repository.get_draft(draft_id, workspace_id=workspace_id) if draft_id else None
             if draft and draft.get("preview_overrides"):
                 merged["preview_overrides"] = draft["preview_overrides"]
+            # 草稿 SKU 结论随行下发（指纹校验需要当前图集，只能在服务层做；workbooks 是
+            # 纯函数模块拿不到）：auto 策略的原图可用性 + 含中文 SKU 的兜底剔除键。
+            self.mark_row_sku_availability(merged, draft_id, workspace_id=workspace_id)
             rows.append(merged)
         if not rows:
             raise ValueError("task has no successful products to export")
@@ -4300,6 +4793,35 @@ USER-REQUESTED PANEL PLANNING ADDITIONS (user extra requirements only; they MUST
             cleaned[MANIFEST_KEY] = PreviewImageManifest.from_value(
                 overrides.get(MANIFEST_KEY)
             ).as_dict()
+        # SKU 规格图导出策略（source=用规格原图 / main=统一用商品主图 / auto=按可用性
+        # 判断结论自动选）。显式保存，使「使用原图」「自动」可以覆盖此前选择。
+        variant_image_mode = str(overrides.get("variant_image_mode") or "").strip().lower()
+        if variant_image_mode in {"source", "main", "auto"}:
+            cleaned["variant_image_mode"] = variant_image_mode
+        # 被整行剔除的 SKU 规格键：去重保序后显式保存，导出时据此过滤变种行。
+        raw_excluded = overrides.get("excluded_variant_keys") or []
+        if isinstance(raw_excluded, (list, tuple)):
+            excluded = list(
+                dict.fromkeys(
+                    str(value or "").strip()
+                    for value in raw_excluded
+                    if str(value or "").strip()
+                )
+            )
+            if excluded:
+                cleaned["excluded_variant_keys"] = excluded
+        # 逐个 SKU 的规格图替换：值为预览资产 ID（导出时物化发布成公网地址）
+        # 或已是公网的 http(s) 图片地址（如其它 SKU 的采集规格原图）。
+        raw_variant_images = overrides.get("variant_image_overrides") or {}
+        if isinstance(raw_variant_images, dict):
+            variant_images: dict[str, str] = {}
+            for raw_key, raw_value in raw_variant_images.items():
+                variant_key = str(raw_key or "").strip()
+                value = str(raw_value or "").strip()
+                if variant_key and value:
+                    variant_images[variant_key] = value
+            if variant_images:
+                cleaned["variant_image_overrides"] = variant_images
         return cleaned
 
     def _preview_item(
@@ -4428,6 +4950,19 @@ USER-REQUESTED PANEL PLANNING ADDITIONS (user extra requirements only; they MUST
                 if str(value or "").strip()
             ],
             "variant_translation_sources": result.get("variant_translation_sources") or {},
+            # SKU 规格图管理侧栏数据：仅透出展示所需字段，避免把件重尺等重型
+            # 证据整体塞进预检响应（单商品最多可含两百多个 SKU）。
+            "source_variant_records": [
+                {
+                    "sku_id": str(record.get("sku_id") or record.get("source_sku_id") or "").strip(),
+                    "source_sku_id": str(record.get("source_sku_id") or "").strip() or None,
+                    "display_name": str(record.get("display_name") or "").strip() or None,
+                    "attributes": record.get("attributes") if isinstance(record.get("attributes"), dict) else {},
+                    "image_url": str(record.get("image_url") or record.get("imageUrl") or "").strip() or None,
+                }
+                for record in (result.get("source_variant_records") or [])
+                if isinstance(record, dict)
+            ],
             "preview_revision": preview_revision,
             "result_version": task_item_result_version(result),
             # Kept separate from product_dimensions: these are shipping package
@@ -5618,6 +6153,11 @@ USER-REQUESTED PANEL PLANNING ADDITIONS (user extra requirements only; they MUST
             features.append(("text", "product_processing.text"))
         if image_enabled:
             features.append(("image_grid", "product_processing.image_grid_2k"))
+        # 主体识别（视觉）与文本/生图主链路伴生，预检已按保守估计计入 vision 点数
+        # （见 router.py::_billing_points_per_item）。逐项预留保持一致，实际未发起
+        # 识别调用时在结算阶段按 skipped 退款，不再回落到文本 usage。
+        if text_enabled or image_enabled:
+            features.append(("vision", "product_processing.vision"))
         return features
 
     def _reserve_product_processing_item_usage(
@@ -7118,16 +7658,19 @@ USER-REQUESTED PANEL PLANNING ADDITIONS (user extra requirements only; they MUST
         billable_kinds = {
             kind for kind, _feature in self._billable_product_processing_features(settings)
         }
-        billing_skipped_kinds = (
-            ["text"]
-            if (
-                "text" in billable_kinds
-                and text_failure is None
-                and text_reused
-                and not text_provider_attempted
-            )
-            else []
-        )
+        vision_provider_attempted = int(provider_attempts.get("doubao_vision") or 0) > 0
+        billing_skipped_kinds: list[str] = []
+        if (
+            "text" in billable_kinds
+            and text_failure is None
+            and text_reused
+            and not text_provider_attempted
+        ):
+            billing_skipped_kinds.append("text")
+        # 视觉预留是保守估计：未真正发起识别（复用精确回执/内容寻址缓存，或该商品
+        # 本就不需要主体识别）时应退款，否则相当于对没发生的调用计费。
+        if "vision" in billable_kinds and not vision_provider_attempted:
+            billing_skipped_kinds.append("vision")
         text_failure_detail = (
             _ai_error_reason(text_failure) if text_failure is not None else ""
         )

@@ -24,7 +24,8 @@ from .billing_contract import (
     PodExecutionGrant,
 )
 from .images import compose_fixed_scene, split_grid_2x2
-from .prompts import LISTING_IMAGE_ROLES, build_style_listing_prompt
+from .prompts import LISTING_IMAGE_ROLES, build_semi_pattern_prompt, build_style_listing_prompt
+from .contracts import SEMI_PATTERN_ROLES
 from .repository import PodCustomizationRepository, PodRepositoryError
 from .runtime import RuntimeClosedError
 from .runtime_contracts import DirectListingGridRequest, PatternGridRequest, PodAiRuntime, SceneOptimizationRequest
@@ -217,6 +218,20 @@ class PodBatchWorker:
     def _style_elements(batch: dict[str, Any], style_index: int) -> dict[str, Any]:
         """Persisted per-style element assignment; empty dict for legacy batches."""
         return dict((batch.get("style_elements") or {}).get(style_index) or {})
+
+    def _title_enabled(self, batch: dict[str, Any]) -> bool:
+        """该批次是否走标题链路。
+
+        半定制是纯图案、不出标题，而标题服务是整个模块共用的（服务实例只有一个），
+        所以不能只判断 ``title_runtime is None``，必须把 semi 也当成无标题链路，
+        否则半定制批次会去等一个永远不会产生的标题、永远无法收敛到终态。
+        """
+        return self.title_runtime is not None and batch.get("mode") != "semi"
+
+    def _semi_panel_elements(self, batch: dict[str, Any], group_index: int) -> list[dict[str, Any]]:
+        """半定制一组四格的元素分配（按款号取，对应左上/右上/左下/右下四款）。"""
+        base = (group_index - 1) * 4
+        return [self._style_elements(batch, base + panel) for panel in range(1, 5)]
 
     def register_billing_run(self, batch_id: str, billing_run: PodBillingRun) -> None:
         with self._futures_lock:
@@ -483,28 +498,38 @@ class PodBatchWorker:
         self._check_control(batch_id)
         batch = self.repository.get_batch_internal(batch_id)
         try:
-            snapshot = batch["template"]
-            template_asset = self.repository.get_asset(
-                snapshot["asset_id"], batch["workspace_id"], batch["owner_user_id"]
-            )
-            template_content = self.assets.read(template_asset["relative_path"])
+            if batch.get("mode") == "semi":
+                # 半定制不用模板、不用参考图：跳过模板图读取，交给纯文生图分支。
+                template_content = b""
+                template_content_type = ""
+            else:
+                snapshot = batch["template"]
+                template_asset = self.repository.get_asset(
+                    snapshot["asset_id"], batch["workspace_id"], batch["owner_user_id"]
+                )
+                template_content = self.assets.read(template_asset["relative_path"])
+                template_content_type = template_asset["content_type"]
             if batch.get("style_grid"):
                 self._process_style_grids_streaming(
-                    batch, template_content, template_asset["content_type"], billing_run,
+                    batch, template_content, template_content_type, billing_run,
                     execution=execution,
                 )
-                self._process_pending_titles_from_existing_images(
-                    batch, billing_run, execution_epoch=execution.epoch
-                )
+                titles_enabled = self._title_enabled(batch)
+                if titles_enabled:
+                    self._process_pending_titles_from_existing_images(
+                        batch, billing_run, execution_epoch=execution.epoch
+                    )
                 self.repository.fail_remaining_items(
                     batch_id, "本款图片生成未返回完整结果", execution_epoch=execution.epoch
                 )
+                # 标题行必须无条件收敛（半定制没有标题行，此处为 no-op）。
                 self.repository.fail_unready_titles(
                     batch_id,
                     "本款四张公开图片未完整生成，暂不能生成标题",
                     execution_epoch=execution.epoch,
                 )
-                if self.title_runtime is None:
+                if not titles_enabled:
+                    # 无标题链路（半定制，或未注入标题服务）：终态只看图片计数。
                     settled = self.repository.get_batch_internal(batch_id)
                     status = "completed" if settled["failed_count"] == 0 else (
                         "partial_failure" if settled["completed_count"] else "failed"
@@ -532,15 +557,16 @@ class PodBatchWorker:
             raise
         except Exception as exc:
             self.repository.fail_remaining_items(batch_id, str(exc), execution_epoch=execution.epoch)
+            # 标题行必须无条件收敛（半定制没有标题行，此处为 no-op）。
             self.repository.fail_unready_titles(batch_id, str(exc), execution_epoch=execution.epoch)
-            if self.title_runtime is None:
-                settled = self.repository.get_batch_internal(batch_id)
-                status = "partial_failure" if settled["completed_count"] else "failed"
-                self.repository.set_batch_status(batch_id, status, str(exc), execution_epoch=execution.epoch)
-            else:
+            if self._title_enabled(batch):
                 self.repository.settle_batch_by_listing_readiness(
                     batch_id, str(exc), execution_epoch=execution.epoch
                 )
+            else:
+                settled = self.repository.get_batch_internal(batch_id)
+                status = "partial_failure" if settled["completed_count"] else "failed"
+                self.repository.set_batch_status(batch_id, status, str(exc), execution_epoch=execution.epoch)
 
     @_serial_batch_action
     def optimize_scene(
@@ -668,13 +694,19 @@ class PodBatchWorker:
         if run is None:
             raise RuntimeError("POD style retry requires a fresh short-lived billing grant")
         batch = self.repository.get_batch_internal(batch_id)
+        semi = batch.get("mode") == "semi"
         base_prompt = batch["prompt_snapshot"]
         if creative_prompt.strip():
             base_prompt += f"\n\nWhole-style regeneration direction: {creative_prompt.strip()}"
-        template_asset = self.repository.get_asset(
-            batch["template"]["asset_id"], batch["workspace_id"], batch["owner_user_id"]
-        )
-        template_content = self.assets.read(template_asset["relative_path"])
+        if semi:
+            template_content = b""
+            template_content_type = ""
+        else:
+            template_asset = self.repository.get_asset(
+                batch["template"]["asset_id"], batch["workspace_id"], batch["owner_user_id"]
+            )
+            template_content = self.assets.read(template_asset["relative_path"])
+            template_content_type = template_asset["content_type"]
         prepared: list[tuple[dict[str, Any], Any, list[Any], list[str]]] = []
         last_error = "整款重新生成未返回完整结果"
         last_call_id = ""
@@ -682,27 +714,43 @@ class PodBatchWorker:
             for attempt in (1, 2):
                 call_kind = "regenerate_style" if attempt == 1 else "regenerate_style_retry"
                 call_index = self.repository.next_generation_call_index(batch_id, call_kind)
-                prompt = build_style_listing_prompt(
-                    base_prompt,
-                    style_index=style_index,
-                    attempt=attempt,
-                    business_fields=batch["business_fields"],
-                    creative_prompt=batch["creative_prompt"],
-                    style_elements=self._style_elements(batch, style_index),
-                )
+                if semi:
+                    prompt = build_semi_pattern_prompt(
+                        base_prompt,
+                        group_index=style_index,
+                        attempt=attempt,
+                        business_fields=batch["business_fields"],
+                        panel_elements=self._semi_panel_elements(batch, style_index),
+                    )
+                else:
+                    prompt = build_style_listing_prompt(
+                        base_prompt,
+                        style_index=style_index,
+                        attempt=attempt,
+                        business_fields=batch["business_fields"],
+                        creative_prompt=batch["creative_prompt"],
+                        style_elements=self._style_elements(batch, style_index),
+                    )
                 call = self.repository.create_generation_call(
                     batch, call_kind=call_kind, call_index=call_index, prompt_snapshot=prompt
                 )
                 last_call_id = call["call_id"]
                 call["style_index"] = style_index
-                request = DirectListingGridRequest(
-                    trial_id=f"{batch_id}-style-{style_index}-{call['call_id']}-attempt-{attempt}",
-                    template_id=batch["template_id"],
-                    template_image=template_content,
-                    template_content_type=template_asset["content_type"],
-                    prompt=prompt,
-                    attempt=attempt,
-                )
+                if semi:
+                    request = DirectListingGridRequest(
+                        trial_id=f"{batch_id}-style-{style_index}-{call['call_id']}-attempt-{attempt}",
+                        prompt=prompt,
+                        attempt=attempt,
+                    )
+                else:
+                    request = DirectListingGridRequest(
+                        trial_id=f"{batch_id}-style-{style_index}-{call['call_id']}-attempt-{attempt}",
+                        template_id=batch["template_id"],
+                        template_image=template_content,
+                        template_content_type=template_content_type,
+                        prompt=prompt,
+                        attempt=attempt,
+                    )
                 try:
                     provider_call_id = self._image_call_id(run, style_index, attempt)
                     grid = self.ai_runtime.submit(
@@ -717,7 +765,7 @@ class PodBatchWorker:
                     last_error = str(exc).strip() or exc.__class__.__name__
             if not prepared:
                 self.repository.fail_style_grid(batch, style_index, last_error)
-                if self.title_runtime is not None:
+                if self._title_enabled(batch):
                     self.repository.fail_style_title(
                         batch_id,
                         style_index,
@@ -728,26 +776,26 @@ class PodBatchWorker:
                 self._process_style_grids(batch, prepared, run)
             if finalize:
                 self.repository.fail_remaining_items(batch_id, "整款重新生成未返回完整结果")
+                # 标题行必须无条件收敛（半定制没有标题行，此处为 no-op）。
                 self.repository.fail_unready_titles(batch_id, "整款重新生成未返回完整结果")
-            if finalize:
-                if self.title_runtime is None:
+                if self._title_enabled(batch):
+                    self.repository.settle_batch_by_listing_readiness(batch_id)
+                else:
                     settled = self.repository.get_batch_internal(batch_id)
                     status = "completed" if settled["failed_count"] == 0 else (
                         "partial_failure" if settled["completed_count"] else "failed"
                     )
                     self.repository.set_batch_status(batch_id, status)
-                else:
-                    self.repository.settle_batch_by_listing_readiness(batch_id)
         except Exception as exc:
             self.repository.fail_style_grid(batch, style_index, str(exc))
-            self.repository.fail_unready_titles(batch_id, str(exc))
             if finalize:
-                if self.title_runtime is None:
+                self.repository.fail_unready_titles(batch_id, str(exc))
+                if self._title_enabled(batch):
+                    self.repository.settle_batch_by_listing_readiness(batch_id, str(exc))
+                else:
                     settled = self.repository.get_batch_internal(batch_id)
                     status = "partial_failure" if settled["completed_count"] else "failed"
                     self.repository.set_batch_status(batch_id, status, str(exc))
-                else:
-                    self.repository.settle_batch_by_listing_readiness(batch_id, str(exc))
         finally:
             if finalize:
                 try:
@@ -1062,14 +1110,23 @@ class PodBatchWorker:
 
         def submit_style(style_index: int, attempt_value: int) -> None:
             attempt_kind = "initial" if attempt_value == 1 else "retry"
-            prompt = build_style_listing_prompt(
-                batch["prompt_snapshot"],
-                style_index=style_index,
-                attempt=attempt_value,
-                business_fields=batch["business_fields"],
-                creative_prompt=batch["creative_prompt"],
-                style_elements=self._style_elements(batch, style_index),
-            )
+            if batch.get("mode") == "semi":
+                prompt = build_semi_pattern_prompt(
+                    batch["prompt_snapshot"],
+                    group_index=style_index,
+                    attempt=attempt_value,
+                    business_fields=batch["business_fields"],
+                    panel_elements=self._semi_panel_elements(batch, style_index),
+                )
+            else:
+                prompt = build_style_listing_prompt(
+                    batch["prompt_snapshot"],
+                    style_index=style_index,
+                    attempt=attempt_value,
+                    business_fields=batch["business_fields"],
+                    creative_prompt=batch["creative_prompt"],
+                    style_elements=self._style_elements(batch, style_index),
+                )
             call = self.repository.get_or_create_generation_call(
                 batch, call_kind=attempt_kind, call_index=style_index, prompt_snapshot=prompt
             )
@@ -1110,14 +1167,21 @@ class PodBatchWorker:
                 raise PodBillingAuthorizationRequired(
                     "POD provider grant expired before the next image call started"
                 )
-            request = DirectListingGridRequest(
-                trial_id=f"{batch['batch_id']}-style-{style_index}-attempt-{attempt_value}",
-                template_id=batch["template_id"],
-                template_image=template_content,
-                template_content_type=template_content_type,
-                prompt=prompt,
-                attempt=attempt_value,
-            )
+            if batch.get("mode") == "semi":
+                request = DirectListingGridRequest(
+                    trial_id=f"{batch['batch_id']}-style-{style_index}-attempt-{attempt_value}",
+                    prompt=prompt,
+                    attempt=attempt_value,
+                )
+            else:
+                request = DirectListingGridRequest(
+                    trial_id=f"{batch['batch_id']}-style-{style_index}-attempt-{attempt_value}",
+                    template_id=batch["template_id"],
+                    template_image=template_content,
+                    template_content_type=template_content_type,
+                    prompt=prompt,
+                    attempt=attempt_value,
+                )
             future = self.ai_runtime.submit(
                 self._generate_listing_grid,
                 batch,
@@ -1402,7 +1466,8 @@ class PodBatchWorker:
     ) -> None:
         execution_epoch = execution_epoch if execution_epoch is not None else billing_run.execution_epoch or None
         self._set_batch_stage(batch["batch_id"], "compositing", execution_epoch)
-        roles = LISTING_IMAGE_ROLES
+        semi = batch.get("mode") == "semi"
+        roles = SEMI_PATTERN_ROLES if semi else LISTING_IMAGE_ROLES
         title_futures: dict[Future[Any], int] = {}
         for call, _grid, panels, fingerprints in grids:
             style_index = call["style_index"]
@@ -1416,6 +1481,15 @@ class PodBatchWorker:
                     f"style-{style_index}-{role}{panel.suffix}",
                     panel.content,
                 )
+                # 半定制不接图床：只落本地资产，不发布 COS、不写公网 URL。
+                if semi:
+                    self.repository.finish_style_grid_result(
+                        batch, style_index=style_index, variant_index=variant_index, call_id=call["call_id"],
+                        status="completed", pattern_asset_id=panel_asset["asset_id"],
+                        composite_asset_id=panel_asset["asset_id"], fingerprint=fingerprint,
+                        role=role, public_url="", execution_epoch=execution_epoch,
+                    )
+                    continue
                 # 第 4 张图「规格卡」：只对 hero 做伴随式合成。母版仍是上面这张
                 # 干净图（pattern/composite 指针不变），合成的卡片图只替换发布指针。
                 publish_media = panel
@@ -1489,7 +1563,7 @@ class PodBatchWorker:
                                 )
                             except Exception:
                                 pass
-            if self.title_runtime is None:
+            if semi or self.title_runtime is None:
                 continue
             if not lifestyle_public_ready:
                 self.repository.fail_style_title(

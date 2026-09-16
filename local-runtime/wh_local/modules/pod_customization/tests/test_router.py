@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import io
 import sqlite3
+import zipfile
 from concurrent.futures import ThreadPoolExecutor
 from types import SimpleNamespace
 
@@ -291,12 +292,14 @@ def test_batch_create_list_detail_and_scene_optimization_contract(tmp_path) -> N
                 "product_name": "Stoneware mug", "product_category": "drinkware", "target_market": "US"
             },
             "listing_fields": {
-                "declared_price": 18.5,
                 "suggested_price_usd": 29.99,
                 "category_name": "家居收纳 > 杯具",
                 "skus": [
-                    {"name": "Default SKU", "length_cm": 30, "width_cm": 20, "height_cm": 10, "weight_g": 450}
+                    {"name": "Default SKU", "declared_price": 18.5, "weight_g": 450}
                 ],
+                "spec_card": {
+                    "cells": [["尺寸图", "长", "宽", "高"], ["Default SKU", "30", "20", "10"]]
+                },
             },
             "creative_prompt": "coastal geometry",
         },
@@ -357,10 +360,10 @@ def test_export_selection_patch_contract_returns_current_selection(tmp_path) -> 
             count=1,
             business_fields=BusinessFields(product_name="Bag", product_category="bags"),
             listing_fields=ListingFields(
-                declared_price=18.5,
                 suggested_price_usd=29.99,
                 category_name="bags",
-                skus=[{"name": "SKU", "length_cm": 1, "width_cm": 1, "height_cm": 1, "weight_g": 1}],
+                skus=[{"name": "SKU", "declared_price": 18.5, "weight_g": 1}],
+                spec_card={"cells": [["尺寸图", "长", "宽", "高"], ["SKU", "1", "1", "1"]]},
             ),
         ),
         enqueue=False,
@@ -458,3 +461,92 @@ def test_direct_listing_trial_api_returns_one_grid_and_four_public_listing_image
     stored = client.get(f"/api/pod-customization/direct-listing-trials/{result['id']}", headers=headers)
     assert stored.status_code == 200
     assert stored.json()["images"] == result["images"]
+
+
+def _completed_semi_batch(tmp_path) -> tuple[TestClient, str]:
+    """Create a semi batch and mark its four patterns as completed, ready to zip."""
+    app = FastAPI()
+    router = create_router(
+        tmp_path / "workbench.sqlite3",
+        tmp_path / "pod-assets",
+        RouterRuntime(),
+        start_workers=False,
+    )
+    app.include_router(router)
+    client = TestClient(app)
+    headers = {"Authorization": "Bearer dev-admin-token"}
+    created = client.post(
+        "/api/pod-customization/semi/batches",
+        headers=headers,
+        json={"count": 4, "business_fields": {"design_theme": "法式田园碎花"}},
+    )
+    assert created.status_code == 200, created.text
+    batch_id = created.json()["id"]
+
+    service = router.pod_customization_service
+    stored = service.assets.save_image("default", "local-demo-admin", _panel(1))
+    asset = service.repository.create_asset(
+        workspace_id="default",
+        owner_user_id="local-demo-admin",
+        kind="direct_listing_panel",
+        filename="style-1-pattern_1.png",
+        relative_path=stored.relative_path,
+        content_type=stored.content_type,
+        byte_size=stored.byte_size,
+        sha256=stored.sha256,
+        width=stored.width,
+        height=stored.height,
+    )
+    with service.repository._connect() as connection:
+        connection.execute(
+            """UPDATE pod_customization_style_grid_results
+               SET status = 'completed', pattern_asset_id = ?, composite_asset_id = ?
+               WHERE batch_id = ?""",
+            (asset["asset_id"], asset["asset_id"], batch_id),
+        )
+    return client, batch_id
+
+
+def test_semi_zip_download_encodes_chinese_filename_header(tmp_path) -> None:
+    """zip 名含中文，响应头只能按 latin-1 编码，必须走 RFC 5987 的 filename*。
+
+    直接写进 Content-Disposition 会让 Starlette 编码响应头时抛 UnicodeEncodeError，
+    前端只拿到 500 且响应体不是 JSON，最终只显示「下载失败 (HTTP 500)」。
+    """
+    client, batch_id = _completed_semi_batch(tmp_path)
+    headers = {"Authorization": "Bearer dev-admin-token"}
+
+    response = client.get(
+        f"/api/pod-customization/semi/batches/{batch_id}/download", headers=headers
+    )
+
+    assert response.status_code == 200, response.text
+    disposition = response.headers["content-disposition"]
+    disposition.encode("latin-1")  # 中文必须以百分号编码出现，否则 Starlette 会 500
+    assert "filename*=UTF-8''" in disposition
+    assert response.headers["x-pod-semi-count"] == "4"
+    with zipfile.ZipFile(io.BytesIO(response.content)) as archive:
+        assert archive.namelist() == [
+            "style_001.png",
+            "style_002.png",
+            "style_003.png",
+            "style_004.png",
+        ]
+
+
+def test_semi_zip_download_rejects_a_batch_without_patterns(tmp_path) -> None:
+    client = _client(tmp_path)
+    headers = {"Authorization": "Bearer dev-admin-token"}
+    created = client.post(
+        "/api/pod-customization/semi/batches",
+        headers=headers,
+        json={"count": 4},
+    )
+    assert created.status_code == 200, created.text
+
+    response = client.get(
+        f"/api/pod-customization/semi/batches/{created.json()['id']}/download", headers=headers
+    )
+
+    assert response.status_code == 409
+    assert response.json()["detail"] == "当前批次没有可下载的图案"

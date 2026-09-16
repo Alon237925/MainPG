@@ -3,9 +3,8 @@ import { createPortal } from "react-dom";
 
 import { podCustomizationApi } from "../api/podCustomizationApi";
 import {
+  buildSpecCardCells,
   cloneSpecCardConfig,
-  createEmptySpecCard,
-  emptySpecCardCells,
   specCardSummaryText,
 } from "../data/podCustomizationModel";
 import type {
@@ -62,6 +61,7 @@ export function SpecCardDrawer({ open, config, batch, baseTemplateId, onClose, o
   const [cells, setCells] = useState<string[][]>(() => cloneSpecCardConfig(config).cells);
   const [style, setStyle] = useState<SpecCardStyle>(config.style);
   const [corner, setCorner] = useState<SpecCardCorner>(config.corner);
+  const [enabled, setEnabled] = useState(config.enabled);
   const [unlocked, setUnlocked] = useState(false);
   const [reprinting, setReprinting] = useState(false);
   const [reprintProgress, setReprintProgress] = useState<ReprintProgress | null>(null);
@@ -78,6 +78,7 @@ export function SpecCardDrawer({ open, config, batch, baseTemplateId, onClose, o
     setCells(next.cells);
     setStyle(next.style);
     setCorner(next.corner);
+    setEnabled(next.enabled);
     setUnlocked(false);
     setReprinting(false);
     setReprintProgress(null);
@@ -97,7 +98,7 @@ export function SpecCardDrawer({ open, config, batch, baseTemplateId, onClose, o
   if (!open) return null;
 
   const currentConfig = (): SpecCardConfig => ({
-    enabled: true,
+    enabled,
     style,
     corner,
     cells: cells.map((row) => [...row]),
@@ -109,14 +110,9 @@ export function SpecCardDrawer({ open, config, batch, baseTemplateId, onClose, o
   };
 
   const restoreDefault = () => {
-    const next = createEmptySpecCard();
-    setCells(next.cells);
-    setStyle(next.style);
-    setCorner(next.corner);
-  };
-
-  const clearCells = () => {
-    setCells(emptySpecCardCells(cells.length, cells[0]?.length ?? 1));
+    // 表格结构（表头 + SKU 行）由 SKU 预设决定，恢复默认只清空已填的长/宽/高。
+    const skuNames = cells.slice(1).map((row) => row[0] ?? "");
+    setCells(buildSpecCardCells(skuNames));
   };
 
   const reprintBatch = async () => {
@@ -132,6 +128,7 @@ export function SpecCardDrawer({ open, config, batch, baseTemplateId, onClose, o
         cells: next.cells,
         style: next.style,
         corner: next.corner,
+        enabled: next.enabled,
       });
       setReprintProgress({ done: result.reprinted, total: batch.count });
       setReprintResult(result);
@@ -176,17 +173,19 @@ export function SpecCardDrawer({ open, config, batch, baseTemplateId, onClose, o
           <SpecCardAppearanceControls
             style={style}
             corner={corner}
+            enabled={enabled}
             onStyleChange={setStyle}
             onCornerChange={setCorner}
+            onEnabledChange={setEnabled}
             disabled={readOnly}
           />
 
-          <SpecCardPreview cells={cells} style={style} corner={corner} baseTemplateId={baseTemplateId} />
+          <SpecCardPreview cells={cells} style={style} corner={corner} enabled={enabled} baseTemplateId={baseTemplateId} />
         </div>
 
         <footer className="pod-spec-card-drawer-footer">
           <div className="pod-spec-card-footer-status">
-            <p className="pod-spec-card-summary">{isConfiguredSummary(cells, style, corner)}</p>
+            <p className="pod-spec-card-summary">{isConfiguredSummary(cells, style, corner, enabled)}</p>
             {mode === "frozen" && unlocked && <p className="pod-spec-card-unlocked-notice">{SPEC_CARD_UNLOCKED_NOTICE}</p>}
             {reprinting && reprintProgress && (
               <p className="pod-spec-card-reprint-progress" role="status">
@@ -226,7 +225,6 @@ export function SpecCardDrawer({ open, config, batch, baseTemplateId, onClose, o
             )}
             <button type="button" className="pod-spec-card-save-button" disabled={readOnly} onClick={saveConfig}>保存到本批次</button>
             <button type="button" disabled={readOnly} onClick={restoreDefault}>恢复默认</button>
-            <button type="button" disabled={readOnly} onClick={clearCells}>清空</button>
           </div>
         </footer>
       </aside>
@@ -235,6 +233,6 @@ export function SpecCardDrawer({ open, config, batch, baseTemplateId, onClose, o
   );
 }
 
-function isConfiguredSummary(cells: string[][], style: SpecCardStyle, corner: SpecCardCorner): string {
-  return specCardSummaryText({ enabled: true, style, corner, cells });
+function isConfiguredSummary(cells: string[][], style: SpecCardStyle, corner: SpecCardCorner, enabled: boolean): string {
+  return specCardSummaryText({ enabled, style, corner, cells });
 }

@@ -30,8 +30,10 @@ _BUSINESS_LOG_FILES = {
     "pod_processing": "pod_processing.log",
 }
 
-# 每个领域 logger 只配置一次 FileHandler（幂等，防止重复打开/重复写行）
-_configured: set[str] = set()
+# 幂等标记挂在 logger 对象上（进程内同名 logger 是全局单例），而不是模块级 set：
+# 模块被以两个路径 import 时会有两份模块级状态，只靠模块级 set 判断会重复挂
+# FileHandler，同一行日志就会重复落盘。挂在 logger 上则与 import 次数无关。
+_READY_ATTR = "_wh_business_log_ready"
 
 
 def runtime_log_dir() -> Path:
@@ -62,14 +64,14 @@ def business_logger(name: str) -> logging.Logger:
     if name not in _BUSINESS_LOG_FILES:
         raise ValueError(f"unknown business log domain: {name}")
     logger = logging.getLogger(f"business.{name}")
-    if name in _configured:
+    if getattr(logger, _READY_ATTR, False):
         return logger
 
     if _is_testing():
         logger.setLevel(logging.INFO)
         logger.addHandler(logging.NullHandler())
         logger.propagate = False
-        _configured.add(name)
+        setattr(logger, _READY_ATTR, True)
         return logger
 
     directory = runtime_log_dir()
@@ -93,5 +95,5 @@ def business_logger(name: str) -> logging.Logger:
         logger.addHandler(handler)
         logger.setLevel(logging.INFO)
         logger.propagate = False  # 独立文件，不再重复写入 runtime.log
-    _configured.add(name)
+    setattr(logger, _READY_ATTR, True)
     return logger

@@ -798,7 +798,7 @@ export function ProfitActivityTestPage({ isActive = true }: { isActive?: boolean
         } else if (status === "failed") {
           setFilterBusy(false);
           void loadFilterHistory();
-          setMessage(`产品过滤失败：${typeof data.error === "string" ? data.error : "未知错误"}`);
+          setMessage(`产品过滤失败：${typeof data.error === "string" ? toUserMessage(data.error) : "未知错误"}`);
         } else {
           // queued / running：继续轮询
           filterPollRef.current = window.setTimeout(() => void tick(), 1000);

@@ -89,6 +89,17 @@ class DraftRestoreRequest(BaseModel):
         return list(dict.fromkeys(item for item in value if item > 0))
 
 
+class DraftSkuAvailabilityRequest(BaseModel):
+    draft_ids: list[int] = Field(default_factory=list)
+    # 强制检测：忽略「SKU 规格图 ≥ 20 张即跳过」的性能阈值，把大图集链接也检一遍。
+    force: bool = False
+
+    @field_validator("draft_ids")
+    @classmethod
+    def positive_ids(cls, value: list[int]) -> list[int]:
+        return list(dict.fromkeys(item for item in value if item > 0))
+
+
 class DraftProcessRequest(BaseModel):
     model_config = ConfigDict(extra="allow")
 
@@ -105,6 +116,13 @@ class DraftProcessRequest(BaseModel):
     # 强制入库：用户对失败/待确认草稿点击「我已知晓，仍要入库」后重新提交时带上。
     # 图片质量门不再阻断（回退来源图继续走完流水线），预审环节可人工修正信息。
     force_import_draft_ids: list[int] = []
+    # SKU 原图可用性分类（处理设置页检测结果）：{draft_id: "source"|"main"}。
+    # source=该链接每个 SKU 用规格原图；main=统一用商品主图（中文水印/无规格图/规格图过多）。
+    # 处理时写入草稿预检覆盖，导出最终版表格按此分流；用户仍可在预检页修改。
+    variant_image_classification: dict[int, Literal["source", "main"]] = {}
+    # 「优化链接 SKU」勾选结果：{draft_id: [variant_key, ...]}，命中的来源变种导出时整行剔除。
+    # 处理时并入草稿预检覆盖的 excluded_variant_keys（与用户手工排除取并集）。
+    variant_image_exclusions: dict[int, list[str]] = {}
     # 旧版布尔开关（向后兼容）
     title_optimize: bool = True
     description: bool = True
@@ -247,6 +265,26 @@ class PreviewDesiredState(BaseModel):
     # changed by the operator, while captured rows remain immutable evidence.
     shipping_package_records: dict[str, ShippingPackageRecordOverride] = Field(default_factory=dict)
     image_manifest_v2: PreviewImageManifestInput
+    # SKU 规格图导出策略：source=每个 SKU 用采集到的规格原图（缺失回退商品主图）；
+    # main=全部 SKU 统一用商品主图替代；auto=按草稿池「SKU 规格图可用性判断」结论自动
+    # 选择——判定干净且结论未失效时用规格原图，其余（不可用/未判定）走商品主图。
+    # 默认 auto：保证未人工干预时不会把带中文的来源规格图直接导出；判定干净的 SKU
+    # 仍逐个用规格原图。source / main 为用户显式选择，优先级永远高于 auto。
+    # 仅影响导出时预览图/颜色图列取值。
+    variant_image_mode: Literal["source", "main", "auto"] = "auto"
+    # 被操作员整行剔除的 SKU 规格：导出时该变种不产生任何表格行。
+    excluded_variant_keys: list[str] = Field(default_factory=list)
+    # 逐个 SKU 指定规格图：key=SKU 变种键，值=预览资产 ID 或 http(s) 图片地址。
+    variant_image_overrides: dict[str, str] = Field(default_factory=dict)
+
+
+class PreviewAssetImportRequest(BaseModel):
+    """把外部图片转存成本商品的预览资产（供前端同源读取像素后裁剪）。"""
+
+    model_config = ConfigDict(extra="forbid")
+
+    draft_id: int
+    url: str = Field(min_length=1, max_length=2000)
 
 
 class PreviewSaveItem(BaseModel):

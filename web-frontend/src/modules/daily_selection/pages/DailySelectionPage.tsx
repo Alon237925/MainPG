@@ -15,6 +15,7 @@ import {
   startSkuRepull,
 } from "../api/dailySelectionApi";
 import { getApiToken } from "../../../shared/api/apiClient";
+import { toUserMessage } from "../../../transport/http/client";
 import { ShopCollectionPanel } from "../components/ShopCollectionPanel";
 import { PluginOneboundCapturePanel } from "../components/PluginOneboundCapturePanel";
 import type {
@@ -142,6 +143,59 @@ function numberOrUndefined(value: string): number | undefined {
   if (!value.trim()) return undefined;
   const parsed = Number(value);
   return Number.isFinite(parsed) ? parsed : undefined;
+}
+
+/**
+ * 采集筛选区间的自洽检查：与后端 DailySelectionCriteria 的模型级校验同一口径，
+ * 提交前就拦掉不自洽的区间，避免请求打到后端才失败——后端的校验错误经异步采集
+ * 任务回传，用户只会看到一条提示，定位不到具体字段。
+ */
+function collectionFilterError(input: {
+  minPrice: string;
+  maxPrice: string;
+  minMoq: string;
+  minSkuCount: string;
+  maxSkuCount: string;
+  minSkuPrice: string;
+  maxSkuPrice: string;
+  minSkuStock: string;
+  maxSkuStock: string;
+}): string | undefined {
+  const orderedRanges = [
+    ["最低价", "最高价", input.minPrice, input.maxPrice],
+    ["SKU 最低价", "SKU 最高价", input.minSkuPrice, input.maxSkuPrice],
+    ["SKU 数量下限", "SKU 数量上限", input.minSkuCount, input.maxSkuCount],
+    ["SKU 最低库存", "SKU 最高库存", input.minSkuStock, input.maxSkuStock],
+  ] as const;
+  for (const [minLabel, maxLabel, rawMin, rawMax] of orderedRanges) {
+    const min = numberOrUndefined(rawMin);
+    const max = numberOrUndefined(rawMax);
+    if (min !== undefined && max !== undefined && min > max) {
+      return `${minLabel}不能高于${maxLabel}`;
+    }
+  }
+  const positiveIntegers = [
+    ["最小起订量", input.minMoq],
+    ["SKU 数量下限", input.minSkuCount],
+    ["SKU 最低库存", input.minSkuStock],
+  ] as const;
+  for (const [label, raw] of positiveIntegers) {
+    const value = numberOrUndefined(raw);
+    if (value !== undefined && (!Number.isInteger(value) || value < 1)) {
+      return `${label}必须是大于 0 的整数`;
+    }
+  }
+  const nonNegativePrices = [
+    ["最低价", input.minPrice],
+    ["最高价", input.maxPrice],
+    ["SKU 最低价", input.minSkuPrice],
+    ["SKU 最高价", input.maxSkuPrice],
+  ] as const;
+  for (const [label, raw] of nonNegativePrices) {
+    const value = numberOrUndefined(raw);
+    if (value !== undefined && value < 0) return `${label}不能为负数`;
+  }
+  return undefined;
 }
 
 function formatDate(value: string): string {
@@ -504,7 +558,9 @@ export function DailySelectionPage({ view = "directions", initialDirectionId, on
           return;
         }
         if (task.status === "failed") {
-          setError(task.error || "采集请求失败");
+          // 异步任务错误是后端原文（可能是英文，如 1688 collection provider is not configured），
+          // 之前是原样渲染，这里过一遍统一翻译层。
+          setError(task.error ? toUserMessage(task.error) : "采集请求失败");
           setCollecting(false);
           setCollectionTaskId(null);
           return;
@@ -899,6 +955,10 @@ export function DailySelectionPage({ view = "directions", initialDirectionId, on
       throw new Error("采集数量必须是正整数");
     }
     const normalizedKeywords = keywords.split(/[，,\n]/).map((item) => item.trim()).filter(Boolean).slice(0, 5);
+    // 只填分隔符时 trim 非空但归一化后为空，必须在提交前拦住，否则后端会直接拒绝。
+    if (mode === "keyword" && normalizedKeywords.length === 0) {
+      throw new Error("关键词不能只填分隔符，请至少填写一个有效关键词");
+    }
     const criteria: DailySelectionCriteria = {
       keywords: mode === "image" ? normalizedKeywords : normalizedKeywords,
       selection_scope: scope,
@@ -927,6 +987,19 @@ export function DailySelectionPage({ view = "directions", initialDirectionId, on
     if (parsedMaxSkuPrice !== undefined) criteria.max_sku_price = parsedMaxSkuPrice;
     if (parsedMinSkuStock !== undefined) criteria.min_sku_stock = parsedMinSkuStock;
     if (parsedMaxSkuStock !== undefined) criteria.max_sku_stock = parsedMaxSkuStock;
+    // 上下限写反属于用户常见笔误，前端先拦，避免等到后端校验才报错。
+    if (parsedMinPrice !== undefined && parsedMaxPrice !== undefined && parsedMinPrice > parsedMaxPrice) {
+      throw new Error("最低价格不能大于最高价格");
+    }
+    if (parsedMinSkuCount !== undefined && parsedMaxSkuCount !== undefined && parsedMinSkuCount > parsedMaxSkuCount) {
+      throw new Error("SKU 规格数下限不能大于上限");
+    }
+    if (parsedMinSkuPrice !== undefined && parsedMaxSkuPrice !== undefined && parsedMinSkuPrice > parsedMaxSkuPrice) {
+      throw new Error("SKU 最低价不能大于 SKU 最高价");
+    }
+    if (parsedMinSkuStock !== undefined && parsedMaxSkuStock !== undefined && parsedMinSkuStock > parsedMaxSkuStock) {
+      throw new Error("SKU 库存下限不能大于上限");
+    }
 
     criteria.collection_mode = mode;
     criteria.collection_platform = platform === "taobao" ? "taobao" : "1688";
@@ -947,12 +1020,31 @@ export function DailySelectionPage({ view = "directions", initialDirectionId, on
       setError("请填写正确的采集数量");
       return;
     }
+    if (parsedTargetCount > 200) {
+      setError("采集数量最多 200 条");
+      return;
+    }
     if (mode === "keyword" && !keywords.trim()) {
       setError("请至少填写一个关键词");
       return;
     }
     if (mode === "image" && !referenceImageUrl.trim()) {
       setError("请填写可公开访问的参考图 URL");
+      return;
+    }
+    const filterError = collectionFilterError({
+      minPrice,
+      maxPrice,
+      minMoq,
+      minSkuCount,
+      maxSkuCount,
+      minSkuPrice,
+      maxSkuPrice,
+      minSkuStock,
+      maxSkuStock,
+    });
+    if (filterError) {
+      setError(`筛选条件有误：${filterError}`);
       return;
     }
 
@@ -1307,7 +1399,7 @@ export function DailySelectionPage({ view = "directions", initialDirectionId, on
             </label>
             <label><span>站点</span><select value={site} onChange={(event) => setSite(event.target.value as TargetSite | "")}><option value="" disabled>请选择</option><option value="US">美国站 US</option><option value="CO">哥伦比亚 CO</option><option value="EC">厄瓜多尔 EC</option></select></label>
             <label><span>选品范围</span><select value={scope} onChange={(event) => setScope(event.target.value as SelectionScope | "")}><option value="" disabled>请选择</option><option value="divergent">发散相似款</option><option value="exact">精准匹配</option></select></label>
-            <label><span>采集数量</span><input type="number" min="1" value={targetCount} onChange={(event) => setTargetCount(event.target.value)} /></label>
+            <label><span>采集数量</span><input type="number" min="1" max="200" value={targetCount} onChange={(event) => setTargetCount(event.target.value)} /></label>
             <label className="collection-keyword-field">
               <span>采集关键词 <em>{mode === "keyword" ? "必填" : "作为图片描述标签"}</em></span>
               <input value={keywords} onChange={(event) => setKeywords(event.target.value)} placeholder="多个关键词用逗号分隔，最多 5 个" />
@@ -1447,6 +1539,12 @@ export function DailySelectionPage({ view = "directions", initialDirectionId, on
             <button type="button" className="confirm-button" disabled={busy || selectedCandidates.length === 0} onClick={() => void confirmSelected()}>确认入池（{selectedCandidates.length}）</button>
           </div>
         </div>
+        {activeRun && filteredCandidates.length > 1 && (
+          <p className="confirm-tip">
+            <span aria-hidden="true">ⓘ</span>
+            <span>提示：多个商品一起入池时，<b>多 SKU 商品会明显拖慢速度</b>。建议先用上方「SKU筛选」把最大 SKU 规格数调小，筛掉多 SKU 商品后再点「确认入池」。</span>
+          </p>
+        )}
         {!activeRun && <div className="result-empty"><span>⌕</span><strong>等待采集结果</strong><p>选择采集方向并提交条件，候选商品将在这里展示。</p></div>}
         {activeRun && activeRun.candidates.length === 0 && <div className="result-empty"><span>○</span><strong>本批次没有候选</strong><p>可以调整关键词、价格范围或关闭风险排除后重试。</p></div>}
         {activeRun && activeRun.candidates.length > 0 && filteredCandidates.length === 0 && (

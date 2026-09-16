@@ -1,439 +1,409 @@
-import { Fragment, useEffect, useMemo, useState } from "react";
+import { useCallback, useEffect, useMemo, useState } from "react";
+
 import type { WorkspaceModuleId } from "../../../app/navigation/modules";
-import { getDashboardStats, type DashboardStats, type DashboardTrendPoint } from "../api/dashboardApi";
-import { loadBillingUsageHistory, type BillingUsageEntry } from "../../personal_center/api/personalCenterApi";
-import { getAuthToken } from "../../../transport/http/client";
-import "./../styles/dashboardStats.css";
 import { AppleAppGlyph } from "../../../shared/components/AppleAppGlyph";
+import type { DashboardOverview, DashboardRecentTask, DashboardTrendPoint } from "../api/dashboardApi";
+import { getDashboardOverview } from "../api/dashboardApi";
+import "./../styles/dashboardStats.css";
 
-type DashboardStatsProps = { onOpenModule: (id: WorkspaceModuleId) => void; variant?: "classic" | "apple" };
+type DashboardStatsProps = {
+  onOpenModule: (id: WorkspaceModuleId) => void;
+  variant?: "classic" | "apple";
+};
 
-type TrendMode = "dual" | "sum";
+type KpiTone = "blue" | "cyan" | "violet" | "green" | "amber" | "rose";
 
-/* ── 折线趋势图（重制版：平滑曲线 + 入场动画 + 跟随式悬浮卡） ── */
+type KpiCard = {
+  key: string;
+  label: string;
+  value: number;
+  note: string;
+  tone: KpiTone;
+  glyph: string;
+  module: WorkspaceModuleId;
+};
 
-/** Catmull-Rom 样条 → 三次贝塞尔：把折线变成顺滑曲线
- * baselineY: 图表底部基线 y 坐标（y=0 的位置）。SVG 的 y 轴向下递增，所以
- * 数值越大 y 越小，baselineY 是合法 y 的上界。样条在连续 0 值附近会把控制点
- * 算到 baselineY 之下（视觉上即跌进负数区间），这里把越界的控制点拉回基线，
- * 让曲线"贴着底走"而不下凹。 */
-function smoothPath(pts: Array<{ x: number; y: number }>, baselineY: number): string {
-  if (pts.length === 0) return "";
-  const clampY = (y: number) => (y > baselineY ? baselineY : y);
-  if (pts.length < 3) return pts.map((p, i) => `${i ? "L" : "M"}${p.x.toFixed(2)} ${clampY(p.y).toFixed(2)}`).join(" ");
-  let d = `M${pts[0].x.toFixed(2)} ${clampY(pts[0].y).toFixed(2)}`;
-  for (let i = 0; i < pts.length - 1; i++) {
-    const p0 = pts[Math.max(0, i - 1)];
-    const p1 = pts[i];
-    const p2 = pts[i + 1];
-    const p3 = pts[Math.min(pts.length - 1, i + 2)];
-    const c1x = p1.x + (p2.x - p0.x) / 6;
-    const c1y = clampY(p1.y + (p2.y - p0.y) / 6);
-    const c2x = p2.x - (p3.x - p1.x) / 6;
-    const c2y = clampY(p2.y - (p3.y - p1.y) / 6);
-    d += ` C${c1x.toFixed(2)} ${c1y.toFixed(2)} ${c2x.toFixed(2)} ${c2y.toFixed(2)} ${p2.x.toFixed(2)} ${clampY(p2.y).toFixed(2)}`;
-  }
-  return d;
+type DistItem = { key: string; label: string; count: number; tone?: string };
+
+const REFRESH_MS = 60_000;
+const TREND_RANGES = [7, 14, 30] as const;
+type TrendRange = (typeof TREND_RANGES)[number];
+
+const TASK_STATUS_TONE: Record<string, string> = {
+  completed: "success",
+  partial_failure: "warning",
+  failed: "danger",
+  cancelled: "muted",
+  running: "info",
+  queued: "info",
+};
+
+const CHINA_TIME_ZONE = "Asia/Shanghai";
+
+/** 后端返回的时间可能是 ISO（带时区）或 "YYYY-MM-DD HH:MM:SS"（UTC 无时区），统一按 UTC 解析后转北京时间。 */
+function formatBeijingTime(value: string): string {
+  if (!value) return "—";
+  const iso = /(Z|[+-]\d{2}:?\d{2})$/.test(value) ? value : `${value.replace(" ", "T")}Z`;
+  const date = new Date(iso);
+  if (Number.isNaN(date.getTime())) return value;
+  return new Intl.DateTimeFormat("zh-CN", {
+    timeZone: CHINA_TIME_ZONE,
+    month: "2-digit",
+    day: "2-digit",
+    hour: "2-digit",
+    minute: "2-digit",
+    hour12: false,
+  }).format(date);
 }
 
-function DashboardTrendChart({ points }: { points: DashboardTrendPoint[] }) {
-  const [days, setDays] = useState(14);
-  const [mode, setMode] = useState<TrendMode>("dual");
-  const [hover, setHover] = useState<number | null>(null);
-
-  const visiblePoints = useMemo(() => points.slice(-days), [days, points]);
-
-  // 双线：产品处理（红）+ POD 生成（蓝）；汇总模式合成一条线。
-  const activeSeries = useMemo(
-    () =>
-      mode === "sum"
-        ? [{ key: "sum", label: "汇总", color: "#e1568a", values: visiblePoints.map((p) => p.inboundCount + p.processedCount) }]
-        : [
-            { key: "processed", label: "产品处理", color: "#e23b4e", values: visiblePoints.map((p) => p.processedCount) },
-            { key: "inbound", label: "POD 生成", color: "#2f6bff", values: visiblePoints.map((p) => p.inboundCount) },
-          ],
-    [mode, visiblePoints],
-  );
-
-  const allValues = activeSeries.flatMap((s) => s.values);
-  const total = allValues.reduce((a, b) => a + b, 0);
-
-  /* Y 轴漂亮刻度：步长取 1/2/2.5/5 × 10^n，顶部预留 18% 呼吸空间，曲线不顶格 */
-  const rawDataMax = Math.max(...allValues, 1);
-  const niceSteps = [1, 2, 2.5, 5, 10, 20, 25, 50, 100, 200, 250, 500, 1000];
-  const step = niceSteps.find((s) => s >= rawDataMax / 4) ?? niceSteps[niceSteps.length - 1];
-  const maxValue = Math.max(Math.ceil((rawDataMax * 1.18) / step) * step, step * 4);
-  const yTicks = Array.from({ length: 5 }, (_, i) => step * i);
-
-  /* 画布几何 */
-  const width = 760;
-  const height = 280;
-  const pad = { top: 26, right: 22, bottom: 40, left: 48 };
-  const plotW = width - pad.left - pad.right;
-  const plotH = height - pad.top - pad.bottom;
-  const xAt = (i: number) => pad.left + (i / Math.max(visiblePoints.length - 1, 1)) * plotW;
-  const yAt = (v: number) => pad.top + plotH - (v / maxValue) * plotH;
-
-  /* X 轴标签：均匀抽样，避免拥挤 */
-  const labelStep = Math.max(1, Math.ceil(visiblePoints.length / 7));
-  const xLabels = visiblePoints.map((p, i) => {
-    const d = new Date(`${p.date}T00:00:00`);
-    return { i, text: `${d.getMonth() + 1}/${d.getDate()}`, show: i % labelStep === 0 || i === visiblePoints.length - 1 };
-  });
-
-  const rangeLabel = visiblePoints.length
-    ? `${visiblePoints[0].date.replace(/-/g, "/")} – ${visiblePoints[visiblePoints.length - 1]?.date.replace(/-/g, "/")}`
-    : "暂无日期";
-
-  const hoveredIdx = hover !== null && hover < visiblePoints.length ? hover : null;
-  const hovered = hoveredIdx !== null ? visiblePoints[hoveredIdx] : null;
-  const hoverX = hoveredIdx !== null ? xAt(hoveredIdx) : 0;
-  const tooltipFlip = hoverX > width * 0.7; // 数据点靠右侧时悬浮卡翻到左边
-
-  return (
-    <section className="dashboard-trend-card">
-      <div className="dashboard-trend-toolbar">
-        <label>
-          <span>统计范围</span>
-          <select value={days} onChange={(event) => setDays(Number(event.target.value))}>
-            <option value={7}>近 7 天</option>
-            <option value={14}>近 14 天</option>
-            <option value={30}>近 30 天</option>
-          </select>
-        </label>
-        <div className="dashboard-trend-range"><span>日期</span><strong>{rangeLabel}</strong></div>
-        <div className="dashboard-trend-mode" role="tablist" aria-label="显示方式">
-          <button type="button" role="tab" aria-selected={mode === "dual"} className={mode === "dual" ? "is-active" : ""} onClick={() => setMode("dual")}>双线对比</button>
-          <button type="button" role="tab" aria-selected={mode === "sum"} className={mode === "sum" ? "is-active" : ""} onClick={() => setMode("sum")}>汇总</button>
-        </div>
-        <div className="dashboard-trend-total"><span>总计</span><strong className={mode === "sum" ? "is-sum" : ""}>{total}</strong></div>
-      </div>
-
-      <div className="dashboard-trend-plot" aria-label={`${rangeLabel}业务趋势，总计${total}`}>
-        <svg
-          className="trend-svg"
-          viewBox={`0 0 ${width} ${height}`}
-          preserveAspectRatio="none"
-          onMouseLeave={() => setHover(null)}
-          onMouseMove={(event) => {
-            const rect = event.currentTarget.getBoundingClientRect();
-            const relX = ((event.clientX - rect.left) / rect.width) * width;
-            const idx = Math.round(((relX - pad.left) / plotW) * Math.max(visiblePoints.length - 1, 1));
-            const clamped = Math.min(Math.max(idx, 0), visiblePoints.length - 1);
-            setHover(visiblePoints.length ? clamped : null);
-          }}
-        >
-          <defs>
-            {activeSeries.map((s) => (
-              <linearGradient key={s.key} id={`tgrad-${s.key}`} x1="0" y1="0" x2="0" y2="1">
-                <stop offset="0%" stopColor={s.color} stopOpacity="0.22" />
-                <stop offset="70%" stopColor={s.color} stopOpacity="0.05" />
-                <stop offset="100%" stopColor={s.color} stopOpacity="0" />
-              </linearGradient>
-            ))}
-          </defs>
-
-          {/* 水平网格 + Y 轴刻度 */}
-          {yTicks.map((t) => (
-            <g key={`y-${t}`}>
-              <line className="trend-grid" x1={pad.left} x2={width - pad.right} y1={yAt(t)} y2={yAt(t)} />
-              <text className="trend-tick" x={pad.left - 10} y={yAt(t) + 3.5} textAnchor="end">{t}</text>
-            </g>
-          ))}
-
-          {/* 底部基线 */}
-          <line className="trend-baseline" x1={pad.left} x2={width - pad.right} y1={pad.top + plotH} y2={pad.top + plotH} />
-
-          {/* X 轴刻度 */}
-          {xLabels.map(({ i, text, show }) => show && (
-            <text key={`x-${i}`} className="trend-tick" x={xAt(i)} y={height - 12} textAnchor="middle">{text}</text>
-          ))}
-
-          {/* 面积 + 平滑曲线：切模式/天数时重放入场动画 */}
-          <g key={`${mode}-${days}`}>
-            {activeSeries.map((s) => {
-              const pts = s.values.map((v, i) => ({ x: xAt(i), y: yAt(v) }));
-              // 无数据时 smoothPath 返回空串，拼接出的 d（如 " L48.00 240.00 ..."）
-              // 以 L 开头属于非法 SVG 路径，浏览器会报 "Expected moveto path command"。
-              if (pts.length === 0) return null;
-              const line = smoothPath(pts, pad.top + plotH);
-              const lastX = pts[pts.length - 1].x;
-              const firstX = pts[0].x;
-              const area = `${line} L${lastX.toFixed(2)} ${(pad.top + plotH).toFixed(2)} L${firstX.toFixed(2)} ${(pad.top + plotH).toFixed(2)} Z`;
-              return (
-                <Fragment key={s.key}>
-                  <path className="trend-area" d={area} fill={`url(#tgrad-${s.key})`} />
-                  <path className="trend-line" d={line} stroke={s.color} pathLength={1} />
-                </Fragment>
-              );
-            })}
-          </g>
-
-          {/* 数据点：常显小点，悬停放大 */}
-          {activeSeries.map((s) =>
-            s.values.map((v, i) => (
-              <circle
-                key={`dot-${s.key}-${i}`}
-                className="trend-dot"
-                cx={xAt(i)}
-                cy={yAt(v)}
-                r={hoveredIdx === i ? 4.2 : 2.2}
-                fill={s.color}
-              />
-            )),
-          )}
-
-          {/* 悬停指示线 */}
-          {hoveredIdx !== null && (
-            <line className="trend-cursor" x1={hoverX} x2={hoverX} y1={pad.top} y2={pad.top + plotH} />
-          )}
-        </svg>
-
-        {total === 0 && <div className="dashboard-trend-empty">当前时间范围暂无业务记录</div>}
-
-        {/* 悬浮卡片：跟随数据点，靠右自动左翻 */}
-        {hovered && (
-          <div
-            className="trend-tip"
-            style={{ left: `${(hoverX / width) * 100}%` }}
-            data-flip={tooltipFlip ? "true" : undefined}
-          >
-            <strong>{hovered.date.replace(/-/g, "/")}</strong>
-            {mode === "sum" ? (
-              <span><i style={{ background: "#e1568a" }} />汇总<b>{hovered.inboundCount + hovered.processedCount}</b></span>
-            ) : (
-              <>
-                <span><i style={{ background: "#e23b4e" }} />产品处理<b>{hovered.processedCount}</b></span>
-                <span><i style={{ background: "#2f6bff" }} />POD 生成<b>{hovered.inboundCount}</b></span>
-              </>
-            )}
-          </div>
-        )}
-      </div>
-
-      <div className="dashboard-trend-legend">
-        <div>
-          {activeSeries.map((s) => (
-            <span key={s.key}><i style={{ background: s.color }} />{s.label}</span>
-          ))}
-        </div>
-        <small>数据每分钟自动更新</small>
-      </div>
-    </section>
-  );
+function buildKpis(overview: DashboardOverview): KpiCard[] {
+  const { kpis, site_distribution: sites } = overview;
+  return [
+    {
+      key: "product_total",
+      label: "产品库总数",
+      value: kpis.product_total,
+      note: `覆盖 ${sites.length} 个站点`,
+      tone: "blue",
+      glyph: "profit_activity_products",
+      module: "profit_activity_products",
+    },
+    {
+      key: "today_inbound",
+      label: "今日入库",
+      value: kpis.today_inbound,
+      note: `产品库累计 ${kpis.product_total} 个`,
+      tone: "cyan",
+      glyph: "daily_selection",
+      module: "profit_activity_products",
+    },
+    {
+      key: "today_task_count",
+      label: "今日处理批次",
+      value: kpis.today_task_count,
+      note: `累计 ${kpis.task_total} 个批次`,
+      tone: "violet",
+      glyph: "product_processing",
+      module: "product_processing",
+    },
+    {
+      key: "today_processed_products",
+      label: "今日成功产出",
+      value: kpis.today_processed_products,
+      note: `失败 ${kpis.today_failed_products} 个`,
+      tone: "green",
+      glyph: "product_workflow",
+      module: "product_processing_history",
+    },
+    {
+      key: "active_tasks",
+      label: "进行中任务",
+      value: kpis.active_tasks,
+      note: `待处理草稿 ${kpis.drafts_pending} 条`,
+      tone: "amber",
+      glyph: "product_processing_tasks",
+      module: "product_processing_tasks",
+    },
+    {
+      key: "attention_required",
+      label: "需关注",
+      value: kpis.attention_required,
+      note: "需要人工确认的处理项",
+      tone: "rose",
+      glyph: "product_processing_history",
+      module: "product_processing_history",
+    },
+  ];
 }
 
-/* ── 积分消耗占比扇形图 ──────────────────────────────────────── */
-const SEGMENT_META = {
-  processing: { label: "产品处理", color: "#4c8df6" },
-  pod: { label: "POD 生成", color: "#8a5cf0" },
-  combo: { label: "商品组合", color: "#f0a137" },
-} as const;
+export function DashboardStats({ onOpenModule, variant = "classic" }: DashboardStatsProps) {
+  const [overview, setOverview] = useState<DashboardOverview | null>(null);
+  const [error, setError] = useState<string | null>(null);
+  const [range, setRange] = useState<TrendRange>(30);
 
-type SegmentKey = keyof typeof SEGMENT_META;
-
-function categorizeUsage(entry: BillingUsageEntry): SegmentKey {
-  const fk = String(entry.feature_key || "");
-  const ref = `${entry.usage_id || ""} ${entry.source_ref || ""}`;
-  if (ref.includes("combo-kit:")) return "combo";
-  if (fk === "pod_customization.batch" || entry.billing_profile === "pod_random_v1") return "pod";
-  return "processing";
-}
-
-function polarPoint(cx: number, cy: number, r: number, angleDeg: number) {
-  const rad = ((angleDeg - 90) * Math.PI) / 180;
-  return { x: cx + r * Math.cos(rad), y: cy + r * Math.sin(rad) };
-}
-
-function donutArc(cx: number, cy: number, r: number, startDeg: number, endDeg: number) {
-  const s = polarPoint(cx, cy, r, startDeg);
-  const e = polarPoint(cx, cy, r, endDeg);
-  const large = endDeg - startDeg > 180 ? 1 : 0;
-  return `M${s.x.toFixed(2)},${s.y.toFixed(2)} A${r},${r} 0 ${large} 1 ${e.x.toFixed(2)},${e.y.toFixed(2)}`;
-}
-
-function DashboardPointsPie() {
-  const [segments, setSegments] = useState<Array<{ key: SegmentKey; value: number }>>([]);
-  const [loading, setLoading] = useState(true);
-  const [loaded, setLoaded] = useState(false);
-
-  useEffect(() => {
-    let cancelled = false;
-    // 未登录时不请求计费用量：后端会以 401 拒绝，仅产生控制台噪音。
-    if (!getAuthToken()) {
-      setLoaded(true);
-      setLoading(false);
-      return;
+  const load = useCallback(async () => {
+    try {
+      const next = await getDashboardOverview();
+      setOverview(next);
+      setError(null);
+    } catch (exc) {
+      setError(exc instanceof Error ? exc.message : "工作台数据加载失败");
     }
-    loadBillingUsageHistory({ limit: 100 })
-      .then((res) => {
-        if (cancelled) return;
-        const totals: Record<SegmentKey, number> = { processing: 0, pod: 0, combo: 0 };
-        for (const item of res.items ?? []) {
-          const pts = Math.max(item.charged_points ?? 0, 0);
-          totals[categorizeUsage(item)] += pts;
-        }
-        setSegments(Object.keys(totals).map((k) => ({ key: k as SegmentKey, value: totals[k as SegmentKey] })));
-        setLoaded(true);
-        setLoading(false);
-      })
-      .catch(() => {
-        if (!cancelled) { setLoaded(true); setLoading(false); }
-      });
-    return () => { cancelled = true; };
   }, []);
 
-  const hasData = segments.some((s) => s.value > 0);
-  const total = segments.reduce((sum, s) => sum + s.value, 0);
-
-  const cx = 88, cy = 88, r = 66, thickness = 30;
-  let angle = 0;
-  const arcs = segments
-    .filter((s) => s.value > 0)
-    .map((s, i) => {
-      const sweep = (s.value / total) * 360;
-      const start = angle + 2; // 每段留 2° 间隔
-      const end = angle + sweep - 2;
-      angle += sweep;
-      const meta = SEGMENT_META[s.key];
-      return { ...s, meta, start, end, sweep };
-    });
-
-  return (
-    <section className="dashboard-points-card">
-      <span className="dashboard-points-eyebrow">产品处理 · POD · 商品组合</span>
-      <div className="dashboard-points-heading">
-        <div className="dashboard-points-title">
-          <span className="iconfont icon-piechart" aria-hidden="true"></span>
-          <strong>积分消耗占比</strong>
-        </div>
-        <div className="dashboard-points-total">
-          <span>总计</span>
-          <strong>{total.toLocaleString()}</strong>
-        </div>
-      </div>
-
-      <div className="dashboard-points-body">
-        <div className="dashboard-points-donut">
-          {hasData ? (
-            <svg viewBox={`0 0 ${cx * 2} ${cy * 2}`} width={176} height={176}>
-              {arcs.map((a) => (
-                <path key={a.key} d={donutArc(cx, cy, r, a.start, a.end)}
-                  fill="none" stroke={a.meta.color} strokeWidth={thickness} strokeLinecap="round"
-                  className="dashboard-pie-seg" />
-              ))}
-              <text className="dashboard-pie-total" x={cx} y={cy - 2} textAnchor="middle">{total.toLocaleString()}</text>
-              <text className="dashboard-pie-total-label" x={cx} y={cy + 16} textAnchor="middle">积分</text>
-            </svg>
-          ) : (
-            <div className="dashboard-points-empty"><span className="iconfont icon-fund" aria-hidden="true"></span>{loading ? "加载中…" : "暂无消耗数据"}</div>
-          )}
-        </div>
-
-        <ul className="dashboard-points-legend">
-          {segments.map((s) => {
-            const pct = total ? Math.round((s.value / total) * 100) : 0;
-            return (
-              <li key={s.key}>
-                <i style={{ background: SEGMENT_META[s.key].color }} />
-                <span>{SEGMENT_META[s.key].label}</span>
-                <b>{pct}%</b>
-              </li>
-            );
-          })}
-        </ul>
-      </div>
-    </section>
-  );
-}
-
-/* ── 数据概览 ────────────────────────────────────────────────── */
-export function DashboardStats({ onOpenModule, variant = "classic" }: DashboardStatsProps) {
-  const [stats, setStats] = useState<DashboardStats | null>(null);
-
   useEffect(() => {
-    let cancelled = false;
-    const load = () => {
-      void getDashboardStats().then((data) => {
-        if (!cancelled) setStats(data);
-      });
-    };
-    load();
-    const timer = window.setInterval(load, 60_000);
+    void load();
+    const timer = window.setInterval(() => void load(), REFRESH_MS);
     const onVisible = () => {
-      if (document.visibilityState === "visible") load();
+      if (document.visibilityState === "visible") void load();
     };
     document.addEventListener("visibilitychange", onVisible);
     return () => {
-      cancelled = true;
       window.clearInterval(timer);
       document.removeEventListener("visibilitychange", onVisible);
     };
-  }, []);
+  }, [load]);
 
-  const format = (value: number | null | undefined) => (value === null || value === undefined ? "--" : String(value));
-  const productSites = stats?.productSites.length ? stats.productSites.join(" / ") : "暂无产品站点";
+  const kpis = useMemo(() => (overview ? buildKpis(overview) : []), [overview]);
+  const trendPoints = useMemo(
+    () => (overview ? overview.trend.points.slice(-range) : []),
+    [overview, range],
+  );
+  const statusItems = useMemo<DistItem[]>(
+    () => (overview ? overview.task_status.map((item) => ({ ...item, key: item.status, tone: TASK_STATUS_TONE[item.status] ?? "info" })) : []),
+    [overview],
+  );
+  const siteItems = useMemo<DistItem[]>(
+    () => (overview ? overview.site_distribution.map((item) => ({ key: item.site_code, label: item.label, count: item.count, tone: "blue" })) : []),
+    [overview],
+  );
 
-  if (variant === "apple") {
+  const isApple = variant === "apple";
+
+  if (!overview) {
     return (
-      <section className="mac-glance-section">
-        <div className="mac-section-heading"><div><span>AT A GLANCE</span><h2>今日概览</h2></div><small>每分钟自动更新</small></div>
-        <div className="mac-glance-grid">
-          <button type="button" onClick={() => onOpenModule("profit_activity_products")}>
-            <span className="mac-glance-icon is-blue"><AppleAppGlyph name="profit_activity_products" /></span>
-            <span><small>产品总数</small><strong>{format(stats?.productCount)}</strong><em>全部市场</em></span>
-          </button>
-          <button type="button" onClick={() => onOpenModule("profit_activity_products")}>
-            <span className="mac-glance-icon is-green"><AppleAppGlyph name="daily_selection" /></span>
-            <span><small>今日入库</small><strong>{format(stats?.todayInboundCount)}</strong><em>北京时间</em></span>
-          </button>
-          <button type="button" onClick={() => onOpenModule("product_processing")}>
-            <span className="mac-glance-icon is-violet"><AppleAppGlyph name="product_processing" /></span>
-            <span><small>今日处理</small><strong>{format(stats?.todayProcessedCount)}</strong><em>AI 处理任务</em></span>
-          </button>
-        </div>
-      </section>
+      <div className={`dash-board${isApple ? " dash-board--apple" : ""}`}>
+        <section className="dash-kpi-grid" aria-busy="true">
+          {Array.from({ length: 6 }, (_, index) => (
+            <div key={index} className="dash-kpi dash-skeleton" />
+          ))}
+        </section>
+        <p className="dash-hint">{error ?? "正在加载工作台数据…"}</p>
+      </div>
     );
   }
 
   return (
-    <section className="dashboard-stats-section">
-      <div className="section-heading">
-        <div>
-          <h2>数据概览</h2>
-        </div>
-        <span className="muted"><span className="iconfont icon-linechart" aria-hidden="true"></span> 实时统计</span>
+    <div className={`dash-board${isApple ? " dash-board--apple" : ""}`}>
+      <section className="dash-kpi-grid" aria-label="核心指标">
+        {kpis.map((card) => (
+          <button
+            key={card.key}
+            type="button"
+            className={`dash-kpi is-${card.tone}`}
+            onClick={() => onOpenModule(card.module)}
+          >
+            <span className="dash-kpi-icon" aria-hidden>
+              <AppleAppGlyph name={card.glyph} />
+            </span>
+            <span className="dash-kpi-body">
+              <span className="dash-kpi-label">{card.label}</span>
+              <strong className="dash-kpi-value">{card.value}</strong>
+              <em className="dash-kpi-note">{card.note}</em>
+            </span>
+          </button>
+        ))}
+      </section>
+
+      <div className="dash-panels">
+        <section className="dash-panel dash-panel--trend">
+          <header className="dash-panel-head">
+            <div className="dash-panel-title">
+              <h3>处理趋势</h3>
+              <p>
+                近 {range} 天 · 每日处理批次与入库产品数量（
+                {overview.trend.start.slice(5)} ~ {overview.trend.end.slice(5)}）
+              </p>
+            </div>
+            <div className="dash-range" role="group" aria-label="趋势统计范围">
+              {TREND_RANGES.map((days) => (
+                <button
+                  key={days}
+                  type="button"
+                  className={days === range ? "is-active" : ""}
+                  onClick={() => setRange(days)}
+                >
+                  {days} 天
+                </button>
+              ))}
+            </div>
+          </header>
+          <TrendChart points={trendPoints} />
+          <footer className="dash-trend-legend">
+            <span className="dash-legend-item is-violet">处理批次</span>
+            <span className="dash-legend-item is-cyan">入库产品</span>
+            <span className="dash-trend-total">
+              区间合计：处理 {trendPoints.reduce((sum, point) => sum + point.processed, 0)} 个批次 · 入库{" "}
+              {trendPoints.reduce((sum, point) => sum + point.inbound, 0)} 个产品
+            </span>
+          </footer>
+        </section>
+
+        <section className="dash-panel dash-panel--dist">
+          <header className="dash-panel-head">
+            <div className="dash-panel-title">
+              <h3>任务状态分布</h3>
+              <p>累计 {overview.kpis.task_total} 个处理批次</p>
+            </div>
+          </header>
+          <DistributionList items={statusItems} emptyText="暂无处理批次" />
+
+          <header className="dash-panel-head is-sub">
+            <div className="dash-panel-title">
+              <h3>站点分布</h3>
+              <p>产品库产品按站点统计</p>
+            </div>
+          </header>
+          <DistributionList items={siteItems} emptyText="产品库暂无数据" />
+        </section>
       </div>
 
-      <div className="stats-container">
-        <div className="stats-grid">
-          <button className="stats-card" onClick={() => onOpenModule("profit_activity_products")} title="点击打开产品库">
-            <span className="stats-icon iconfont icon-container"></span>
-            <span className="stats-label">产品库产品总数</span>
-            <strong className="stats-value">{format(stats?.productCount)}</strong>
-            <span className="stats-note">{productSites}</span>
+      <section className="dash-panel dash-panel--tasks">
+        <header className="dash-panel-head">
+          <div className="dash-panel-title">
+            <h3>最近处理任务</h3>
+            <p>最近 {overview.recent_tasks.length} 个批次的处理结果</p>
+          </div>
+          <button type="button" className="dash-panel-link" onClick={() => onOpenModule("product_processing_history")}>
+            查看全部
           </button>
-
-          <button className="stats-card" onClick={() => onOpenModule("profit_activity_products")} title="点击打开产品库">
-            <span className="stats-icon iconfont icon-download"></span>
-            <span className="stats-label">今日入库数量</span>
-            <strong className="stats-value">{format(stats?.todayInboundCount)}</strong>
-            <span className="stats-note">按北京时间统计</span>
-          </button>
-
-          <button className="stats-card" onClick={() => onOpenModule("product_processing")} title="点击打开产品处理">
-            <span className="stats-icon iconfont icon-setting"></span>
-            <span className="stats-label">今日产品处理数量</span>
-            <strong className="stats-value">{format(stats?.todayProcessedCount)}</strong>
-            <span className="stats-note">按北京时间统计</span>
-          </button>
-        </div>
-      </div>
-
-      <div className="dashboard-chart-layout">
-        <DashboardTrendChart points={stats?.trend ?? []} />
-        <DashboardPointsPie />
-      </div>
-    </section>
+        </header>
+        {overview.recent_tasks.length ? (
+          <ul className="dash-task-list">
+            {overview.recent_tasks.map((task) => (
+              <TaskRow key={task.task_id} task={task} onOpen={() => onOpenModule("product_processing_history")} />
+            ))}
+          </ul>
+        ) : (
+          <p className="dash-empty">还没有处理记录，去「AI 产品处理」创建第一个批次吧。</p>
+        )}
+      </section>
+    </div>
   );
+}
+
+function TaskRow({ task, onOpen }: { task: DashboardRecentTask; onOpen: () => void }) {
+  const tone = TASK_STATUS_TONE[task.status] ?? "info";
+  return (
+    <li>
+      <button type="button" className="dash-task-row" onClick={onOpen}>
+        <span className="dash-task-main">
+          <strong>{task.title || `批次 #${task.task_id}`}</strong>
+          <em>#{task.task_id}</em>
+        </span>
+        <span className={`dash-status is-${tone}`}>{task.status_label}</span>
+        <span className="dash-task-progress">
+          成功 {task.success_count} / {task.total_count}
+          {task.failed_count > 0 ? <i>· 失败 {task.failed_count}</i> : null}
+        </span>
+        <span className="dash-task-time">{formatBeijingTime(task.created_at)}</span>
+      </button>
+    </li>
+  );
+}
+
+function DistributionList({ items, emptyText }: { items: DistItem[]; emptyText: string }) {
+  const total = items.reduce((sum, item) => sum + item.count, 0);
+  if (!items.length || total === 0) {
+    return <p className="dash-empty">{emptyText}</p>;
+  }
+  return (
+    <ul className="dash-dist-list">
+      {items.map((item) => {
+        const percent = total ? Math.round((item.count / total) * 100) : 0;
+        return (
+          <li key={item.key} className={`dash-dist-row is-${item.tone ?? "blue"}`}>
+            <span className="dash-dist-label">{item.label}</span>
+            <span className="dash-dist-bar" aria-hidden>
+              <i style={{ width: `${Math.max(percent, 2)}%` }} />
+            </span>
+            <span className="dash-dist-value">
+              {item.count}
+              <em>{percent}%</em>
+            </span>
+          </li>
+        );
+      })}
+    </ul>
+  );
+}
+
+const CHART_WIDTH = 720;
+const CHART_HEIGHT = 236;
+const CHART_PAD = { top: 18, right: 16, bottom: 26, left: 38 };
+
+function TrendChart({ points }: { points: DashboardTrendPoint[] }) {
+  const [hover, setHover] = useState<number | null>(null);
+
+  const maxValue = Math.max(1, ...points.flatMap((point) => [point.inbound, point.processed]));
+  const niceMax = niceCeil(maxValue);
+  const innerWidth = CHART_WIDTH - CHART_PAD.left - CHART_PAD.right;
+  const innerHeight = CHART_HEIGHT - CHART_PAD.top - CHART_PAD.bottom;
+  const step = points.length > 1 ? innerWidth / (points.length - 1) : 0;
+
+  const xAt = (index: number) => CHART_PAD.left + index * step;
+  const yAt = (value: number) => CHART_PAD.top + innerHeight - (value / niceMax) * innerHeight;
+
+  const line = (key: "inbound" | "processed") =>
+    points.map((point, index) => `${index === 0 ? "M" : "L"}${xAt(index).toFixed(1)},${yAt(point[key]).toFixed(1)}`).join(" ");
+
+  const gridValues = [0, 0.25, 0.5, 0.75, 1].map((ratio) => Math.round(niceMax * ratio));
+  const labelEvery = Math.max(1, Math.ceil(points.length / 6));
+  const active = hover !== null ? points[hover] : null;
+
+  return (
+    <div className="dash-trend-chart">
+      <svg viewBox={`0 0 ${CHART_WIDTH} ${CHART_HEIGHT}`} role="img" aria-label="近 30 天处理趋势">
+        {gridValues.map((value) => (
+          <g key={value}>
+            <line x1={CHART_PAD.left} x2={CHART_WIDTH - CHART_PAD.right} y1={yAt(value)} y2={yAt(value)} className="dash-grid-line" />
+            <text x={CHART_PAD.left - 8} y={yAt(value) + 4} className="dash-axis-text" textAnchor="end">
+              {value}
+            </text>
+          </g>
+        ))}
+
+        {points.map((point, index) =>
+          index % labelEvery === 0 || index === points.length - 1 ? (
+            <text key={point.date} x={xAt(index)} y={CHART_HEIGHT - 8} className="dash-axis-text" textAnchor="middle">
+              {point.label}
+            </text>
+          ) : null,
+        )}
+
+        <path d={line("processed")} className="dash-line is-processed" />
+        <path d={line("inbound")} className="dash-line is-inbound" />
+
+        {active ? (
+          <g>
+            <line x1={xAt(hover!)} x2={xAt(hover!)} y1={CHART_PAD.top} y2={CHART_PAD.top + innerHeight} className="dash-hover-line" />
+            <circle cx={xAt(hover!)} cy={yAt(active.processed)} r={4} className="dash-point is-processed" />
+            <circle cx={xAt(hover!)} cy={yAt(active.inbound)} r={4} className="dash-point is-inbound" />
+          </g>
+        ) : null}
+
+        <rect
+          x={CHART_PAD.left}
+          y={CHART_PAD.top}
+          width={innerWidth}
+          height={innerHeight}
+          fill="transparent"
+          onMouseLeave={() => setHover(null)}
+          onMouseMove={(event) => {
+            const rect = event.currentTarget.getBoundingClientRect();
+            const ratio = (event.clientX - rect.left) / Math.max(rect.width, 1);
+            setHover(Math.min(points.length - 1, Math.max(0, Math.round(ratio * (points.length - 1)))));
+          }}
+        />
+      </svg>
+
+      {active ? (
+        <div className="dash-trend-tip" style={{ left: `${(xAt(hover!) / CHART_WIDTH) * 100}%` }}>
+          <strong>{active.date}</strong>
+          <span className="is-violet">处理批次 {active.processed}</span>
+          <span className="is-cyan">入库产品 {active.inbound}</span>
+        </div>
+      ) : null}
+    </div>
+  );
+}
+
+function niceCeil(value: number): number {
+  if (value <= 5) return 5;
+  const magnitude = 10 ** Math.floor(Math.log10(value));
+  for (const factor of [1, 1.5, 2, 2.5, 3, 4, 5, 6, 8, 10]) {
+    const candidate = magnitude * factor;
+    if (candidate >= value) return candidate;
+  }
+  return magnitude * 10;
 }

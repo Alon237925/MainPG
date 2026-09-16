@@ -39,10 +39,11 @@ export type PodBusinessFieldsDraft = {
   target_audience: string;
   core_selling_points: string;
   design_theme: string;
-  style_planning: string;
   style_keywords: string;
   color_preferences: string;
   excluded_elements: string;
+  /** 选填：用户手写的上架文案限制（如「标题不要出现刺绣」），只作用于标题与描述，不影响图片。 */
+  copy_restrictions: string;
 };
 
 export type PodBusinessFields = Omit<PodBusinessFieldsDraft,
@@ -62,12 +63,8 @@ export type PodBriefFieldsResponse = {
   fields: PodBusinessFields;
 };
 
-/**
- * 智能前置层实际代填的字段：不含 `style_planning`。
- * 「样式规划」由用户在页面上二选一（全覆盖 / 半覆盖），AI 不代为决定，
- * 也不得覆盖用户已选的值。
- */
-export type PodBriefFieldsDraft = Omit<PodBusinessFieldsDraft, "style_planning">;
+/** 智能前置层实际代填的字段：业务字段去掉「上架文案限制」（该类限制不由智能填写生成）。 */
+export type PodBriefFieldsDraft = Omit<PodBusinessFieldsDraft, "copy_restrictions">;
 
 /** 「最近生成」历史条目；fields 为回填前的字符串口径（数组已用「、」连接）。 */
 export type PodBriefHistoryItem = {
@@ -81,23 +78,18 @@ export type PodTitleMode = "long" | "short";
 
 export type PodSkuDraft = {
   name: string;
-  length_cm: string;
-  width_cm: string;
-  height_cm: string;
+  declared_price: string;
   weight_g: string;
 };
 
 export type PodSku = {
   name: string;
-  length_cm: number;
-  width_cm: number;
-  height_cm: number;
+  declared_price: number;
   weight_g: number;
 };
 
 export type PodListingFieldsDraft = {
   title_mode: PodTitleMode;
-  declared_price: string;
   suggested_price_usd: string;
   category_name: string;
   skus: PodSkuDraft[];
@@ -119,6 +111,7 @@ export type SpecCardPreviewRequest = {
   cells: string[][];
   style: SpecCardStyle;
   corner: SpecCardCorner;
+  enabled: boolean;
   base_template_id?: string;
 };
 
@@ -130,6 +123,7 @@ export type SpecCardReprintRequest = {
   cells: string[][];
   style: SpecCardStyle;
   corner: SpecCardCorner;
+  enabled: boolean;
   style_index?: number | null;
 };
 
@@ -148,7 +142,6 @@ export type SpecCardReprintResponse = {
 
 export type PodListingFields = {
   title_mode: PodTitleMode;
-  declared_price: number;
   suggested_price_usd: number;
   category_name: string;
   skus: PodSku[];
@@ -164,6 +157,9 @@ export type PodDianxiaomiExportStatus = {
   user_excluded_style_count?: number;
   block_reason: string | null;
 };
+
+/** 妙手 Temu 导入模板类型：服饰类 / 非服饰类。 */
+export type PodMiaoshouTemplateKind = "apparel" | "general";
 
 export type PodBatchCount = number;
 export type PodBatchStatus =

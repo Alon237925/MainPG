@@ -9,6 +9,10 @@ from pydantic import BaseModel, ConfigDict, Field, StrictBool, StrictInt, model_
 SUPPORTED_PATTERN_COUNTS = (20, 40, 100)
 MIN_STYLE_COUNT = 1
 MAX_STYLE_COUNT = 200
+# 半定制：4 格 = 4 款，发起数量必须是 4 的倍数；交付单元 = 单张图案。
+MIN_SEMI_ITEM_COUNT = 4
+MAX_SEMI_ITEM_COUNT = 200
+SEMI_PATTERN_ROLES = ("pattern_1", "pattern_2", "pattern_3", "pattern_4")
 PromptVersion = Literal["v1"]
 
 
@@ -65,10 +69,12 @@ class BusinessFields(BaseModel):
     target_audience: str = ""
     core_selling_points: list[str] = Field(default_factory=list)
     design_theme: str = ""
-    style_planning: str = ""
     style_keywords: list[str] = Field(default_factory=list)
     color_preferences: list[str] = Field(default_factory=list)
     excluded_elements: list[str] = Field(default_factory=list)
+    # 选填：用户手写的上架文案限制（例如「标题不要出现刺绣」「明确带上 2D Flat」）。
+    # 只作用于标题/英文标题/描述，不进入图片提示词。
+    copy_restrictions: str = ""
 
 
 # --- 智能前置层：模糊输入 → 结构化业务字段 ---
@@ -107,9 +113,8 @@ class ListingSku(BaseModel):
     model_config = ConfigDict(extra="forbid", str_strip_whitespace=True, allow_inf_nan=False)
 
     name: str = Field(strict=True, min_length=1, max_length=120)
-    length_cm: float = Field(strict=True, gt=0)
-    width_cm: float = Field(strict=True, gt=0)
-    height_cm: float = Field(strict=True, gt=0)
+    # 申报价改为每个 SKU 各一个；长/宽/高改由 listing_fields.spec_card 的尺寸详情表格承载。
+    declared_price: float = Field(strict=True, gt=0)
     weight_g: float = Field(strict=True, gt=0)
 
 
@@ -117,15 +122,13 @@ class ListingFields(BaseModel):
     model_config = ConfigDict(extra="forbid", str_strip_whitespace=True, allow_inf_nan=False)
 
     title_mode: Literal["long", "short"] = "long"
-    declared_price: float = Field(strict=True, gt=0)
     suggested_price_usd: float = Field(strict=True, gt=0)
     category_name: str = Field(min_length=1, max_length=120)
     skus: list[ListingSku] = Field(
         min_length=1,
         max_length=100,
     )
-    # 第 4 张图「规格卡」；可选字段（Agent C 的集成点）。注意 SpecCardConfig 自带
-    # config，父模型的 str_strip_whitespace 不会传播到嵌套模型 —— 单元格文本逐字保留。
+    # 第 4 张图「规格卡」：表头 + 每个 SKU 一行的尺寸详情表格，同时是导出长/宽/高的取值来源。
     spec_card: SpecCardConfig | None = None
 
 
@@ -144,6 +147,29 @@ class BatchCreate(BaseModel):
     def validate_product_category(self) -> "BatchCreate":
         if not self.business_fields.product_category.strip():
             raise ValueError("business_fields.product_category is required")
+        return self
+
+
+class SemiBatchCreate(BaseModel):
+    """半定制创建：纯提示词生成图案，不用模板、不用参考图、不用上架字段。
+
+    4 格 = 4 款；``count`` 为交付图案张数，必须是 4 的倍数（4..200）。
+    业务字段只消费图案相关项（主题风格 / 元素 / 配色 / 禁用元素），
+    产品名、品类、市场、人群、卖点对纯图案生成无意义，故不做必填校验。
+    """
+
+    model_config = ConfigDict(extra="forbid")
+
+    count: int = Field(strict=True, ge=MIN_SEMI_ITEM_COUNT, le=MAX_SEMI_ITEM_COUNT)
+    prompt_version: PromptVersion = "v1"
+    business_fields: BusinessFields = Field(default_factory=BusinessFields)
+    creative_prompt: str = Field(default="", max_length=4000)
+    title: str = Field(default="", max_length=120)
+
+    @model_validator(mode="after")
+    def validate_semi_batch(self) -> "SemiBatchCreate":
+        if self.count % 4 != 0:
+            raise ValueError("半定制数量必须是 4 的倍数")
         return self
 
 
@@ -231,7 +257,7 @@ SPEC_CARD_STYLES = ("light", "dark")
 SpecCardStyle = Literal["light", "dark"]
 SPEC_CARD_CORNERS = ("bottom-right", "bottom-left", "top-right", "top-left")
 SpecCardCorner = Literal["bottom-right", "bottom-left", "top-right", "top-left"]
-SPEC_CARD_MAX_ROWS = 12
+SPEC_CARD_MAX_ROWS = 101  # 尺寸详情表格行数 = 1 行表头 + 最多 100 个 SKU 行
 SPEC_CARD_MAX_COLUMNS = 6
 SPEC_CARD_MAX_CELL_LENGTH = 120
 
@@ -341,9 +367,11 @@ class SpecCardRequestBase(BaseModel):
     cells: Any = None
     style: str = "light"
     corner: str = "bottom-right"
+    # 是否把卡片印到第 4 张图上；关掉时素材图保持干净母版（长/宽/高数据仍必填）。
+    enabled: bool = True
 
     def config_mapping(self) -> dict[str, Any]:
-        return {"cells": self.cells, "style": self.style, "corner": self.corner}
+        return {"cells": self.cells, "style": self.style, "corner": self.corner, "enabled": self.enabled}
 
 
 class SpecCardPreviewRequest(SpecCardRequestBase):

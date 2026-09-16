@@ -21,6 +21,8 @@ export type Draft = {
   status: DraftStatus;
   raw_payload: Record<string, any>;
   media_contract_version: number;
+  /** 落库的 SKU 规格图可用性结论（JSON 字符串；空串=从未判定）。 */
+  sku_availability_raw?: string;
   created_at: string;
   updated_at: string;
 };
@@ -216,6 +218,10 @@ export type PreviewImageBucket = "source" | "processed";
 
 export type PreviewSourceKind = "main" | "gallery" | "sku" | "detail" | "";
 
+/** SKU 原图中文复核状态：""=尚未检测，clear=未检出中文，flagged=检出中文待人工处理，
+ * text_check_failed=检测流程失败（不影响图片本身可用）。 */
+export type PreviewTextReviewStatus = "" | "clear" | "flagged" | "text_check_failed";
+
 export type PreviewImageAsset = {
   id: string;
   origin: PreviewImageOrigin;
@@ -232,8 +238,12 @@ export type PreviewImageAsset = {
   height: number;
   bucket: PreviewImageBucket;
   source_kind: PreviewSourceKind;
+  /** 仅「原始 SKU」来源资产带值：对应 source_variant_records 里的 sku_id。 */
+  sku_id: string;
   media_asset_id: string;
   media_status: MediaAssetStatus | "";
+  text_review_status: PreviewTextReviewStatus;
+  text_review_reason: string;
 };
 
 export type PreviewImageManifest = {
@@ -308,6 +318,46 @@ export type DraftMediaResponse = {
   groups: DraftMediaGroups & Record<string, MediaBindingView[]>;
 };
 
+/** 处理设置页「SKU 规格图可用性判断」单条链接结果。 */
+export type DraftSkuAvailabilityItem = {
+  draft_id: number;
+  status: "pending" | "clean" | "unavailable" | "skipped" | "missing";
+  clean: boolean;
+  sku_image_count: number;
+  checked: number;
+  chinese: string[];
+  failed: number;
+  reason: string;
+  /** 检出中文的 SKU 变种导出键（「优化链接 SKU」据此剔除对应变种）。 */
+  chinese_variant_keys?: string[];
+  /** 该链接所有有规格图的 SKU 都检出中文：不剔除，回退商品主图以免整条商品消失。 */
+  all_sku_chinese?: boolean;
+  /** 参与检测图片的内容指纹：导出侧据此判断结论是否仍然对应当前图集。 */
+  fingerprint?: string;
+  /** 判定范围被兜底放宽（现存变种缺少可用标识），结论不参与 auto 策略。 */
+  scope_relaxed?: boolean;
+  judged_at?: string;
+};
+
+export type DraftSkuAvailabilityResponse = {
+  results: DraftSkuAvailabilityItem[];
+  summary: { total: number; clean: number; unavailable: number; skipped: number };
+};
+
+/** 落库在草稿上的可用性结论（刷新后读回，供前端还原标记）。 */
+export type StoredSkuAvailability = {
+  status?: "pending" | "clean" | "unavailable" | "skipped" | "missing";
+  clean?: boolean;
+  sku_image_count?: number;
+  checked?: number;
+  chinese?: string[];
+  failed?: number;
+  reason?: string;
+  fingerprint?: string;
+  scope_relaxed?: boolean;
+  judged_at?: string;
+};
+
 export type PreviewFinalizeRun = {
   id: string;
   task_id: number;
@@ -353,6 +403,13 @@ export type PreviewOverrides = {
   detail_images?: string[];
   core_fields?: PreviewCoreFields;
   shipping_package_records?: Record<string, ShippingPackageRecordOverride>;
+  /** SKU 规格图导出策略：source=每个 SKU 用规格原图（缺失回退商品主图）；main=全部用商品主图替代；
+   * auto=按草稿池「SKU 规格图可用性判断」结论自动选择（判定干净且未失效→规格原图，否则→主图）。 */
+  variant_image_mode?: "source" | "main" | "auto";
+  /** 被整行剔除的 SKU 变种键：导出时该变种不产生任何表格行。 */
+  excluded_variant_keys?: string[];
+  /** 逐个 SKU 指定的规格图：键=变种键，值=预览资产 ID 或 http(s) 图片地址。 */
+  variant_image_overrides?: Record<string, string>;
 };
 
 export type PreviewItem = {
@@ -395,6 +452,17 @@ export type PreviewItem = {
     builtin?: number;
     original?: number;
   };
+  /** 采集到的 SKU 变体（含规格图 image_url），供预检侧栏查看与选择规格图策略。 */
+  source_variant_records?: DraftVariant[];
+  /** 草稿池「SKU 规格图可用性判断」结论摘要。
+   * usable_source=true 表示当前（含指纹校验）可用规格原图导出；reason 说明判定来源：
+   * clean / unavailable / skipped / missing / pending / never_judged / scope_relaxed / media_unavailable。 */
+  sku_availability?: {
+    judged: boolean;
+    clean: boolean;
+    usable_source: boolean;
+    reason: string;
+  } | null;
 };
 
 export type PreviewResponse = {

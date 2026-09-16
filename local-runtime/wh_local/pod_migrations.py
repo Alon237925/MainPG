@@ -339,6 +339,9 @@ POD_MIGRATION_CONTRACTS: dict[str, MigrationEffect] = {
             )
         },
     ),
+    "014_semi_customization": MigrationEffect(
+        column_additions={"pod_customization_batches": ("mode",)}
+    ),
 }
 
 

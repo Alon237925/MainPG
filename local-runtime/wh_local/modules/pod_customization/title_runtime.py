@@ -426,6 +426,14 @@ def _messages_for_request(request: PodTitleRequest, *, rejection_feedback: str) 
                 "motif_keywords",
                 "color_keywords",
             ],
+            "copy_restrictions_policy": (
+                "Optional user-authored restriction from business_fields.copy_restrictions. When it is non-empty, "
+                "obey it literally for title, english_title, and description: never output a word, motif, material, "
+                "or technique the user forbids, and always include the word or phrase the user requires. It never "
+                "overrides the length, ASCII-only, prohibited_terms, noun-phrase, or uniqueness rules; if it "
+                "conflicts with them, follow the fixed contract and drop the conflicting restriction. It must not "
+                "change the real product identity and it has no effect on the image."
+            ),
             "english_title": "A concise US English product title, ASCII only.",
             "description": "A factual US English product description based only on supplied product and image context.",
             "policy": "No brands, IP, platform names, exaggerated claims, medical claims, or child-risk terms.",
@@ -434,6 +442,7 @@ def _messages_for_request(request: PodTitleRequest, *, rejection_feedback: str) 
         "style_index": request.style_index,
         "business_fields": fields,
         "creative_prompt": _normalized_text(request.creative_prompt),
+        "copy_restrictions": _normalized_text(request.business_fields.copy_restrictions),
         "accepted_titles": [_normalize_title(value) for value in request.accepted_titles if _normalized_text(value)],
         "rejection_feedback": rejection_feedback,
         "instructions": (
@@ -442,7 +451,8 @@ def _messages_for_request(request: PodTitleRequest, *, rejection_feedback: str) 
             "leading visual segment grounded in the image. Follow title_generation_recipe exactly and aim for 110-150 "
             "characters. End it with a complete noun, never a dangling connector or punctuation. Do not reproduce an "
             "accepted title exactly, and vary the sentence pattern from accepted_titles so this title does not read as "
-            "a clone of another style. Generate title, english_title, and description together in this single response. Return "
+            "a clone of another style. Generate title, english_title, and description together in this single response. "
+            "When copy_restrictions is non-empty, honor it literally in all three copy fields. Return "
             "exactly one JSON object, no Markdown or extra keys."
         ),
     }

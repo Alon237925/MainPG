@@ -6,7 +6,10 @@ from sqlalchemy import select
 
 from wh_local.data_collection.routes import _plugin_physical_evidence, _plugin_product_to_draft
 from wh_local.modules.product_processing.api.schemas import PreviewDesiredState, PreviewSaveItem
-from wh_local.modules.product_processing.domain.workbooks import _dxm_export_rows
+from wh_local.modules.product_processing.domain.workbooks import (
+    _dxm_export_rows,
+    _export_dimension,
+)
 from wh_local.modules.product_processing.infrastructure.assets import ProductProcessingAssets
 from wh_local.modules.product_processing.infrastructure.database import create_database
 from wh_local.modules.product_processing.infrastructure.dimension_template_orm import DimensionObservationRow
@@ -157,11 +160,13 @@ def test_export_uses_matched_package_rows_and_per_sku_manual_overrides() -> None
 
     assert [(values[10], values[11:15]) for values in exported] == [
         # sku-black 重量被手动覆盖为 100g，但材积重量 53*24*6/6=1272g 超过重量，
-        # 导出前兜底本应抬升到 1300g，但店小秘重量上限为 899g，最终封顶到 899。
-        ("sku-black", [53, 24, 6, 899]),
-        # sku-gray 重量 1400g 已满足材积约束，但超过 899g 上限 → 封顶到 899。
-        ("sku-gray", [54, 25, 6, 899]),
-        # sku-unmatched 重量 1000g，同样超过 899g 上限 → 封顶到 899。
+        # 导出前兜底抬升到 1300g 后被 899g 上限封顶；体积重量仍 > 899g，
+        # 于是按「高→宽→长」收缩：高 6 → 4.24（53*24*4.24/6≈898.88 ≤ 899）。
+        ("sku-black", [53, 24, 4.24, 899]),
+        # sku-gray 重量 1400g 已满足材积约束，但超过 899g 上限 → 封顶 899；
+        # 体积重量 54*25*6/6=1350g > 899g → 高 6 → 3.99（54*25*3.99/6≈897.75 ≤ 899）。
+        ("sku-gray", [54, 25, 3.99, 899]),
+        # sku-unmatched 重量 1000g，超过 899g 上限 → 封顶 899；体积重量 500g ≤ 899g，尺寸不变。
         ("sku-unmatched", [20, 15, 10, 899]),
     ]
 
@@ -188,9 +193,104 @@ def test_export_ensures_volumetric_weight_and_caps_at_899() -> None:
     kept = _dxm_export_rows({**base, "shipping_package_records": [{"record_key": "sku-a", "variant_sku_id": "sku-a", "match_status": "matched", "length_cm": 20, "width_cm": 15, "height_cm": 10, "weight_g": 700}]})
     assert kept[0][14] == 700
 
-    # 体积 100*100*100/6≈166666.67g 远超 899 上限 → 无论怎么算最终封顶到 899
+    # 体积 100*100*100/6≈166666.67g 远超 899 上限 → 重量封顶 899，
+    # 并按「高→宽→长」收缩尺寸到材积重量 ≤ 899：高 100→1.1，宽 100→49.03（100*49.03*1.1/6≈898.88）。
     capped = _dxm_export_rows({**base, "shipping_package_records": [{"record_key": "sku-a", "variant_sku_id": "sku-a", "match_status": "matched", "length_cm": 100, "width_cm": 100, "height_cm": 100, "weight_g": 301}]})
-    assert capped[0][14] == 899
+    assert capped[0][11:15] == [100, 49.03, 1.1, 899]
+
+
+def test_export_dimension_order_is_monotonic_descending() -> None:
+    """长宽高导出顺序必须单调递减（长 ≥ 宽 ≥ 高）：顺序可调换，按值重排即可。"""
+    row = {
+        "optimized_title": "收纳盒",
+        "description": "desc",
+        "skc": "SKC-1",
+        "sku": "SKU-1",
+        "source_variant_records": [{"sku_id": "sku-a", "attributes": {"颜色": "白"}}],
+        "product_dimensions": {"length_cm": 12, "width_cm": 40, "height_cm": 25, "weight_g": 300},
+    }
+
+    exported = _dxm_export_rows(row)
+
+    # 材积重量 12*40*25/6=2000g > 300g → 重量抬升取整 2000g 后封顶 899g；
+    # 尺寸按 长≥宽≥高 重排为 40/25/12，仍超 899g → 高 12 → 5.39（40*25*5.39/6≈898.33 ≤ 899）。
+    assert exported[0][11:15] == [40, 25, 5.39, 899]
+
+
+def test_export_dimension_truncates_instead_of_rounding_up() -> None:
+    """尺寸只向下截断（不四舍五入进位），避免导出值被放大后材积重量反超重量。"""
+    # 进位（round）会得到 4.24，店小秘按 4.24 算材积重量会比我们校验时用的 4.23 更大。
+    assert _export_dimension(4.235) == 4.23
+    assert _export_dimension(4.239) == 4.23
+    # 二进制浮点误差纠偏不能把「正好两位小数」的值推上去。
+    assert _export_dimension(4.23) == 4.23
+    assert _export_dimension("4.23") == 4.23
+    # 整数保持整数，空值/非法值保持空串（不写 0 掩盖缺失）。
+    assert _export_dimension(40) == 40
+    assert _export_dimension(40.0) == 40
+    assert _export_dimension("") == ""
+    assert _export_dimension(None) == ""
+    assert _export_dimension("abc") == ""
+
+
+def test_export_dimension_values_never_exceed_input() -> None:
+    """导出长宽高一律不大于输入值（截断），且材积约束不需要收缩时原样截断。"""
+    row = {
+        "optimized_title": "收纳盒",
+        "description": "desc",
+        "skc": "SKC-1",
+        "sku": "SKU-1",
+        "source_variant_records": [{"sku_id": "sku-a", "attributes": {"颜色": "白"}}],
+        "product_dimensions": {"length_cm": 53.236, "width_cm": 24.238, "height_cm": 2.239, "weight_g": 899},
+    }
+
+    exported = _dxm_export_rows(row)
+
+    # 材积重量 53.23*24.23*2.23/6≈479.4g ≤ 899g，无需收缩；三位小数全部截断到两位，
+    # 若按四舍五入会得到 53.24/24.24/2.24，导出值被放大。
+    assert exported[0][11:15] == [53.23, 24.23, 2.23, 899]
+    assert exported[0][11] <= 53.236
+    assert exported[0][12] <= 24.238
+    assert exported[0][13] <= 2.239
+    assert exported[0][11] * exported[0][12] * exported[0][13] / 6 <= 899
+
+
+def test_export_skips_variants_excluded_by_overrides() -> None:
+    """``preview_overrides.excluded_variant_keys`` 命中的变种不产生任何导出行。
+
+    含中文 SKU 规格图的变种由服务端兜底并入该剔除键，商品其余变种照常导出。
+    """
+    row = {
+        "optimized_title": "水龙头",
+        "description": "desc",
+        "skc": "SKC-1",
+        "sku": "SKU-1",
+        "product_dimensions": {"length_cm": 20, "width_cm": 15, "height_cm": 10, "weight_g": 300},
+        "source_variant_records": [
+            {"sku_id": "sku-a", "attributes": {"颜色": "白色"}},
+            {"sku_id": "sku-b", "attributes": {"颜色": "黑色"}},
+        ],
+        "preview_overrides": {"excluded_variant_keys": ["sku-b"]},
+    }
+
+    exported = _dxm_export_rows(row)
+
+    assert [values[10] for values in exported] == ["sku-a"]
+
+
+def test_export_emits_no_row_when_every_variant_is_excluded() -> None:
+    """全部变种被剔除时不回退单行：该商品在导出表格里不出现任何行。"""
+    row = {
+        "optimized_title": "水龙头",
+        "description": "desc",
+        "skc": "SKC-1",
+        "sku": "SKU-1",
+        "product_dimensions": {"length_cm": 20, "width_cm": 15, "height_cm": 10, "weight_g": 300},
+        "source_variant_records": [{"sku_id": "sku-a", "attributes": {"颜色": "白色"}}],
+        "preview_overrides": {"excluded_variant_keys": ["sku-a"]},
+    }
+
+    assert _dxm_export_rows(row) == []
 
 
 

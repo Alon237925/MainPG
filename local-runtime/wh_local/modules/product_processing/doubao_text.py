@@ -68,6 +68,7 @@ class DoubaoTextClient:
         last_contract_error: DoubaoTextError | None = None
         for attempt in range(1, MAX_ATTEMPTS + 1):
             self.last_attempt_count = attempt
+            retry_delay = RETRY_BACKOFF_SECONDS
             try:
                 attempt_prompt = _prompt_for_attempt(
                     base_prompt,
@@ -83,6 +84,10 @@ class DoubaoTextClient:
                 return result
             except DoubaoTextError as exc:
                 exc.attempt_count = attempt
+                # 网关给出 Retry-After 时按其退避：0.5s 抢跑往往在服务端仍在处理时再次
+                # 发起请求，只会白白消耗重试次数。
+                if exc.retry_after:
+                    retry_delay = float(exc.retry_after)
                 # Text contract treats malformed Ark envelopes/content as an
                 # invalid JSON attempt within the same three-call budget.
                 if exc.error_kind == "invalid_response":
@@ -116,7 +121,7 @@ class DoubaoTextClient:
                 retry_feedback = _safe_retry_feedback(exc)
                 last_contract_error = error
             if attempt < MAX_ATTEMPTS:
-                time.sleep(RETRY_BACKOFF_SECONDS)
+                time.sleep(retry_delay)
         raise AssertionError("unreachable")
 
 

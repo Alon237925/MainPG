@@ -14,6 +14,7 @@ from wh_local.modules.pod_customization.contracts import (
     ListingFields,
     NormalizedPoint,
     NormalizedRect,
+    SemiBatchCreate,
 )
 from wh_local.modules.pod_customization.service import PodCustomizationService
 from wh_local.session import Actor
@@ -45,10 +46,10 @@ def _actor(user_id: str = "operator-1", workspace_id: str = "workspace-a") -> Ac
 
 def _listing_fields() -> ListingFields:
     return ListingFields(
-        declared_price=18.5,
         suggested_price_usd=29.99,
         category_name="家居收纳 > 杯具",
-        skus=[{"name": "Default SKU", "length_cm": 30, "width_cm": 20, "height_cm": 10, "weight_g": 450}],
+        skus=[{"name": "Default SKU", "declared_price": 18.5, "weight_g": 450}],
+        spec_card={"cells": [["尺寸图", "长", "宽", "高"], ["Default SKU", "30", "20", "10"]]},
     )
 
 
@@ -186,6 +187,109 @@ def test_startup_recovery_marks_interrupted_batch_as_retryable_failure(tmp_path:
     assert "失败" in stored["error_message"]
 
 
+def _style_grid_rows(service: PodCustomizationService, batch_id: str) -> list[dict]:
+    with service.repository._connect() as connection:
+        return [
+            dict(row)
+            for row in connection.execute(
+                """SELECT status, error_message FROM pod_customization_style_grid_results
+                   WHERE batch_id = ?""",
+                (batch_id,),
+            ).fetchall()
+        ]
+
+
+def test_shutdown_fence_converges_style_grid_results(tmp_path: Path) -> None:
+    """关机围栏必须同时收敛 style_grid_results。
+
+    风格网格（v2）批次的结果行在这里，只收敛旧表 pod_customization_batch_items
+    会让未完成款式永远停在 queued——前端一直显示「等待生成」，既不是失败也不能
+    整款重试。
+    """
+    service = _service(tmp_path)
+    actor = _actor()
+    batch = service.create_semi_batch(actor, SemiBatchCreate(count=8), enqueue=False)
+
+    service.repository.pause_billing_runs_for_shutdown()
+
+    rows = _style_grid_rows(service, batch["id"])
+    assert len(rows) == 8
+    assert {row["status"] for row in rows} == {"failed"}
+    assert all("本机服务中断" in row["error_message"] for row in rows)
+    assert service.get_batch(actor, batch["id"])["status"] == "failed"
+
+
+def test_startup_recovery_converges_rows_stranded_by_an_old_shutdown_fence(tmp_path: Path) -> None:
+    """批次已是终态、结果行仍非终态时，启动恢复也必须兜住。
+
+    旧版关机围栏把批次判成 partial_failure 后就再也不会被「非终态批次」那条收敛
+    分支选中，于是残留的 queued 款式会一直卡住。
+    """
+    service = _service(tmp_path)
+    actor = _actor()
+    batch = service.create_semi_batch(actor, SemiBatchCreate(count=4), enqueue=False)
+    with service.repository._connect() as connection:
+        connection.execute(
+            "UPDATE pod_customization_style_grid_results SET status = 'queued' WHERE batch_id = ?",
+            (batch["id"],),
+        )
+        connection.execute(
+            """UPDATE pod_customization_batches
+               SET status = 'partial_failure', processed_count = 0,
+                   completed_count = 0, failed_count = 0
+               WHERE batch_id = ?""",
+            (batch["id"],),
+        )
+
+    service.recover_interrupted_work()
+
+    assert {row["status"] for row in _style_grid_rows(service, batch["id"])} == {"failed"}
+    stored = service.get_batch(actor, batch["id"])
+    assert stored["status"] == "partial_failure"
+    assert stored["failed_count"] == 1
+
+
+def test_full_batch_list_excludes_semi_batches(tmp_path: Path) -> None:
+    """全定制批次列表必须排除半定制批次。
+
+    两种模式共表（pod_customization_batches.mode）。不带 mode 过滤时，全定制页启动
+    会取列表第一条当「最近批次」，于是挑到更晚创建的半定制批次，用全定制界面渲染
+    纯图案批次（表现为「当前批次 1 款 · 半定制占位模板」）。
+    """
+    service = _service(tmp_path)
+    actor = _actor()
+    template = service.upload_template(actor, name="Mug scene", filename="mug.png", content=_png())
+    service.update_template_calibration(
+        actor,
+        template["id"],
+        Calibration(
+            mask=NormalizedRect(x=0.2, y=0.2, width=0.6, height=0.6),
+            anchor=NormalizedPoint(x=0.5, y=0.5),
+        ),
+    )
+    full = service.create_batch(
+        actor,
+        BatchCreate(
+            template_id=template["id"],
+            count=4,
+            prompt_version="v1",
+            business_fields=BusinessFields(
+                product_name="Stoneware mug",
+                product_category="drinkware",
+                target_market="US",
+            ),
+            listing_fields=_listing_fields(),
+        ),
+        enqueue=False,
+    )
+    semi = service.create_semi_batch(actor, SemiBatchCreate(count=4), enqueue=False)
+
+    listed = service.list_batches(actor, limit=20, offset=0)
+    assert [item["id"] for item in listed["batches"]] == [full["id"]]
+    assert listed["total"] == 1
+    assert [item["id"] for item in service.list_semi_batches(actor, limit=20, offset=0)["batches"]] == [semi["id"]]
+
+
 def test_additive_pod_schema_does_not_delete_legacy_ai_service_pod_history(tmp_path: Path) -> None:
     database = tmp_path / "workbench.sqlite3"
     with sqlite3.connect(database) as connection:
@@ -221,7 +325,7 @@ def test_listing_snapshot_and_style_copy_are_persisted_with_historical_null_comp
         enqueue=False,
     )
 
-    assert batch["listing_fields"] == _listing_fields().model_dump()
+    assert batch["listing_fields"] == _listing_fields().model_dump(mode="json")
     service.repository.upsert_style_copy(
         batch["id"], actor.workspace_id, actor.id, 1,
         title="Coastal Mug", english_title="Coastal Stoneware Mug", description="A calm mug.",

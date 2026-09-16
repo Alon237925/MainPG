@@ -8,6 +8,7 @@ import {
   type FeedbackHistoryItem,
   type FeedbackImagePayload,
 } from "../api/personalCenterApi";
+import { mergePrefillContent } from "../data/feedbackPrefill";
 
 const FEEDBACK_MAX_IMAGES = 3;
 const FEEDBACK_MAX_IMAGE_BYTES = 2 * 1024 * 1024;
@@ -39,8 +40,16 @@ function extractReplyContent(content: string): string {
   return reply.trim();
 }
 
-export function FeedbackPanel() {
-  const [content, setContent] = useState("");
+type FeedbackPanelProps = {
+  /**
+   * 预填的反馈内容。操作答疑答不上来时会把用户的原问题带过来，
+   * 用户就不用重新打一遍。
+   */
+  initialContent?: string;
+};
+
+export function FeedbackPanel({ initialContent = "" }: FeedbackPanelProps) {
+  const [content, setContent] = useState(initialContent);
   const [category, setCategory] = useState<FeedbackCategory>("suggestion");
   const [contact, setContact] = useState("");
   const [images, setImages] = useState<FeedbackImagePayload[]>([]);
@@ -68,6 +77,13 @@ export function FeedbackPanel() {
   useEffect(() => {
     void loadHistory();
   }, [loadHistory]);
+
+  // 从操作答疑跳过来时带上原问题。用「追加」而非「覆盖」，
+  // 免得把用户已经打了一半的内容冲掉。
+  useEffect(() => {
+    if (!initialContent.trim()) return;
+    setContent((current) => mergePrefillContent(current, initialContent));
+  }, [initialContent]);
 
   // 打开抽屉时重新拉取，避免展示过期状态；Esc 关闭。
   useEffect(() => {

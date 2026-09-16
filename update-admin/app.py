@@ -71,6 +71,11 @@ DOWNLOAD_CHANNEL_URLS = {
     "internal": "/internal-downloads/MainPG-Internal-Setup.exe",
     "public": "/downloads/MainPG-Setup.exe",
 }
+# 打包安装包（zip 内为已签名 Setup.exe）的官网固定下载地址。
+DOWNLOAD_ZIP_URLS = {
+    "internal": "/internal-downloads/MainPG-Internal-Setup.zip",
+    "public": "/downloads/MainPG-Setup.zip",
+}
 SEEDED_USERNAMES = ("He123", "Liu123", "Dai123", "Yang123", "Shen123")
 LOGGER = logging.getLogger("mainpg.update_admin")
 UTC = timezone.utc
@@ -125,6 +130,28 @@ def website_download_target(
     return target
 
 
+def website_zip_target(
+    settings: "Settings",
+    channel: Literal["update_only", "internal", "public"],
+) -> Path | None:
+    """打包安装包（zip）的官网固定落盘位置（与安装包同目录、固定文件名）。"""
+    if channel == "update_only":
+        return None
+    base = (
+        settings.internal_download_path
+        if channel == "internal"
+        else settings.public_download_path
+    )
+    if base is None:
+        raise api_error(
+            503,
+            "download_channel_not_configured",
+            f"服务器尚未配置{DOWNLOAD_CHANNEL_LABELS[channel]}官网下载文件路径",
+        )
+    name = "MainPG-Internal-Setup.zip" if channel == "internal" else "MainPG-Setup.zip"
+    return base.parent / name
+
+
 @dataclass(frozen=True)
 class Settings:
     db_path: Path
@@ -152,6 +179,8 @@ class Settings:
     innoextract_path: str = "innoextract"
     patch_extract_timeout_seconds: int = 600
     patch_max_extracted_bytes: int = 4_000_000_000
+    proxy_secret: str = field(default="", repr=False)
+    proxy_username: str = "boss"
 
     @classmethod
     def from_env(cls) -> "Settings":
@@ -207,6 +236,8 @@ class Settings:
                 1,
                 int(os.environ.get("UPDATE_PATCH_MAX_EXTRACTED_BYTES", "4000000000")),
             ),
+            proxy_secret=os.environ.get("UPDATE_ADMIN_PROXY_SECRET", "").strip(),
+            proxy_username=os.environ.get("UPDATE_ADMIN_PROXY_USERNAME", "boss").strip() or "boss",
         )
 
 
@@ -281,6 +312,20 @@ class PublishJobCreateBody(BaseModel):
 class PublishJobProgressBody(BaseModel):
     uploaded_bytes: int = Field(ge=0)
     total_bytes: int = Field(ge=1)
+
+
+class LauncherGoldenUploadBody(BaseModel):
+    version: str = Field(min_length=1, max_length=64)
+    payload: dict[str, Any]
+
+
+class LauncherReportBody(BaseModel):
+    client_id: str = Field(default="", max_length=128)
+    app_version: str = Field(default="", max_length=32)
+    os: str = Field(default="", max_length=128)
+    overall: str = Field(default="", max_length=16)
+    stats: dict[str, Any] = Field(default_factory=dict)
+    checks: list[Any] = Field(default_factory=list)
 
 
 @dataclass(frozen=True)
@@ -375,6 +420,25 @@ class Database:
                     details_json TEXT NOT NULL DEFAULT '{}'
                 );
                 CREATE INDEX IF NOT EXISTS idx_audit_logs_created_at ON audit_logs(created_at DESC);
+                CREATE TABLE IF NOT EXISTS launcher_golden (
+                    id INTEGER PRIMARY KEY AUTOINCREMENT,
+                    version TEXT NOT NULL,
+                    payload TEXT NOT NULL,
+                    active INTEGER NOT NULL DEFAULT 0,
+                    created_at TEXT NOT NULL,
+                    updated_at TEXT NOT NULL
+                );
+                CREATE TABLE IF NOT EXISTS launcher_reports (
+                    id INTEGER PRIMARY KEY AUTOINCREMENT,
+                    client_id TEXT NOT NULL DEFAULT '',
+                    app_version TEXT NOT NULL DEFAULT '',
+                    os TEXT NOT NULL DEFAULT '',
+                    overall TEXT NOT NULL DEFAULT '',
+                    stats_json TEXT NOT NULL DEFAULT '',
+                    checks_json TEXT NOT NULL DEFAULT '',
+                    created_at TEXT NOT NULL
+                );
+                CREATE INDEX IF NOT EXISTS idx_launcher_reports_created_at ON launcher_reports(created_at DESC);
                 """
             )
             release_columns = {
@@ -388,6 +452,10 @@ class Database:
                 "patch_file_count": "INTEGER NOT NULL DEFAULT 0",
                 "patch_total_bytes": "INTEGER NOT NULL DEFAULT 0",
                 "patch_error": "TEXT NOT NULL DEFAULT ''",
+                "zip_filename": "TEXT NOT NULL DEFAULT ''",
+                "zip_url": "TEXT NOT NULL DEFAULT ''",
+                "zip_sha256": "TEXT NOT NULL DEFAULT ''",
+                "zip_size": "INTEGER NOT NULL DEFAULT 0",
             }
             for column, declaration in release_migrations.items():
                 if column not in release_columns:
@@ -499,6 +567,116 @@ class UpdateAdminService:
     def client_ip(request: Request) -> str:
         return request.client.host if request.client else ""
 
+    def launcher_create_golden(self, version: str, payload: dict[str, Any], username: str) -> dict[str, Any]:
+        now = iso_utc()
+        payload_text = json.dumps(payload, ensure_ascii=False)
+        with self.db.connect() as connection:
+            connection.execute(
+                """
+                INSERT INTO launcher_golden(version, payload, active, created_at, updated_at)
+                VALUES (?, ?, 0, ?, ?)
+                """,
+                (version, payload_text, now, now),
+            )
+            connection.execute(
+                """
+                UPDATE launcher_golden SET active = 0
+                WHERE version = ? AND active = 1 AND id != (SELECT id FROM launcher_golden WHERE version = ? ORDER BY id DESC LIMIT 1)
+                """,
+                (version, version),
+            )
+        self.db.audit(username, "launcher_golden_uploaded", target=version)
+        return self.launcher_get_golden(version)
+
+    def launcher_get_golden(self, version: str) -> dict[str, Any]:
+        with self.db.connect() as connection:
+            row = connection.execute(
+                "SELECT * FROM launcher_golden WHERE version = ? ORDER BY id DESC LIMIT 1",
+                (version,),
+            ).fetchone()
+        if row is None:
+            raise api_error(404, "golden_not_found", "启动器基准配置不存在")
+        return {
+            "id": row["id"],
+            "version": row["version"],
+            "payload": json.loads(row["payload"]),
+            "active": bool(row["active"]),
+            "created_at": row["created_at"],
+            "updated_at": row["updated_at"],
+        }
+
+    def launcher_resolve_active_golden(self) -> dict[str, Any] | None:
+        with self.db.connect() as connection:
+            row = connection.execute(
+                "SELECT * FROM launcher_golden WHERE active = 1 ORDER BY id DESC LIMIT 1"
+            ).fetchone()
+        if row is None:
+            return None
+        return {
+            "id": row["id"],
+            "version": row["version"],
+            "payload": json.loads(row["payload"]),
+            "active": True,
+            "updated_at": row["updated_at"],
+        }
+
+    def launcher_list_goldens(self) -> list[dict[str, Any]]:
+        with self.db.connect() as connection:
+            rows = connection.execute(
+                "SELECT * FROM launcher_golden ORDER BY id DESC LIMIT 50"
+            ).fetchall()
+        return [
+            {
+                "id": row["id"],
+                "version": row["version"],
+                "active": bool(row["active"]),
+                "created_at": row["created_at"],
+                "updated_at": row["updated_at"],
+            }
+            for row in rows
+        ]
+
+    def launcher_publish_golden(self, golden_id: int, username: str) -> dict[str, Any]:
+        with self.db.connect() as connection:
+            row = connection.execute(
+                "SELECT * FROM launcher_golden WHERE id = ?", (golden_id,)
+            ).fetchone()
+            if row is None:
+                raise api_error(404, "golden_not_found", "启动器基准配置不存在")
+            connection.execute("UPDATE launcher_golden SET active = 0")
+            connection.execute(
+                "UPDATE launcher_golden SET active = 1, updated_at = ? WHERE id = ?",
+                (iso_utc(), golden_id),
+            )
+        self.db.audit(username, "launcher_golden_published", target=row["version"])
+        return {
+            "id": golden_id,
+            "version": row["version"],
+            "active": True,
+            "updated_at": iso_utc(),
+        }
+
+    def launcher_record_report(self, body: "LauncherReportBody") -> dict[str, Any]:
+        with self.db.connect() as connection:
+            connection.execute(
+                """
+                INSERT INTO launcher_reports(
+                    client_id, app_version, os, overall, stats_json, checks_json, created_at
+                ) VALUES (?, ?, ?, ?, ?, ?, ?)
+                """,
+                (
+                    body.client_id,
+                    body.app_version,
+                    body.os,
+                    body.overall,
+                    json.dumps(body.stats, ensure_ascii=False),
+                    json.dumps(body.checks, ensure_ascii=False),
+                    iso_utc(),
+                ),
+            )
+        return {"ok": True}
+
+
     def verify_password(self, password_hash: str, password: str) -> bool:
         try:
             return bool(self.password_hasher.verify(password_hash, password))
@@ -592,7 +770,29 @@ class UpdateAdminService:
             token_hash=token_hash,
         )
 
+    def principal_for_username(self, username: str) -> AdminPrincipal:
+        """按用户名直接构造身份，仅供仅监听回环地址的本地信任代理使用。
+
+        调用方必须已经完成来源与共享密钥校验；此处不带会话令牌，
+        因此不能用于 logout / change-password 这类依赖 token_hash 的操作。
+        """
+        with self.db.connect() as connection:
+            row = connection.execute(
+                "SELECT username, role FROM admins WHERE username = ?",
+                (username,),
+            ).fetchone()
+        if row is None:
+            raise api_error(403, "proxy_account_missing", "本地代理账号不存在")
+        return AdminPrincipal(
+            username=row["username"],
+            role=row["role"],
+            must_change_password=False,
+            token_hash="",
+        )
+
     def logout(self, principal: AdminPrincipal, ip_address: str) -> None:
+        if not principal.token_hash:
+            raise api_error(403, "proxy_session_readonly", "本地代理登录态不支持该操作")
         with self.db.connect() as connection:
             connection.execute("DELETE FROM sessions WHERE token_hash = ?", (principal.token_hash,))
         self.db.audit(principal.username, "logout", ip_address=ip_address)
@@ -604,6 +804,8 @@ class UpdateAdminService:
         new_password: str,
         ip_address: str,
     ) -> None:
+        if not principal.token_hash:
+            raise api_error(403, "proxy_session_readonly", "本地代理登录态不支持该操作")
         if len(new_password) < 10:
             raise api_error(422, "weak_password", "新密码至少需要 10 个字符")
         if new_password == self.settings.initial_password:
@@ -1279,6 +1481,18 @@ def hash_file(path: Path) -> tuple[str, int]:
     return digest.hexdigest(), size
 
 
+def build_setup_zip(signed_exe: Path, inner_name: str, settings: Settings) -> Path:
+    """把已签名的安装包打成 zip（内部文件名保持安装包原名，便于用户识别版本）。"""
+    out = settings.staging_dir / f"{secrets.token_hex(16)}.setup.zip.part"
+    try:
+        with zipfile.ZipFile(out, "w", zipfile.ZIP_DEFLATED) as archive:
+            archive.write(signed_exe, arcname=inner_name)
+        return out
+    except Exception:
+        out.unlink(missing_ok=True)
+        raise
+
+
 def sign_with_evsign(path: Path, filename: str, settings: Settings) -> tuple[Path, dict[str, str]]:
     if not settings.evsign_license_key:
         if settings.evsign_required:
@@ -1537,7 +1751,33 @@ def create_app(
         if parsed.netloc.lower() != request.headers.get("host", "").lower():
             raise api_error(403, "origin_rejected", "请求来源不受信任")
 
+    def trusted_local_proxy(request: Request) -> bool:
+        """仅接受来自回环地址且持有共享密钥的 wh-admin 代理请求。"""
+        expected = resolved.proxy_secret
+        if not expected:
+            return False
+        supplied = request.headers.get("x-update-admin-proxy-secret", "")
+        if not supplied or not secrets.compare_digest(supplied, expected):
+            return False
+        client_host = request.client.host if request.client else ""
+        return client_host in {"127.0.0.1", "::1"}
+
+    def resolve_client_ip(request: Request) -> str:
+        """审计用客户端 IP。
+
+        本机 wh-admin 代理会把真实客户端 IP 放在专用头里（它不能转发
+        X-Forwarded-*，否则会覆盖回环对端地址、使信任校验失效）；
+        其余请求仍取 socket 对端地址。
+        """
+        if trusted_local_proxy(request):
+            forwarded = request.headers.get("x-update-admin-client-ip", "").strip()
+            if forwarded:
+                return forwarded
+        return service.client_ip(request)
+
     def current_admin(request: Request) -> AdminPrincipal:
+        if trusted_local_proxy(request):
+            return service.principal_for_username(resolved.proxy_username)
         return service.principal_for_token(request.cookies.get(resolved.cookie_name))
 
     def ready_admin(principal: AdminPrincipal = Depends(current_admin)) -> AdminPrincipal:
@@ -1564,7 +1804,7 @@ def create_app(
     @app.post("/api/auth/login")
     def login(body: LoginBody, request: Request, response: Response) -> dict[str, Any]:
         ensure_same_origin(request)
-        principal, token = service.authenticate(body.username, body.password, service.client_ip(request))
+        principal, token = service.authenticate(body.username, body.password, resolve_client_ip(request))
         response.set_cookie(
             resolved.cookie_name,
             token,
@@ -1593,7 +1833,7 @@ def create_app(
         principal: AdminPrincipal = Depends(current_admin),
     ) -> dict[str, bool]:
         ensure_same_origin(request)
-        service.logout(principal, service.client_ip(request))
+        service.logout(principal, resolve_client_ip(request))
         response.delete_cookie(resolved.cookie_name, path=resolved.cookie_path)
         return {"ok": True}
 
@@ -1609,7 +1849,7 @@ def create_app(
             principal,
             body.current_password,
             body.new_password,
-            service.client_ip(request),
+            resolve_client_ip(request),
         )
         response.delete_cookie(resolved.cookie_name, path=resolved.cookie_path)
         return {"ok": True, "requires_relogin": True}
@@ -1717,6 +1957,7 @@ def create_app(
             raise api_error(422, "invalid_version", str(exc)) from exc
         normalized_channel = normalize_download_channel(channel)
         download_target = website_download_target(resolved, normalized_channel)
+        zip_target = website_zip_target(resolved, normalized_channel)
         notes = release_notes.strip()
         if len(notes) > 10_000:
             raise api_error(422, "release_notes_too_long", "更新说明不能超过 10000 个字符")
@@ -1750,10 +1991,12 @@ def create_app(
             resolved_job_id = job["id"]
         staged: Path | None = None
         signed_staged: Path | None = None
+        zip_source: Path | None = None
         final_installer: Path | None = None
         version_dir: Path | None = None
         patch_work_dir: Path | None = None
         website_alias_staged: Path | None = None
+        zip_alias_staged: Path | None = None
         database_release_inserted = False
         manifest_published = False
         async with service.publish_lock:
@@ -1782,13 +2025,19 @@ def create_app(
                 )
                 authenticode = await run_in_threadpool(verify_authenticode, publish_source, resolved)
                 sha256, file_size = await run_in_threadpool(hash_file, publish_source)
+                # 生成 zip 打包安装包：把已签名的 Setup.exe 压成 zip，供官网提供第二下载入口。
+                filename = f"MainPG-Setup-{semantic_version.raw}.exe"
+                zip_filename = f"MainPG-Setup-{semantic_version.raw}.zip"
+                zip_source = await run_in_threadpool(
+                    build_setup_zip, publish_source, filename, resolved
+                )
+                zip_sha256, zip_size = await run_in_threadpool(hash_file, zip_source)
                 service.update_publish_job(
                     resolved_job_id,
                     phase="patching",
                     message="代码签名验证通过，正在生成并校验增量补丁",
                 )
                 signing_key = load_signing_key(resolved)
-                filename = f"MainPG-Setup-{semantic_version.raw}.exe"
                 published_at = iso_utc()
                 manifest: dict[str, Any] = {
                     "version": semantic_version.raw,
@@ -1895,6 +2144,12 @@ def create_app(
                         final_installer,
                         download_target,
                     )
+                if zip_target is not None and zip_source is not None:
+                    zip_alias_staged = await run_in_threadpool(
+                        stage_atomic_download_alias,
+                        zip_source,
+                        zip_target,
+                    )
 
                 with service.db.connect() as connection:
                     connection.execute(
@@ -1903,8 +2158,9 @@ def create_app(
                             version, channel, mandatory, release_notes, installer_filename, installer_url,
                             sha256, file_size, signature, authenticode_status, status,
                             created_by, created_at, published_at, patch_status,
-                            patch_from_version, patch_file_count, patch_total_bytes, patch_error
-                        ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 'published', ?, ?, ?, ?, ?, ?, ?, ?)
+                            patch_from_version, patch_file_count, patch_total_bytes, patch_error,
+                            zip_filename, zip_url, zip_sha256, zip_size
+                        ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 'published', ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
                         """,
                         (
                             semantic_version.raw,
@@ -1925,6 +2181,10 @@ def create_app(
                             patch_result["file_count"],
                             patch_result["total_bytes"],
                             patch_result["error"][:1000],
+                            zip_filename,
+                            DOWNLOAD_ZIP_URLS.get(normalized_channel, ""),
+                            zip_sha256,
+                            zip_size,
                         ),
                     )
                 database_release_inserted = True
@@ -1963,12 +2223,19 @@ def create_app(
                         download_target,
                     )
                     website_alias_staged = None
+                if zip_alias_staged is not None and zip_target is not None:
+                    await run_in_threadpool(
+                        commit_atomic_download_alias,
+                        zip_alias_staged,
+                        zip_target,
+                    )
+                    zip_alias_staged = None
                 try:
                     service.db.audit(
                         principal.username,
                         "release_published",
                         target=semantic_version.raw,
-                        ip_address=service.client_ip(request),
+                        ip_address=resolve_client_ip(request),
                         details={
                             "channel": normalized_channel,
                             "website_download_url": DOWNLOAD_CHANNEL_URLS.get(normalized_channel, ""),
@@ -1982,6 +2249,8 @@ def create_app(
                             "patch_from_version": patch_result["from_version"],
                             "patch_file_count": patch_result["file_count"],
                             "patch_total_bytes": patch_result["total_bytes"],
+                            "zip_url": DOWNLOAD_ZIP_URLS.get(normalized_channel, ""),
+                            "zip_sha256": zip_sha256,
                         },
                     )
                 except sqlite3.Error:
@@ -2012,6 +2281,12 @@ def create_app(
                     "evsign": evsign,
                     "authenticode": authenticode,
                     "patch": patch_result,
+                    "zip": {
+                        "filename": zip_filename,
+                        "website_download_url": DOWNLOAD_ZIP_URLS.get(normalized_channel, ""),
+                        "sha256": zip_sha256,
+                        "size": zip_size,
+                    },
                 }
             except Exception as exc:
                 detail = getattr(exc, "detail", None)
@@ -2044,10 +2319,46 @@ def create_app(
                     staged.unlink(missing_ok=True)
                 if signed_staged is not None:
                     signed_staged.unlink(missing_ok=True)
+                if zip_source is not None:
+                    zip_source.unlink(missing_ok=True)
                 if patch_work_dir is not None and patch_work_dir.exists():
                     shutil.rmtree(patch_work_dir, ignore_errors=True)
                 if website_alias_staged is not None:
                     website_alias_staged.unlink(missing_ok=True)
+                if zip_alias_staged is not None:
+                    zip_alias_staged.unlink(missing_ok=True)
+
+    @app.get("/api/launcher/golden")
+    def launcher_golden() -> dict[str, Any]:
+        item = service.launcher_resolve_active_golden()
+        if item is None:
+            raise api_error(404, "golden_not_found", "尚未配置启动器基准配置")
+        return {"version": item["version"], "updated_at": item["updated_at"], "golden": item["payload"]}
+
+    @app.post("/api/launcher/golden")
+    def launcher_upload_golden(body: LauncherGoldenUploadBody) -> dict[str, Any]:
+        if not body.payload:
+            raise api_error(422, "empty_payload", "基准配置不能为空")
+        # 公开上传草稿(active=false)，仅运营登录后手动发布才生效；不写入任何密钥字段
+        item = service.launcher_create_golden(body.version, body.payload, "public")
+        return {"golden": item}
+
+    @app.post("/api/launcher/report")
+    def launcher_report(body: LauncherReportBody) -> dict[str, Any]:
+        return service.launcher_record_report(body)
+
+    @app.get("/api/launcher/golden/versions")
+    def launcher_golden_versions(principal: AdminPrincipal = Depends(ready_admin)) -> dict[str, Any]:
+        return {"items": service.launcher_list_goldens(), "username": principal.username}
+
+    @app.post("/api/launcher/golden/{golden_id}/publish")
+    def launcher_publish_golden(
+        golden_id: int,
+        request: Request,
+        principal: AdminPrincipal = Depends(ready_admin),
+    ) -> dict[str, Any]:
+        ensure_same_origin(request)
+        return {"golden": service.launcher_publish_golden(golden_id, principal.username)}
 
     return app
 

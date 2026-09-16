@@ -38,12 +38,34 @@ const ComboKitPromptPresetPage = lazy(() => import("../../modules/combo_kit/page
 const ComboKitHistoryPage = lazy(() => import("../../modules/combo_kit/pages/ComboKitHistoryPage").then((m) => ({ default: m.ComboKitHistoryPage })));
 const DimensionCanvasPage = lazy(() => import("../../modules/product_processing/pages/DimensionCanvasPage").then((m) => ({ default: m.DimensionCanvasPage })));
 const PodCustomizationPage = lazy(() => import("../../modules/pod_customization/pages/PodCustomizationPage").then((m) => ({ default: m.PodCustomizationPage })));
+const PodSemiCustomizationPage = lazy(() => import("../../modules/pod_semi_customization/pages/PodSemiCustomizationPage").then((m) => ({ default: m.PodSemiCustomizationPage })));
 const PersonalCenterPage = lazy(() => import("../../modules/personal_center/pages/PersonalCenterPage").then((m) => ({ default: m.PersonalCenterPage })));
 import type { ProductProcessingOptions } from "../../modules/product_processing/types";
 import type { DimensionCanvasItem, DimensionNotification } from "../../modules/product_processing/types/dimensionCanvas";
 import { DimensionNotificationRefreshFence } from "../../modules/product_processing/data/dimensionNotificationRefresh";
 import { EmptyModulePage } from "../../shared/components/EmptyModulePage";
 import { BrandEntryAnimation } from "../../shared/components/BrandEntryAnimation";
+import {
+  GuideBoardPanel,
+  firstPendingGuideSubTask,
+  hasSeenGuidePanel,
+  markGuidePanelSeen,
+  markGuideSubTaskDone,
+  startGuideTour,
+  type GuideBoardId,
+  type GuideSubTaskId,
+} from "../../shared/components/GuideTour";
+import { GuideEditor, type GuidePageOption } from "../../shared/components/guide/GuideEditor";
+import {
+  cloneGuideConfig,
+  fetchGuideConfig,
+  getActiveGuideConfig,
+  saveGuideConfig,
+  setActiveGuideConfig,
+  type GuideConfig,
+} from "../../shared/components/guide/guideConfig";
+import { showToast } from "../../shared/components/toastStore";
+import { HelpAgentWidget } from "../../modules/help_agent/components/HelpAgentWidget";
 import { WorkspaceTabScrollStore } from "./workspaceTabState";
 
 type WorkspaceShellProps = {
@@ -126,6 +148,11 @@ export function WorkspaceShell({ currentRole = "operator", onSignOut, playEntryA
   const flatModules = useMemo(() => filterModulesForRole(workspacePageModules, isAdmin) as WorkspaceModule[], [isAdmin]);
   const navigationGroups = useMemo(() => visibleModules.filter(isWorkspaceNavigationGroup), [visibleModules]);
   const modulesById = useMemo(() => new Map(flatModules.map((module) => [module.id, module])), [flatModules]);
+  // 引导编辑器里「所在页面」的下拉项，取自实际模块，避免手写出不存在的页面 id。
+  const guidePages = useMemo<GuidePageOption[]>(
+    () => flatModules.map((module) => ({ id: module.id, label: module.label })),
+    [flatModules],
+  );
   const activeTab = tabs.find((tab) => tab.key === activeTabKey) ?? tabs[0];
   const activeModuleId = activeTab?.moduleId ?? "dashboard";
 
@@ -267,6 +294,145 @@ export function WorkspaceShell({ currentRole = "operator", onSignOut, playEntryA
     activateTab(id);
     setWorkspaceNotice("");
   };
+
+  // 操作答疑兜底按钮「去提交问题反馈」：先打开/切到「个人中心」页签，再把原问题交给它预填。
+  //
+  // 监听必须放在这一层，不能放在 PersonalCenterPage 里：个人中心是页签内容，没打开就不挂载，
+  // 页面内的监听根本收不到事件（用户在别的模块点按钮会毫无反应）。
+  //
+  // 而且这里开了页签也不够——React 是「先切页签、后挂载」，等 PersonalCenterPage 挂载完，
+  // 事件早已派发结束。所以问题原文由本层持有，再以 prop 传下去，挂载时即可直接消费。
+  //
+  // nonce 保证「同一个问题重复点」也能再次触发：只存字符串的话，重复 set 同一个值
+  // 会被 React 判定为无变化而跳过，用户清了输入框再点就预填不上了。
+  const [feedbackPrefill, setFeedbackPrefill] = useState<{ question: string; nonce: number } | null>(null);
+  // openModule 每次渲染都是新函数，用 ref 取最新实现，避免监听被 [] 依赖锁死在首次闭包上
+  // （否则 activateTab 会拿着过期的 activeTabKey 判断，可能不切页签）。
+  const openModuleRef = useRef(openModule);
+  openModuleRef.current = openModule;
+  useEffect(() => {
+    const onOpenFeedback = (event: Event) => {
+      const detail = (event as CustomEvent<{ question?: string }>).detail;
+      const question = typeof detail?.question === "string" ? detail.question.trim() : "";
+      setFeedbackPrefill((current) => ({ question, nonce: (current?.nonce ?? 0) + 1 }));
+      openModuleRef.current("personal_center");
+    };
+    window.addEventListener("mainpg:open-feedback", onOpenFeedback);
+    return () => window.removeEventListener("mainpg:open-feedback", onOpenFeedback);
+  }, []);
+
+  const guideTourRef = useRef<ReturnType<typeof startGuideTour> | null>(null);
+  const guideAutoStartedRef = useRef(false);
+  const [guideBoardPanelOpen, setGuideBoardPanelOpen] = useState(false);
+  /** 服务端引导配置是否已加载完（成功或失败都算，失败时用内置默认引导）。 */
+  const [guideConfigReady, setGuideConfigReady] = useState(false);
+  /** 编辑器打开时使用的配置快照；非空即代表编辑器开着。 */
+  const [guideEditorSeed, setGuideEditorSeed] = useState<GuideConfig | null>(null);
+
+  /**
+   * 引导请求切页：只认工作台真实存在的模块。
+   * 配置是服务端数据，页面 id 可能因为版本差异失效，这时忽略切页而不是让工作台崩掉。
+   */
+  const requestGuidePage = (page: string) => {
+    const target = flatModules.find((module) => module.id === page);
+    if (target) openModule(target.id);
+  };
+
+  /** 顶部引导入口：先弹板块面板，由面板决定走哪个板块的引导。 */
+  const openGuideBoardPanel = () => {
+    if (guideTourRef.current?.isActive()) return;
+    setGuideBoardPanelOpen(true);
+  };
+
+  /** 走某个二级子任务的引导：跨页时由 onRequestPage 切页，走完记一次该子任务的完成标记。 */
+  const startGuideSubTask = (boardId: GuideBoardId, subTaskId: GuideSubTaskId) => {
+    if (guideTourRef.current?.isActive()) return;
+    setGuideBoardPanelOpen(false);
+    const tour = startGuideTour(boardId, subTaskId, {
+      onRequestPage: requestGuidePage,
+      onFinish: (completed) => {
+        guideTourRef.current = null;
+        if (!completed) return;
+        markGuideSubTaskDone(boardId, subTaskId);
+        // 回到面板，让用户看到更新后的进度并接着看下一个子任务。
+        setGuideBoardPanelOpen(true);
+      },
+    });
+    if (!tour) return;
+    guideTourRef.current = tour;
+  };
+
+  // 引导内容存在本地服务端：启动时拉一次写入运行时配置，换浏览器/重装都还在；
+  // 拉取失败（离线等）就退回内置默认引导，不打扰用户。
+  useEffect(() => {
+    let cancelled = false;
+    fetchGuideConfig()
+      .then((snapshot) => {
+        if (!cancelled) setActiveGuideConfig(snapshot.config);
+      })
+      .catch(() => undefined)
+      // 首次进入要看服务端配置决定播哪一段，拉取（成功或失败）后才算就绪。
+      .finally(() => {
+        if (!cancelled) setGuideConfigReady(true);
+      });
+    return () => {
+      cancelled = true;
+    };
+  }, []);
+
+  const openGuideEditor = () => {
+    setGuideBoardPanelOpen(false);
+    setGuideEditorSeed(cloneGuideConfig(getActiveGuideConfig()));
+  };
+
+  const saveGuideEditor = async (config: GuideConfig) => {
+    try {
+      const snapshot = await saveGuideConfig(config);
+      setActiveGuideConfig(snapshot.config ?? config);
+      showToast("引导配置已保存，其他人下次打开引导即可看到", "success");
+    } catch (cause) {
+      showToast(cause instanceof Error ? cause.message : "保存引导配置失败", "error");
+      throw cause;
+    }
+  };
+
+  /** 预览：临时把草稿当生效配置播一遍，播完还原，不写库也不记完成标记。 */
+  const previewGuideDraft = async (config: GuideConfig, boardId: GuideBoardId, subTaskId: string) => {
+    const previous = getActiveGuideConfig();
+    setGuideBoardPanelOpen(false);
+    setActiveGuideConfig(cloneGuideConfig(config));
+    try {
+      await new Promise<void>((resolve) => {
+        const tour = startGuideTour(boardId, subTaskId, {
+          onRequestPage: requestGuidePage,
+          onFinish: () => resolve(),
+        });
+        if (!tour) {
+          resolve();
+          return;
+        }
+        guideTourRef.current = tour;
+      });
+    } finally {
+      guideTourRef.current = null;
+      setActiveGuideConfig(previous);
+    }
+  };
+
+  // 首次进入工作台直接播放第一段还没看过的引导；提示卡右上角的关闭按钮就是「跳过」，
+  // 跳过不计完成，之后仍可从顶部栏的入口重新播放。自动播过之后只保留手动入口。
+  // 一段可播的教程都没有（都看过了 / 都还没写）时退回原来的板块面板。
+  useEffect(() => {
+    if (playEntryAnimation || !guideConfigReady || guideAutoStartedRef.current || hasSeenGuidePanel()) return;
+    const timer = window.setTimeout(() => {
+      guideAutoStartedRef.current = true;
+      markGuidePanelSeen();
+      const next = firstPendingGuideSubTask();
+      if (next) startGuideSubTask(next.boardId, next.subTaskId);
+      else setGuideBoardPanelOpen(true);
+    }, 800);
+    return () => window.clearTimeout(timer);
+  }, [playEntryAnimation, guideConfigReady]);
 
   const openComboGenerate = (setId: string) => {
     setExpandedGroupId("combo_workflow");
@@ -468,14 +634,14 @@ export function WorkspaceShell({ currentRole = "operator", onSignOut, playEntryA
         content = <PriceVerificationPage isActive={isActive} />;
         break;
       case "product_processing":
-        content = <ProductProcessingVerifyPage onStartProcessing={openProcessingTask} isActive={isActive} />;
+        content = <ProductProcessingVerifyPage onStartProcessing={openProcessingTask} onOpenPrecheck={openProcessingPrecheck} onOpenCollection={() => openModule("daily_selection")} isActive={isActive} />;
         break;
       case "product_processing_history":
         content = <ProductProcessingHistoryPage onOpenTask={openProcessingTaskDetail} onOpenPrecheck={openProcessingPrecheck} />;
         break;
       case "product_processing_tasks":
         content = tab.taskId != null ? (
-          <ProductProcessingPrecheckPage taskId={tab.taskId} initialChangeSetId={tab.dimensionChangeSetId} onOpenDimensionItem={openDimensionItem} isActive={isActive} />
+          <ProductProcessingPrecheckPage taskId={tab.taskId} initialChangeSetId={tab.dimensionChangeSetId} onOpenDimensionItem={openDimensionItem} onOpenDraftPool={() => openModule("product_processing")} isActive={isActive} />
         ) : (
           <ProductProcessingTaskPage
             initialTaskId={tab.taskRunId}
@@ -501,8 +667,11 @@ export function WorkspaceShell({ currentRole = "operator", onSignOut, playEntryA
       case "pod_customization":
         content = <PodCustomizationPage isActive={isActive} />;
         break;
+      case "pod_semi_customization":
+        content = <PodSemiCustomizationPage isActive={isActive} />;
+        break;
       case "personal_center":
-        content = <PersonalCenterPage />;
+        content = <PersonalCenterPage feedbackPrefill={feedbackPrefill} />;
         break;
       default:
         content = <EmptyModulePage module={modulesById.get(tab.moduleId)!} />;
@@ -528,7 +697,7 @@ export function WorkspaceShell({ currentRole = "operator", onSignOut, playEntryA
         badges={{ dimension_canvas: dimensionNotifications.length }}
       />
       <section className="workspace-main">
-        <TopNavigation sidebarPinned={!sidebarIsCollapsed} activeKey={activeTabKey} tabs={tabs} onToggleSidebar={() => setSidebarCollapsed((value) => !value)} onSelectTab={selectTab} onCloseTab={closeTab} onOpenPersonalCenter={() => openModule("personal_center")} onSignOut={onSignOut} />
+        <TopNavigation sidebarPinned={!sidebarIsCollapsed} activeKey={activeTabKey} tabs={tabs} onToggleSidebar={() => setSidebarCollapsed((value) => !value)} onSelectTab={selectTab} onCloseTab={closeTab} onOpenPersonalCenter={() => openModule("personal_center")} onOpenGuide={openGuideBoardPanel} onSignOut={onSignOut} />
         <div className="content-card" ref={contentRef}>
           {workspaceNotice && (
             <div className="workspace-notice" role="status">
@@ -569,6 +738,24 @@ export function WorkspaceShell({ currentRole = "operator", onSignOut, playEntryA
       >
         <span aria-hidden="true">↑</span>
       </button>
+      <HelpAgentWidget />
+      {guideBoardPanelOpen && (
+        <GuideBoardPanel
+          onClose={() => setGuideBoardPanelOpen(false)}
+          onStartSubTask={startGuideSubTask}
+          onEdit={isAdmin ? openGuideEditor : undefined}
+        />
+      )}
+      {guideEditorSeed && (
+        <GuideEditor
+          config={guideEditorSeed}
+          pages={guidePages}
+          activePageId={activeModuleId}
+          onSave={saveGuideEditor}
+          onClose={() => setGuideEditorSeed(null)}
+          onPreview={previewGuideDraft}
+        />
+      )}
       <BrandEntryAnimation active={playEntryAnimation} onComplete={onEntryAnimationComplete} />
     </main>
   );

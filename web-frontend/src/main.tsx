@@ -15,6 +15,8 @@ import "./shared/styles/ink-tap.css";
 import "./shared/styles/framework-flow.css";
 import "./modules/product_processing/styles/product-processing.css";
 import "./shared/styles/apple-workspace.css";
+import "driver.js/dist/driver.css";
+import "./shared/styles/guide-tour.css";
 
 import { App } from "./app/App";
 import { startRuntimeHeartbeat } from "./transport/runtimeHeartbeat";

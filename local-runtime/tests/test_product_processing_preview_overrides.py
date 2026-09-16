@@ -1,8 +1,15 @@
 from __future__ import annotations
 
+from io import BytesIO
 from pathlib import Path
 
-from wh_local.modules.product_processing.domain.workbooks import _dxm_single_export_row
+from PIL import Image
+
+from wh_local.modules.product_processing.domain import sku_availability
+from wh_local.modules.product_processing.domain.workbooks import (
+    _dxm_export_rows,
+    _dxm_single_export_row,
+)
 from wh_local.modules.product_processing.infrastructure.assets import ProductProcessingAssets
 from wh_local.modules.product_processing.infrastructure.database import create_database
 from wh_local.modules.product_processing.infrastructure.repository import (
@@ -389,3 +396,243 @@ def test_dxm_export_raises_weight_to_volumetric_then_caps_at_899() -> None:
     # 店小秘要求材积重量（长×宽×高÷6）≤ 实际重量，且最终重量不得超过 899g。
     # 体积 100*100*100/6≈166666.67g 远超上限，最终封顶到 899g。
     assert values[14] == 899
+
+
+# ---- SKU 规格图检出中文：导出侧兜底剔除 ----
+
+
+def _jpeg(color: str) -> bytes:
+    buffer = BytesIO()
+    Image.new("RGB", (32, 32), color).save(buffer, format="JPEG", quality=90)
+    return buffer.getvalue()
+
+
+def _bind_sku_media(
+    service: ProductProcessingService, draft_id: int, sku_id: str, color: str
+) -> str:
+    asset = service.media_assets.register_local_asset(
+        "local", f"sku-{sku_id}", _jpeg(color), "image/jpeg"
+    )
+    service.media_assets.bind_asset(
+        workspace_id="local",
+        asset_id=asset["id"],
+        product_draft_id=draft_id,
+        role="sku",
+        sku_id=sku_id,
+        variant_label=sku_id,
+    )
+    return str(asset["id"])
+
+
+def _draft_with_sku_images(service: ProductProcessingService) -> tuple[int, str]:
+    """建一条带两个 SKU 规格图的草稿，返回 ``(draft_id, 含中文那张图的 asset_id)``。"""
+    draft, _ = service.create_draft(
+        {
+            "source_type": "manual",
+            "title": "含中文规格图商品",
+            "product_name": "含中文规格图商品",
+            "skc": "SKC-1",
+            "source_variant_records": [
+                {"sku_id": "sku-a", "attributes": {"颜色": "白色"}},
+                {"sku_id": "sku-b", "attributes": {"颜色": "黑色"}},
+            ],
+        },
+        workspace_id="local",
+    )
+    draft_id = int(draft["id"])
+    # 媒体合同版本 2 才支持「SKU 规格图可用性判断」（create_draft 默认写 1）。
+    raw = service.get_draft(draft_id, "local")["raw_payload"]
+    service.repository.update_draft(
+        draft_id, {"media_contract_version": 2}, raw, workspace_id="local"
+    )
+    clean_asset = _bind_sku_media(service, draft_id, "sku-a", "green")
+    chinese_asset = _bind_sku_media(service, draft_id, "sku-b", "blue")
+    assert clean_asset != chinese_asset
+    return draft_id, chinese_asset
+
+
+def _fake_inspect(chinese_asset_id: str):
+    """按 asset_id 伪造中文检测结果：只有 ``chinese_asset_id`` 检出中文。"""
+
+    def _inspect(asset_id: str, workspace_id: str) -> dict:
+        if asset_id == chinese_asset_id:
+            return {"has_chinese": True, "chinese": ["黑色"]}
+        return {"has_chinese": False, "chinese": []}
+
+    return _inspect
+
+
+def _variant_row() -> dict:
+    return {
+        "source_variant_records": [
+            {"sku_id": "sku-a", "attributes": {"颜色": "白色"}},
+            {"sku_id": "sku-b", "attributes": {"颜色": "黑色"}},
+        ],
+        "product_dimensions": {"length_cm": 20, "width_cm": 15, "height_cm": 10, "weight_g": 300},
+        # 真实导出行总带有 overrides（服务端兜底剔除在这里并入），保持同一形状。
+        "preview_overrides": {},
+    }
+
+
+def test_chinese_variant_keys_ignores_all_sku_chinese() -> None:
+    """整条链接全部 SKU 含中文时不做 SKU 级剔除（否则商品会整条消失）。"""
+    assert sku_availability.chinese_variant_keys(
+        {"chinese_variant_keys": ["sku-a", "sku-b"], "all_sku_chinese": True}
+    ) == []
+    assert sku_availability.chinese_variant_keys(
+        {"chinese_variant_keys": ["sku-b", "sku-a", "sku-b"]}
+    ) == ["sku-a", "sku-b"]
+    assert sku_availability.chinese_variant_keys(None) == []
+
+
+def test_merge_excluded_variant_keys_unions_manual_and_chinese() -> None:
+    """兜底剔除键与手工排除取并集，且不重复、不把「未设置」写成显式空。"""
+    overrides = {"excluded_variant_keys": ["sku-manual"]}
+    merged = sku_availability.merge_excluded_variant_keys(overrides, ["sku-b", "sku-manual"])
+    assert merged["excluded_variant_keys"] == ["sku-manual", "sku-b"]
+
+    untouched = {"title": "手动改过的标题"}
+    assert sku_availability.merge_excluded_variant_keys(untouched, []) is untouched
+    assert "excluded_variant_keys" not in untouched
+
+
+def test_resolve_draft_usable_reports_chinese_keys_only_when_valid() -> None:
+    """结论有效性口径：指纹失效 / 未判定时不给出剔除键。"""
+    stored = {
+        "status": sku_availability.STATUS_UNAVAILABLE,
+        "fingerprint": "fp-1",
+        "chinese_variant_keys": ["sku-b"],
+    }
+    valid = sku_availability.resolve_draft_usable(stored, current_fingerprint="fp-1")
+    assert valid["judged"] is True
+    assert valid["usable_source"] is False
+    assert valid["chinese_variant_keys"] == ["sku-b"]
+
+    stale = sku_availability.resolve_draft_usable(stored, current_fingerprint="fp-2")
+    assert stale["judged"] is False
+    assert stale["chinese_variant_keys"] == []
+    assert stale["reason"] == "fingerprint_stale"
+
+
+def test_mark_row_sku_availability_excludes_chinese_detected_sku(tmp_path: Path) -> None:
+    """服务端兜底：检出中文的 SKU 变种并入剔除键，导出行里不再出现该 SKU。"""
+    service = _service(tmp_path)
+    draft_id, chinese_asset = _draft_with_sku_images(service)
+    service._inspect_sku_asset = _fake_inspect(chinese_asset)
+
+    plan = service.check_draft_sku_availability([draft_id], workspace_id="local")["results"][0]
+    assert plan["status"] == sku_availability.STATUS_UNAVAILABLE
+    assert plan["chinese_variant_keys"] == ["sku-b"]
+    assert plan["all_sku_chinese"] is False
+
+    row = _variant_row()
+    service.mark_row_sku_availability(row, draft_id, workspace_id="local")
+
+    assert row["preview_overrides"]["excluded_variant_keys"] == ["sku-b"]
+    assert row["sku_source_usable"] is False
+    assert [values[10] for values in _dxm_export_rows(row)] == ["sku-a"]
+
+
+def test_mark_row_sku_availability_ignores_stale_conclusion(tmp_path: Path) -> None:
+    """结论指纹与当前图集不符（图被换过）时不剔除任何 SKU，避免误删导出行。"""
+    service = _service(tmp_path)
+    draft_id, _chinese_asset = _draft_with_sku_images(service)
+    service.repository.save_draft_sku_availability(
+        draft_id,
+        {
+            "status": sku_availability.STATUS_UNAVAILABLE,
+            "fingerprint": "stale-fingerprint",
+            "chinese_variant_keys": ["sku-b"],
+            "all_sku_chinese": False,
+        },
+        workspace_id="local",
+    )
+
+    row = _variant_row()
+    service.mark_row_sku_availability(row, draft_id, workspace_id="local")
+
+    assert row["preview_overrides"] == {}
+    assert [values[10] for values in _dxm_export_rows(row)] == ["sku-a", "sku-b"]
+
+
+def test_mark_row_sku_availability_keeps_rows_when_all_sku_chinese(tmp_path: Path) -> None:
+    """整条链接的 SKU 图都含中文：不剔除，按现状回退商品主图并保留商品。"""
+    service = _service(tmp_path)
+    draft_id, chinese_asset = _draft_with_sku_images(service)
+    service._inspect_sku_asset = lambda asset_id, workspace_id: {
+        "has_chinese": True,
+        "chinese": ["黑色"],
+    }
+    assert chinese_asset
+
+    plan = service.check_draft_sku_availability([draft_id], workspace_id="local")["results"][0]
+    assert plan["all_sku_chinese"] is True
+    assert plan["chinese_variant_keys"] == ["sku-a", "sku-b"]
+
+    row = _variant_row()
+    service.mark_row_sku_availability(row, draft_id, workspace_id="local")
+
+    assert row["preview_overrides"] == {}
+    assert [values[10] for values in _dxm_export_rows(row)] == ["sku-a", "sku-b"]
+
+
+def test_export_final_workbook_drops_chinese_detected_sku(tmp_path: Path) -> None:
+    """端到端：最终版导出表格里不出现含中文规格图的 SKU，其余变种照常导出。"""
+    service = _service(tmp_path)
+    draft_id, chinese_asset = _draft_with_sku_images(service)
+    service._inspect_sku_asset = _fake_inspect(chinese_asset)
+    service.check_draft_sku_availability([draft_id], workspace_id="local")
+
+    result = _base_result()
+    result["product_draft_id"] = draft_id
+    result["source_variant_records"] = [
+        {
+            "sku_id": "sku-a",
+            "attributes": {"颜色": "白色"},
+            "image_url": "https://src.example.com/a.jpg",
+        },
+        {
+            "sku_id": "sku-b",
+            "attributes": {"颜色": "黑色"},
+            "image_url": "https://src.example.com/b.jpg",
+        },
+    ]
+    task = service.repository.create_task(
+        title="导出兜底剔除",
+        preflight_only=False,
+        settings={"target_site": "US", "target_language": "en"},
+        drafts=[service.get_draft(draft_id, "local")],
+        idempotency_key=None,
+        workspace_id="local",
+    )
+    item = task["items"][0]
+    service.repository.finish_task(
+        task["id"],
+        [
+            {
+                "item_id": item["id"],
+                "status": "completed",
+                "reason": "",
+                "title": result["optimized_title"],
+                "image_url": result["image_url"],
+                "result": result,
+            }
+        ],
+        output_file=f"task_{task['id']}/dxm_import_task_{task['id']}.xlsx",
+        error_report_file=f"task_{task['id']}/error_report_task_{task['id']}.csv",
+        video_manifest_file="",
+        workspace_id="local",
+    )
+
+    exported = service.export_final_workbook(task["id"], workspace_id="local")
+
+    assert exported["row_count"] == 1
+    from openpyxl import load_workbook
+
+    path = service.assets.output_root / f"task_{task['id']}" / exported["file"]
+    workbook = load_workbook(path, data_only=True)
+    sheet = workbook.active
+    headers = [str(cell.value or "").strip() for cell in sheet[1]]
+    rows = [dict(zip(headers, values)) for values in sheet.iter_rows(min_row=2, values_only=True)]
+    assert [row["SKU货号"] for row in rows] == ["sku-a"]
+    assert "sku-b" not in {row["SKU货号"] for row in rows}

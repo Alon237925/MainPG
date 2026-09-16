@@ -25,6 +25,7 @@ except ImportError:  # pragma: no cover - posix
 from wh_local.data_collection.public_image_fetch import FetchedPublicImage
 
 from .domain.policy import is_safe_external_url
+from .domain import sku_availability
 from .domain.preview_images import (
     MANIFEST_KEY,
     SLOT_INDEX,
@@ -187,6 +188,10 @@ class PreviewImageService:
         self.finalize_export_timeout_seconds = int(finalize_export_timeout_seconds)
         self._finalize_worker_lock = threading.Lock()
         self._finalize_workers: dict[tuple[str, str], threading.Thread] = {}
+        # SKU 原图中文复核扫描线程（按 workspace+task 去重），与 finalize worker 分开管理：
+        # 它只是只读检测，不持租约、不参与恢复流程。
+        self._text_review_worker_lock = threading.Lock()
+        self._text_review_workers: dict[tuple[str, int], threading.Thread] = {}
 
     def require_task_draft(self, task_id: int, product_draft_id: int, workspace_id: str) -> None:
         task = self.product_repository.get_task(int(task_id), str(workspace_id))
@@ -217,8 +222,11 @@ class PreviewImageService:
             "height": int(asset.get("height") or 0),
             "bucket": self._bucket_for_preview_origin(str(asset.get("origin") or "")),
             "source_kind": str(asset.get("source_kind") or ""),
+            "sku_id": str(asset.get("sku_id") or ""),
             "media_asset_id": media_asset_id,
             "media_status": "",
+            "text_review_status": str(asset.get("text_review_status") or ""),
+            "text_review_reason": str(asset.get("text_review_reason") or ""),
         }
 
     def _public_media_backed_asset(
@@ -239,8 +247,11 @@ class PreviewImageService:
                 "height": int(asset.get("height") or 0),
                 "bucket": "source" if str(asset.get("source_kind") or "") else "processed",
                 "source_kind": str(asset.get("source_kind") or ""),
+                "sku_id": str(asset.get("sku_id") or ""),
                 "media_asset_id": media_asset_id,
                 "media_status": "failed",
+                "text_review_status": str(asset.get("text_review_status") or ""),
+                "text_review_reason": str(asset.get("text_review_reason") or ""),
             }
         media_view = self.media_assets.public_asset(media_asset)
         return {
@@ -253,13 +264,142 @@ class PreviewImageService:
             "height": int(media_asset.get("height") or 0),
             "bucket": self._bucket_for_media_origin(str(media_asset.get("origin") or "")),
             "source_kind": str(asset.get("source_kind") or ""),
+            "sku_id": str(asset.get("sku_id") or ""),
             "media_asset_id": media_asset_id,
             "media_status": str(media_asset.get("status") or "pending"),
+            "text_review_status": str(asset.get("text_review_status") or ""),
+            "text_review_reason": str(asset.get("text_review_reason") or ""),
         }
 
     @staticmethod
     def _bucket_for_preview_origin(origin: str) -> str:
         return "source" if str(origin or "") in {"source", "remote_source"} else "processed"
+
+    # ---- SKU 原图中文复核（Phase 1：中文检测门 + 待审核名单）----
+    # 只对 source_kind="sku" 的来源资产做只读中文检测，结果写回
+    # text_review_status（clear / flagged / text_check_failed，空串=尚未检测）。
+    # 检测不参与、也不阻塞生成与导出链路，只在预检页给用户一份「待审核名单」。
+    def start_sku_text_review(self, task_id: int, *, workspace_id: str) -> bool:
+        """为任务下的 SKU 规格原图启动后台中文检测（同任务去重，立即返回）。
+
+        OCR 单张约 3-12s，几十张会明显拖慢 finalize 主链路，故与 finalize 一样放到
+        daemon 线程里跑。重复调用（例如预检页刷新）只会在无存活线程时重新起线程。
+        """
+        key = (str(workspace_id), int(task_id))
+
+        def execute() -> None:
+            try:
+                self.run_sku_text_review(int(task_id), workspace_id=workspace_id)
+            except Exception:  # noqa: BLE001 - 后台检测失败不得影响主流程
+                logger.exception("sku text review scan failed task_id=%s", task_id)
+            finally:
+                with self._text_review_worker_lock:
+                    self._text_review_workers.pop(key, None)
+
+        with self._text_review_worker_lock:
+            current = self._text_review_workers.get(key)
+            if current is not None and current.is_alive():
+                return False
+            thread = threading.Thread(
+                target=execute,
+                name=f"pp-sku-text-review-{task_id}",
+                daemon=True,
+            )
+            self._text_review_workers[key] = thread
+            thread.start()
+        return True
+
+    def run_sku_text_review(self, task_id: int, *, workspace_id: str) -> dict[str, int]:
+        """同步扫描该任务的 SKU 规格原图并落库检测结果（由后台线程调用）。"""
+        from .infrastructure.ocr_gate import inspect_sku_text  # noqa: PLC0415
+
+        assets = self.repository.list_assets_for_text_review(
+            int(task_id), workspace_id, source_kind="sku"
+        )
+        scanned = flagged = failed = 0
+        for asset in assets:
+            previous = str(asset.get("text_review_status") or "")
+            # 未检测（空串）或上次检测失败的重试；已 clear/flagged 的不再重复推理。
+            if previous in {"clear", "flagged"}:
+                continue
+            content = self._read_asset_bytes_for_text_review(asset, workspace_id)
+            if content is None:
+                # 图尚未落本地（media 未就绪/无本地副本），保持原状态，等下次扫描重试。
+                continue
+            inspection = inspect_sku_text(content)
+            if inspection is None:
+                status, reason = "text_check_failed", "OCR 不可用或推理失败"
+            elif inspection["has_chinese"]:
+                status = "flagged"
+                reason = "｜".join(inspection["chinese"])
+            else:
+                status, reason = "clear", ""
+            status = status[:32]
+            reason = reason[:240]
+            if status == previous and reason == str(asset.get("text_review_reason") or ""):
+                continue
+            self.repository.update_asset_text_review(
+                str(asset["id"]), workspace_id, status=status, reason=reason
+            )
+            scanned += 1
+            if status == "flagged":
+                flagged += 1
+            elif status == "text_check_failed":
+                failed += 1
+        if scanned:
+            logger.info(
+                "sku text review task_id=%s: scanned=%d flagged=%d failed=%d",
+                task_id,
+                scanned,
+                flagged,
+                failed,
+            )
+        return {"scanned": scanned, "flagged": flagged, "failed": failed}
+
+    def sku_text_review_progress(self, task_id: int, *, workspace_id: str) -> dict[str, int]:
+        """SKU 原图中文复核进度汇总，供预检页展示「待审核」计数。"""
+        assets = self.repository.list_assets_for_text_review(
+            int(task_id), workspace_id, source_kind="sku"
+        )
+        counts = {"total": len(assets), "pending": 0, "clear": 0, "flagged": 0, "failed": 0}
+        for asset in assets:
+            status = str(asset.get("text_review_status") or "")
+            if status == "clear":
+                counts["clear"] += 1
+            elif status == "flagged":
+                counts["flagged"] += 1
+            elif status == "text_check_failed":
+                counts["failed"] += 1
+            else:
+                counts["pending"] += 1
+        with self._text_review_worker_lock:
+            worker = self._text_review_workers.get((str(workspace_id), int(task_id)))
+        counts["running"] = 1 if (worker is not None and worker.is_alive()) else 0
+        return counts
+
+    def _read_asset_bytes_for_text_review(
+        self, asset: Mapping[str, Any], workspace_id: str
+    ) -> bytes | None:
+        """读取资产本地字节用于 OCR；图尚未落本地时返回 ``None``（不报错、留待重试）。"""
+        media_asset_id = str(asset.get("media_asset_id") or "")
+        if media_asset_id and self.media_assets is not None:
+            try:
+                path, _content_type = self.media_assets.require_ready_managed_file(
+                    media_asset_id, workspace_id=workspace_id
+                )
+                return path.read_bytes()
+            except (LookupError, ValueError, OSError):
+                return None
+        managed = str(asset.get("managed_path") or "")
+        if not managed:
+            return None
+        try:
+            path = self.assets.require_workspace_preview_asset(
+                managed, workspace_id=workspace_id
+            )
+            return path.read_bytes()
+        except (LookupError, ValueError, OSError):
+            return None
 
     @staticmethod
     def _bucket_for_media_origin(origin: str) -> str:
@@ -314,6 +454,7 @@ class PreviewImageService:
         media_asset_id: str,
         source_kind: str = "",
         origin: str = "source",
+        sku_id: str = "",
     ) -> dict[str, Any]:
         """Register a stable, no-copy precheck proxy for one unified media asset.
 
@@ -347,6 +488,7 @@ class PreviewImageService:
             height=0,
             media_asset_id=media_asset_id,
             source_kind=source_kind,
+            sku_id=sku_id,
         )
 
     def register_upload(
@@ -668,6 +810,7 @@ class PreviewImageService:
             source_kind: str,
             role: str,
             sort_order: int,
+            sku_id: str = "",
         ) -> None:
             media_id = str(media_id or "").strip()
             if not media_id:
@@ -686,6 +829,7 @@ class PreviewImageService:
                 media_asset_id=media_id,
                 source_kind=source_kind,
                 origin=self._preview_origin_for_media(str(media_asset.get("origin") or "")),
+                sku_id=sku_id,
             )
             entry = {
                 "proxy": proxy,
@@ -714,6 +858,7 @@ class PreviewImageService:
                 source_kind,
                 role,
                 int(binding.get("sort_order") or 0),
+                sku_id=str(binding.get("sku_id") or ""),
             )
 
         # Processed media referenced by an existing preview asset (generated detail
@@ -1069,12 +1214,21 @@ class PreviewImageService:
         pulse.start()
         try:
             snapshot = list(claimed.get("snapshot") or [])
+            # 逐个 SKU 换图引用的预览资产不在 manifest.live_asset_ids 里，
+            # 必须一并纳入物化/发布，否则导出时解析不到公网地址、只能回退原图。
             asset_ids = list(
                 dict.fromkeys(
-                    str(asset_id)
-                    for entry in snapshot
-                    for asset_id in entry.get("live_asset_ids") or []
-                    if str(asset_id or "").strip()
+                    [
+                        str(asset_id)
+                        for entry in snapshot
+                        for asset_id in entry.get("live_asset_ids") or []
+                        if str(asset_id or "").strip()
+                    ]
+                    + [
+                        asset_id
+                        for entry in snapshot
+                        for asset_id in self._variant_override_asset_ids(entry.get("overrides"))
+                    ]
                 )
             )
             assets = self.repository.get_assets(asset_ids, workspace_id, task_id=int(claimed["task_id"]))
@@ -1345,12 +1499,23 @@ class PreviewImageService:
             raise ValueError("preview finalization snapshot is unavailable for export")
 
         manifests = [PreviewImageManifest.from_value(entry.get("manifest")) for entry in snapshot]
-        needed_ids = list(
+        # 逐个 SKU 换图引用的预览资产不在 manifest 里，单独收集后并入解析集合。
+        variant_override_ids = list(
             dict.fromkeys(
                 asset_id
-                for manifest in manifests
-                for asset_id in (*manifest.live_asset_ids(), *manifest.library_asset_ids)
-                if asset_id
+                for entry in snapshot
+                for asset_id in self._variant_override_asset_ids(entry.get("overrides"))
+            )
+        )
+        needed_ids = list(
+            dict.fromkeys(
+                [
+                    asset_id
+                    for manifest in manifests
+                    for asset_id in (*manifest.live_asset_ids(), *manifest.library_asset_ids)
+                    if asset_id
+                ]
+                + variant_override_ids
             )
         )
         assets = (
@@ -1359,10 +1524,13 @@ class PreviewImageService:
         by_id = {str(asset["id"]): asset for asset in assets}
         live_ids = list(
             dict.fromkeys(
-                asset_id
-                for manifest in manifests
-                for asset_id in manifest.live_asset_ids()
-                if asset_id
+                [
+                    asset_id
+                    for manifest in manifests
+                    for asset_id in manifest.live_asset_ids()
+                    if asset_id
+                ]
+                + variant_override_ids
             )
         )
         asset_urls: dict[str, str] = {}
@@ -1682,6 +1850,42 @@ class PreviewImageService:
         message = str(exc).casefold()
         return any(token in message for token in _PUBLISH_TRANSIENT_TOKENS)
 
+    @staticmethod
+    def _variant_override_asset_ids(overrides: Mapping[str, Any] | None) -> list[str]:
+        """预检侧逐个 SKU 换图时引用的预览资产 ID（http(s) 直链无需发布）。"""
+        if not isinstance(overrides, Mapping):
+            return []
+        raw = overrides.get("variant_image_overrides") or {}
+        if not isinstance(raw, Mapping):
+            return []
+        ids: list[str] = []
+        for value in raw.values():
+            text = str(value or "").strip()
+            if text and not text.lower().startswith(("http://", "https://")):
+                ids.append(text)
+        return ids
+
+    @staticmethod
+    def _resolve_variant_image_urls(
+        raw: Any, asset_urls: Mapping[str, str]
+    ) -> dict[str, str]:
+        """把逐个 SKU 换图的原始值解析成公网地址（资产 ID → 发布后的地址）。"""
+        if not isinstance(raw, Mapping):
+            return {}
+        resolved: dict[str, str] = {}
+        for key, value in raw.items():
+            variant_key = str(key or "").strip()
+            text = str(value or "").strip()
+            if not variant_key or not text:
+                continue
+            if text.lower().startswith(("http://", "https://")):
+                resolved[variant_key] = text
+                continue
+            url = str(asset_urls.get(text) or "").strip()
+            if url:
+                resolved[variant_key] = url
+        return resolved
+
     def _export_rows(
         self,
         task_id: int,
@@ -1729,9 +1933,121 @@ class PreviewImageService:
                 }
             )
             overrides.pop("image_slot_overrides", None)
+            # 逐个 SKU 换图：原始值可能是预览资产 ID，这里统一解析成公网地址，
+            # 供工作簿按 variantKey 直接取用（http(s) 直链原样保留）。
+            variant_image_urls = self._resolve_variant_image_urls(
+                overrides.get("variant_image_overrides"), asset_urls
+            )
+            if variant_image_urls:
+                overrides["variant_image_urls"] = variant_image_urls
+            # 草稿 SKU 结论随行下发（指纹校验需要当前图集，工作簿是纯函数模块拿不到）：
+            # auto 策略的原图可用性 + 含中文 SKU 的兜底剔除键。后者让「SKU 规格图检出中文」
+            # 的变种一律不导出，前端没提交（关掉「优化链接 SKU」）、手工清除或老批次数据
+            # 也照样过滤。
+            sku_state = self._row_sku_availability(draft_id, workspace_id, drafts_by_id)
+            sku_availability.merge_excluded_variant_keys(
+                overrides, sku_state.get("chinese_variant_keys") or [],
+            )
             result["preview_overrides"] = overrides
+            # SKU 规格图来源：老批次结果里可能没有 source_variant_records，
+            # 从草稿 raw_payload 回填，保证店小秘/妙手导出能按 SKU 落规格图。
+            if not result.get("source_variant_records"):
+                draft = drafts_by_id.get(draft_id) or {}
+                raw_payload = draft.get("raw_payload")
+                if isinstance(raw_payload, Mapping):
+                    variants = raw_payload.get("source_variant_records")
+                    if variants:
+                        result["source_variant_records"] = variants
+            # auto 策略：原图是否可用（口径与 service.mark_row_sku_availability 一致）。
+            result["sku_source_usable"] = bool(sku_state.get("usable_source"))
             rows.append(result)
         return rows
+
+    def sku_availability_state(
+        self, draft_id: int, workspace_id: str = "local"
+    ) -> dict[str, Any]:
+        """草稿规格图可用性结论（供预检页把 auto 档的「未判定」讲清楚）。
+
+        返回 ``resolve_draft_usable`` 的口径：``judged``/``clean``/``usable_source``
+        /``reason``。``reason`` 取值：
+        - ``never_judged``：从未跑过判断 → auto 会全部回退主图
+        - ``scope_relaxed`` / ``skipped`` / ``missing`` / ``pending`` / ``not_decided``
+        - ``unavailable``：判定含中文 → auto 回退主图
+        - ``clean``：判定干净 → auto 用规格原图
+        - ``fingerprint_stale`` / ``media_unavailable``：结论已失效
+        """
+        try:
+            draft = self.product_repository.get_draft(draft_id, workspace_id=workspace_id) or {}
+        except Exception:  # noqa: BLE001 - 读不到草稿时按未判定
+            return {"judged": False, "clean": False, "usable_source": False, "reason": "never_judged"}
+        stored = sku_availability.load(draft.get("sku_availability_raw"))
+        if not stored:
+            return {"judged": False, "clean": False, "usable_source": False, "reason": "never_judged"}
+        if bool(stored.get("scope_relaxed")):
+            return {"judged": False, "clean": False, "usable_source": False, "reason": "scope_relaxed"}
+        status = str(stored.get("status") or "")
+        if status not in sku_availability.DECIDED_STATUSES:
+            return {
+                "judged": False, "clean": False, "usable_source": False,
+                "reason": status or "not_decided",
+            }
+        if self.media_assets is None:
+            return {"judged": False, "clean": False, "usable_source": False, "reason": "media_unavailable"}
+        try:
+            groups = self.media_assets.list_draft_media(workspace_id, int(draft_id))
+            views, _relaxed = sku_availability.keep_active_sku_views(
+                groups.get("sku", []), draft.get("raw_payload"),
+            )
+            current = sku_availability.fingerprint_of(
+                [
+                    view for view in views
+                    if str(view.get("status") or "") == "ready" and str(view.get("asset_id") or "")
+                ]
+            )
+        except Exception:  # noqa: BLE001 - 当前图集读不出来时保守按未判定
+            return {"judged": False, "clean": False, "usable_source": False, "reason": "media_unavailable"}
+        return sku_availability.resolve_draft_usable(stored, current_fingerprint=current)
+
+    def _row_sku_availability(
+        self,
+        draft_id: int,
+        workspace_id: str,
+        drafts_by_id: Mapping[int, Mapping[str, Any]],
+    ) -> dict[str, Any]:
+        """该草稿的规格图可用性结论（用预加载草稿，避免逐条查库）。
+
+        返回 ``resolve_draft_usable`` 的口径（``judged``/``clean``/``usable_source``/
+        ``reason``），外加 ``chinese_variant_keys``：判定有效时检出中文、导出应整行剔除的
+        SKU 变种键。未判定 / 口径放宽 / 指纹失效一律按未判定返回（不剔除任何行）。
+        """
+        draft = drafts_by_id.get(draft_id) or {}
+        stored = sku_availability.load(draft.get("sku_availability_raw"))
+        if (
+            not stored
+            or bool(stored.get("scope_relaxed"))
+            or str(stored.get("status") or "") not in sku_availability.DECIDED_STATUSES
+        ):
+            return sku_availability.resolve_draft_usable(None, current_fingerprint=None)
+        if self.media_assets is None:
+            return sku_availability.resolve_draft_usable(
+                stored, current_fingerprint=None, fingerprint_error=True,
+            )
+        try:
+            groups = self.media_assets.list_draft_media(workspace_id, int(draft_id))
+            views, _relaxed = sku_availability.keep_active_sku_views(
+                groups.get("sku", []), draft.get("raw_payload"),
+            )
+            current = sku_availability.fingerprint_of(
+                [
+                    view for view in views
+                    if str(view.get("status") or "") == "ready" and str(view.get("asset_id") or "")
+                ]
+            )
+        except Exception:  # noqa: BLE001 - 当前图集读不出来时保守按未判定
+            return sku_availability.resolve_draft_usable(
+                stored, current_fingerprint=None, fingerprint_error=True,
+            )
+        return sku_availability.resolve_draft_usable(stored, current_fingerprint=current)
 
     def _source_main_fallback(
         self,

@@ -52,9 +52,11 @@ from .schemas import (
     DraftDeleteRequest,
     DraftProcessRequest,
     DraftRestoreRequest,
+    DraftSkuAvailabilityRequest,
     DraftUpdateRequest,
     ListingAdviceRequest,
     MiaoshouExportRequest,
+    PreviewAssetImportRequest,
     PreviewFinalizeRequest,
     PreviewSaveRequest,
     PromptTemplateRequest,
@@ -524,6 +526,20 @@ def create_product_processing_router(
             raise HTTPException(status.HTTP_400_BAD_REQUEST, "draft_ids is required")
         return service.restore_drafts(body.draft_ids, _workspace(workspace_id))
 
+    @router.post("/drafts/sku-availability")
+    def check_draft_sku_availability(
+        body: DraftSkuAvailabilityRequest,
+        workspace_id: str = Header(default="local", alias="X-Workspace-ID"),
+    ) -> dict[str, Any]:
+        if not body.draft_ids:
+            raise HTTPException(status.HTTP_400_BAD_REQUEST, "draft_ids is required")
+        return _call(
+            service.check_draft_sku_availability,
+            body.draft_ids,
+            workspace_id=_workspace(workspace_id),
+            force=bool(body.force),
+        )
+
     @router.post("/drafts/process")
     def process_drafts(
         request: Request,
@@ -901,6 +917,33 @@ def create_product_processing_router(
             for upload in files:
                 await upload.close()
         return {"assets": assets}
+
+    @router.post("/tasks/{task_id}/preview/assets/import-url")
+    def import_preview_asset_from_url(
+        task_id: int,
+        body: PreviewAssetImportRequest,
+        workspace_id: str = Header(default="local", alias="X-Workspace-ID"),
+    ) -> dict[str, Any]:
+        return {
+            "asset": _call(
+                service.import_preview_image_from_url,
+                task_id,
+                int(body.draft_id),
+                body.url,
+                workspace_id=_workspace(workspace_id),
+            )
+        }
+
+    @router.get("/tasks/{task_id}/preview/sku-text-review")
+    def sku_text_review_status(
+        task_id: int,
+        workspace_id: str = Header(default="local", alias="X-Workspace-ID"),
+    ) -> dict[str, Any]:
+        return _call(
+            service.sku_text_review_status,
+            task_id,
+            workspace_id=_workspace(workspace_id),
+        )
 
     @router.post(
         "/tasks/{task_id}/preview/finalize",

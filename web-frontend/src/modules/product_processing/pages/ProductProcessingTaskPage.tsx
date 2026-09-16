@@ -2,14 +2,19 @@ import { useEffect, useMemo, useRef, useState } from 'react';
 import { createPortal } from 'react-dom';
 import { ppDownload, ppRequest, type ApiContext } from '../api/client';
 import { productProcessingApiContext } from '../api/context';
+import { checkDraftSkuAvailability } from '../api/productProcessingApi';
 import { PromptCustomizePanel } from '../components/PromptCustomizePanel';
 import type {
+  DraftSkuAvailabilityItem,
   ProductProcessingOptions,
   TaskOutputsResponse,
 } from '../types';
 import '../styles/ProductProcessingVerifyPage.css';
 
 const API_BASE = '/api/product-processing';
+
+// SKU 原图可用性检测按批提交：逐批更新进度，避免一次性几百条把单个请求拖成分钟级。
+const SKU_CHECK_BATCH_SIZE = 20;
 
 const SITES = [
   { code: 'US', label: '美国站' },
@@ -96,6 +101,66 @@ function formatDuration(seconds?: number): string {
   return `${secs}秒`;
 }
 
+/** 进度平滑插值：轮询返回的是整数百分比，直接渲染会一格一格跳。
+ *  这里用 requestAnimationFrame 做指数缓动，让圆环与数字始终连续推进。
+ *  缓动状态收在独立组件内，逐帧重渲染只影响这个圆环，不拖累整页。 */
+function ProgressRing({ progress, running }: { progress: number; running: boolean }) {
+  const smooth = useSmoothProgress(progress);
+  return (
+    <div
+      className={`verify-progress-ring ${running ? 'is-live' : 'is-done'}`}
+      role="progressbar"
+      aria-label="处理进度"
+      aria-valuemin={0}
+      aria-valuemax={100}
+      aria-valuenow={progress}
+    >
+      <span className="verify-progress-halo" aria-hidden="true" />
+      <svg viewBox="0 0 120 120" aria-hidden="true">
+        <defs>
+          <linearGradient id="verify-progress-gradient" x1="0%" y1="0%" x2="100%" y2="100%">
+            <stop offset="0%" stopColor="#2fe0e6" />
+            <stop offset="55%" stopColor="#0baec0" />
+            <stop offset="100%" stopColor="#2563eb" />
+          </linearGradient>
+        </defs>
+        <circle className="verify-progress-track" cx="60" cy="60" r="52" pathLength="100" />
+        {running && (
+          <circle className="verify-progress-sweep" cx="60" cy="60" r="52" pathLength="100" aria-hidden="true" />
+        )}
+        <circle className="verify-progress-value" cx="60" cy="60" r="52" pathLength="100" strokeDashoffset={100 - smooth} />
+      </svg>
+      <div className="verify-progress-center">
+        <strong>{Math.round(smooth)}<em>%</em></strong>
+        <span>{running ? '处理中' : '已完成'}</span>
+      </div>
+    </div>
+  );
+}
+
+/** 进度平滑插值：把轮询得到的整数进度缓动成连续值。 */
+function useSmoothProgress(target: number): number {
+  const [value, setValue] = useState(target);
+  const valueRef = useRef(target);
+  useEffect(() => {
+    let raf = 0;
+    const tick = () => {
+      const diff = target - valueRef.current;
+      if (Math.abs(diff) < 0.05) {
+        valueRef.current = target;
+        setValue(target);
+        return;
+      }
+      valueRef.current += diff * 0.12;
+      setValue(valueRef.current);
+      raf = requestAnimationFrame(tick);
+    };
+    raf = requestAnimationFrame(tick);
+    return () => cancelAnimationFrame(raf);
+  }, [target]);
+  return value;
+}
+
 export function ProductProcessingTaskPage({ initialTaskId, initialDraftIds, initialPremiumDraftIds, initialOptions, onOpenPrecheck }: Props) {
   const ctx = api();
   // 处理参数全部为系统默认（范围全开、全部数量、8 线程并行、自动补跑等），
@@ -126,6 +191,17 @@ export function ProductProcessingTaskPage({ initialTaskId, initialDraftIds, init
   // 失败商品明细默认折叠：自动补跑已覆盖大部分缺陷项，避免把错误明细
   // 直接摊在结果页上（展开才可见并可手动重试）。
   const [showFailures, setShowFailures] = useState(false);
+
+  // SKU 原图可用性检测（处理设置页）：进入即对本次所选链接自动检测，按结果预置每个
+  // 链接导出时用「规格原图」还是「商品主图」。结果仅作预置，用户仍可在预检页修改。
+  const [skuResults, setSkuResults] = useState<Record<number, DraftSkuAvailabilityItem>>({});
+  // 「优化链接 SKU」：勾选后自动删除含中文规格图的链接中对应 SKU（默认开启）。
+  const [optimizeSku, setOptimizeSku] = useState(true);
+  const [skuCheckBusy, setSkuCheckBusy] = useState(false);
+  const [skuCheckDone, setSkuCheckDone] = useState(false);
+  const [skuCheckError, setSkuCheckError] = useState('');
+  const [skuCheckProgress, setSkuCheckProgress] = useState({ done: 0, total: 0 });
+  const skuCheckRunRef = useRef(0);
 
   // 失败项自动补跑（后台自动重处理）状态
   const autoRepull = batch?.auto_repull ?? null;
@@ -206,6 +282,48 @@ export function ProductProcessingTaskPage({ initialTaskId, initialDraftIds, init
     ? Math.max(0, Math.min(autoRepull.total, autoRepull.total - roundRemaining))
     : 0;
 
+  // SKU 检测结果统计（按本次所选链接）：clean=规格原图可用；skipped=规格图过多跳过。
+  const skuTotalChecked = initialDraftIds?.length || 0;
+  const skuCleanCount = useMemo(() => {
+    if (!initialDraftIds?.length) return 0;
+    return initialDraftIds.filter((id) => skuResults[id]?.status === 'clean').length;
+  }, [initialDraftIds, skuResults]);
+  const skuSkippedCount = useMemo(() => {
+    if (!initialDraftIds?.length) return 0;
+    return initialDraftIds.filter((id) => skuResults[id]?.status === 'skipped').length;
+  }, [initialDraftIds, skuResults]);
+  const skuFallbackCount = Math.max(0, skuTotalChecked - skuCleanCount);
+
+  // 检测结果 → 处理参数：variant_image_mode 分流 + 「优化链接 SKU」命中的变种剔除键。
+  // - clean：规格图无中文，逐 SKU 用规格原图（source）；
+  // - 检出中文且勾选了「优化链接 SKU」：剔除含中文的 SKU，剩余干净 SKU 仍用规格原图；
+  // - 整条链接全是中文图（all_sku_chinese）：不剔除，回退商品主图，避免整条商品消失；
+  // - 其余（无规格图 / 规格图过多 / OCR 失败）：统一用商品主图（main）。
+  const skuPlan = useMemo(() => {
+    const classification: Record<number, 'source' | 'main'> = {};
+    const exclusions: Record<number, string[]> = {};
+    if (!skuCheckDone) return { classification, exclusions };
+    for (const id of initialDraftIds || []) {
+      const item = skuResults[id];
+      if (!item) continue;
+      const chineseKeys = item.chinese_variant_keys || [];
+      if (
+        optimizeSku
+        && item.status === 'unavailable'
+        && item.reason === 'chinese_detected'
+        && chineseKeys.length > 0
+        && !item.all_sku_chinese
+      ) {
+        exclusions[id] = chineseKeys;
+        classification[id] = 'source';
+        continue;
+      }
+      classification[id] = item.status === 'clean' ? 'source' : 'main';
+    }
+    return { classification, exclusions };
+  }, [initialDraftIds, skuResults, skuCheckDone, optimizeSku]);
+  const skuOptimizedCount = Object.keys(skuPlan.exclusions).length;
+
   const notify = (ok: string) => { setMessage(ok); setError(''); };
   const fail = (err: unknown) => { setError(err instanceof Error ? err.message : String(err)); setMessage(''); };
 
@@ -221,6 +339,47 @@ export function ProductProcessingTaskPage({ initialTaskId, initialDraftIds, init
     // initialTaskId only changes when WorkspaceShell opens another task tab.
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [initialTaskId]);
+
+  // 进入处理设置页即自动检测所选链接的 SKU 规格图可用性：分批调用后端，逐批推进进度，
+  // 全部完成后分类为 source（规格原图可用）/ main（中文水印、无规格图、规格图过多等）。
+  const runSkuAvailabilityCheck = async () => {
+    const draftIds = initialDraftIds || [];
+    if (!draftIds.length) return;
+    const runId = ++skuCheckRunRef.current;
+    setSkuCheckBusy(true);
+    setSkuCheckDone(false);
+    setSkuCheckError('');
+    setSkuResults({});
+    setSkuCheckProgress({ done: 0, total: draftIds.length });
+    const collected: Record<number, DraftSkuAvailabilityItem> = {};
+    try {
+      for (let offset = 0; offset < draftIds.length; offset += SKU_CHECK_BATCH_SIZE) {
+        const chunk = draftIds.slice(offset, offset + SKU_CHECK_BATCH_SIZE);
+        const data = await checkDraftSkuAvailability(ctx, chunk);
+        if (skuCheckRunRef.current !== runId) return;
+        for (const item of data.results) collected[item.draft_id] = item;
+        setSkuResults({ ...collected });
+        setSkuCheckProgress({
+          done: Math.min(offset + SKU_CHECK_BATCH_SIZE, draftIds.length),
+          total: draftIds.length,
+        });
+      }
+      setSkuCheckDone(true);
+    } catch (err) {
+      if (skuCheckRunRef.current !== runId) return;
+      setSkuCheckError(err instanceof Error ? err.message : String(err));
+    } finally {
+      if (skuCheckRunRef.current === runId) setSkuCheckBusy(false);
+    }
+  };
+
+  useEffect(() => {
+    // 历史任务详情页不做检测；只在「处理设置」页（点开始处理后的页面）对本次所选链接检测。
+    if (initialTaskId != null || !initialDraftIds?.length) return;
+    void runSkuAvailabilityCheck();
+    return () => { skuCheckRunRef.current += 1; };
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [initialTaskId, initialDraftIds]);
 
   const downloadOutput = async (kind: 'dxm' | 'errors' | 'video_manifest', filename: string) => {
     if (!batch) return;
@@ -284,6 +443,10 @@ export function ProductProcessingTaskPage({ initialTaskId, initialDraftIds, init
       auto_repull: options.autoRepull !== false,
       // 兼容旧 API 字段；新任务统一走智能生图策略，不再由用户选择。
       image_generation_count: 4,
+      // SKU 原图可用性分类（处理设置页检测结果）：写入草稿预检覆盖，导出按此分流。
+      variant_image_classification: skuPlan.classification,
+      // 「优化链接 SKU」命中的来源变种：导出时整行剔除。
+      variant_image_exclusions: skuPlan.exclusions,
     };
     const signature = JSON.stringify(body);
     if (!startRequestRef.current || startRequestRef.current.signature !== signature) {
@@ -468,8 +631,66 @@ export function ProductProcessingTaskPage({ initialTaskId, initialDraftIds, init
               </label>
             </div>
             <PromptCustomizePanel />
+            <div className="verify-sku-check">
+              <div className="verify-sku-check-head">
+                <span className="verify-sku-check-title">SKU 原图可用性检测</span>
+                <span className="verify-sub">
+                  {skuCheckBusy
+                    ? `检测中 ${skuCheckProgress.done}/${skuCheckProgress.total}`
+                    : skuCheckDone
+                      ? '检测完成'
+                      : skuCheckError
+                        ? '检测失败'
+                        : '等待检测'}
+                </span>
+                <label
+                  className="verify-scope-check"
+                  title="勾选后：检测完成时自动删除含中文规格图的链接中对应的 SKU（其余干净 SKU 仍用规格原图导出）；整条链接全是中文图时不删除，改为回退商品主图"
+                >
+                  <input
+                    type="checkbox"
+                    checked={optimizeSku}
+                    onChange={(e) => setOptimizeSku(e.target.checked)}
+                  />
+                  <span>优化链接 SKU</span>
+                </label>
+                <button
+                  className="btn-mini"
+                  disabled={skuCheckBusy || !initialDraftIds?.length}
+                  onClick={() => void runSkuAvailabilityCheck()}
+                  title="重新检测所选链接的 SKU 规格图是否含中文水印"
+                >{skuCheckBusy ? '检测中…' : '重新检测'}</button>
+              </div>
+              {skuCheckBusy && (
+                <div className="verify-repull-banner" role="status">
+                  <i className="iconfont icon-loading" aria-hidden="true" />
+                  <span>正在检测所选链接的 SKU 规格图是否含中文水印…</span>
+                  <em>已完成 {skuCheckProgress.done} / {skuCheckProgress.total} 条</em>
+                </div>
+              )}
+              {!skuCheckBusy && !!skuCheckError && (
+                <div className="verify-repull-banner failed" role="status">
+                  <i className="iconfont icon-infomation" aria-hidden="true" />
+                  <span>检测失败：{skuCheckError}；可点「重新检测」。直接开始处理将按默认策略（有规格原图用原图，否则用主图）。</span>
+                </div>
+              )}
+              {!skuCheckBusy && !skuCheckError && skuCheckDone && (
+                <>
+                  <div className="verify-summary">
+                    <div className="verify-count success">可用原图 <b>{skuCleanCount}</b></div>
+                    <div className="verify-count">改用主图 <b>{skuFallbackCount}</b></div>
+                    <div className="verify-count">规格图过多跳过 <b>{skuSkippedCount}</b></div>
+                  </div>
+                  <p className="verify-sku-check-hint">
+                    共检测 <b>{skuTotalChecked}</b> 条链接：<b>{skuCleanCount}</b> 条 SKU 规格图可用，导出时用「规格原图」；
+                    <b>{skuFallbackCount}</b> 条改用「商品主图」（含 {skuSkippedCount} 条 SKU 规格图 ≥ 50 张的链接）。
+                    分类已自动预置，可在预检页逐条修改。
+                  </p>
+                </>
+              )}
+            </div>
             <div className="verify-actions">
-              <button className="primary" onClick={() => startBatch()} disabled={loading || batchProcessing || !initialDraftIds?.length}>{loading ? '处理中...' : '开始处理'}</button>
+              <button className="primary" onClick={() => startBatch()} disabled={loading || batchProcessing || !initialDraftIds?.length || skuCheckBusy}>{loading ? '处理中...' : '开始处理'}</button>
               <button onClick={clearBatch} disabled={!batch || batchProcessing} title={batchProcessing ? '运行中任务不能清理' : undefined}>清空任务</button>
               {!!initialPremiumDraftIds?.length && (
                 <span className="verify-premium-hint">精品模式 {initialPremiumDraftIds.length} 条</span>
@@ -485,21 +706,8 @@ export function ProductProcessingTaskPage({ initialTaskId, initialDraftIds, init
             {batch && (
               <>
                 {batch.total_count > 0 && (
-                  <div className="verify-progress-area">
-                    <div
-                      className={`verify-progress ${batchProcessing ? 'is-live' : 'is-done'}`}
-                      role="progressbar"
-                      aria-label="处理进度"
-                      aria-valuemin={0}
-                      aria-valuemax={100}
-                      aria-valuenow={progress}
-                    >
-                      <svg viewBox="0 0 46 46" aria-hidden="true">
-                        <circle className="verify-progress-track" cx="23" cy="23" r="18" pathLength="100" />
-                        <circle className="verify-progress-value" cx="23" cy="23" r="18" pathLength="100" strokeDashoffset={100 - progress} />
-                      </svg>
-                      <strong>{progress}%</strong>
-                    </div>
+                  <div className={`verify-progress-area ${batchProcessing ? 'is-live' : 'is-done'}`}>
+                    <ProgressRing progress={progress} running={batchProcessing} />
                     <div className="verify-progress-meta">
                       <strong>{taskPaused
                         ? '已暂停'
