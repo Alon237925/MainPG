@@ -1088,6 +1088,12 @@ def _migrate_core_schema(conn: sqlite3.Connection) -> None:
         "manual_frozen_points",
         "INTEGER NOT NULL DEFAULT 0",
     )
+    # 套餐体验积分：plan_balance 为每周刷新的免费额度（10 units = 1 积分），
+    # plan_period_key 为当前周期标识（本周一北京时间的 YYYY-MM-DD，跨周期惰性重置），
+    # plan_type 预留套餐类型（experience 体验版 / flagship 旗舰版）。
+    _ensure_column(conn, "billing_wallets", "plan_balance", "INTEGER NOT NULL DEFAULT 0")
+    _ensure_column(conn, "billing_wallets", "plan_period_key", "TEXT NOT NULL DEFAULT ''")
+    _ensure_column(conn, "billing_wallets", "plan_type", "TEXT NOT NULL DEFAULT 'experience'")
     # 登录状态字段：账号级单端登录限制（云端认证服务与本地工作台共用同一 schema）。
     _ensure_column(conn, "auth_accounts", "login_status", "TEXT NOT NULL DEFAULT 'offline'")
     # 本地会话表保存远端 wh_auth_* token，登出时联动撤销云端登录态。

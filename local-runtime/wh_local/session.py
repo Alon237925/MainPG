@@ -67,6 +67,20 @@ def actor_from_authorization(authorization: str | None = Header(default=None)) -
     return actor_from_bearer_token(token)
 
 
+def optional_actor_from_authorization(authorization: str | None = Header(default=None)) -> Actor | None:
+    """带了有效令牌就返回对应 actor，没带令牌返回 ``None``（视为未登录）。
+
+    ⚠️ **只给「登录前也要能用」的公开只读接口用**（当前仅操作答疑的 FAQ 检索：
+    内容是本地的常见问题文本，不含任何用户数据）。
+
+    令牌**无效/过期**仍然按 401 抛出，不能悄悄降级成匿名 —— 否则用户会以为
+    "已登录但权限不同"，真正的会话失效反而被藏起来。
+    """
+    if not authorization or not authorization.startswith("Bearer "):
+        return None
+    return actor_from_authorization(authorization)
+
+
 def daily_selection_actor_from_authorization(authorization: str | None = Header(default=None)) -> dict[str, str]:
     actor = actor_from_authorization(authorization)
     return {"actor_id": actor.id, "workspace_id": actor.workspace_id}

@@ -64,6 +64,18 @@ export const helpAgentCategoryNames: Record<string, string> = {
   workflow: "流程与策略",
 };
 
+/**
+ * 取分类的展示文案。
+ *
+ * `faqs.json` 里的 `category` 本来就写成了用户看得懂的中文（如「产品处理 · SKU规格图」
+ * 「产品库 · 查询」），直接原样展示即可；上面那张表只兜住早期用英文枚举写的那批数据。
+ *
+ * ⚠️ 别在这里枚举全部分类：分类是数据侧的字段，新增分类时不该再改前端代码 ——
+ * 之前正是因为只列了 system/business/account/workflow 四个键，而数据里一个都没用到，
+ * 结果每条 FAQ 的标签都退化成「常见问题」。
+ */
 export function categoryLabel(category: string): string {
-  return helpAgentCategoryNames[category] ?? "常见问题";
+  const key = category.trim();
+  if (!key) return "常见问题";
+  return helpAgentCategoryNames[key] ?? key;
 }

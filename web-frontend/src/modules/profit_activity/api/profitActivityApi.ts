@@ -26,6 +26,18 @@ function candidateTokens(): string[] {
   return [...tokens];
 }
 
+// 从响应体里取出可读的错误文本：优先 detail 字符串，其次整段文本，
+// 最后才回退到状态码。绝不要把 JSON 原文交给用户（以前会直接显示
+// {"detail":"product_id_already_exists"}）。
+function errorText(data: unknown, status: number): string {
+  if (typeof data === "string" && data.trim()) return data;
+  if (data && typeof data === "object") {
+    const detail = (data as { detail?: unknown }).detail;
+    if (typeof detail === "string" && detail.trim()) return detail;
+  }
+  return `请求失败 (HTTP ${status})`;
+}
+
 async function request<T>(path: string, options: RequestInit = {}): Promise<T> {
   const { apiBase } = resolveEndpoint();
   const last401 = new Error("invalid bearer token");
@@ -41,10 +53,10 @@ async function request<T>(path: string, options: RequestInit = {}): Promise<T> {
       // 非 JSON 响应时保留原文
     }
     if (response.status === 401) {
-      last401.message = typeof data === "string" ? data : JSON.stringify(data);
+      last401.message = errorText(data, response.status);
       continue; // 会话失效时回退下一个令牌重试
     }
-    if (!response.ok) throw new Error(toUserMessage(typeof data === "string" ? data : JSON.stringify(data)));
+    if (!response.ok) throw new Error(toUserMessage(errorText(data, response.status)));
     return data as T;
   }
   throw new Error(toUserMessage(last401.message));
@@ -190,7 +202,7 @@ export async function updateProductImage({
   } catch {
     // 非 JSON 响应时保留原文
   }
-  if (!response.ok) throw new Error(typeof data === "string" ? data : JSON.stringify(data));
+  if (!response.ok) throw new Error(toUserMessage(errorText(data, response.status)));
   return data as { product: ProfitActivityProduct };
 }
 
@@ -282,7 +294,7 @@ export async function saveProfitActivityProductEdit({
   } catch {
     // 非 JSON 响应时保留原文
   }
-  if (!response.ok) throw new Error(typeof data === "string" ? data : JSON.stringify(data));
+  if (!response.ok) throw new Error(toUserMessage(errorText(data, response.status)));
   return data as { product: ProfitActivityProduct };
 }
 
@@ -331,7 +343,7 @@ export async function updateProductSourceGroup({
   } catch {
     // 非 JSON 响应时保留原文
   }
-  if (!response.ok) throw new Error(typeof data === "string" ? data : JSON.stringify(data));
+  if (!response.ok) throw new Error(toUserMessage(errorText(data, response.status)));
   return data as { product: ProfitActivityProduct };
 }
 
@@ -364,7 +376,7 @@ export async function downloadProfitActivityCatalog({
     method: "POST",
     headers,
   });
-  if (!response.ok) throw new Error(await response.text());
+  if (!response.ok) throw new Error(toUserMessage(await response.text()));
   const blob = await response.blob();
   const objectUrl = URL.createObjectURL(blob);
   const anchor = document.createElement("a");

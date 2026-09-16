@@ -4114,28 +4114,38 @@ USER-REQUESTED PANEL PLANNING ADDITIONS (user extra requirements only; they MUST
             stored, current_fingerprint=current,
         )
 
-    def mark_row_auto_variant_source(
+    def mark_row_sku_availability(
         self,
         row: dict[str, Any],
         draft_id: int | None,
         *,
         workspace_id: str = "local",
     ) -> None:
-        """给导出行注入 auto 策略所需的结论标记（就地写 ``sku_source_usable``）。
+        """给导出行注入草稿 SKU 结论派生的两件事（就地改写 ``row``）。
 
-        ``variant_image_mode == "auto"`` 时，工作簿据此决定「用规格原图」还是「回退商品
-        主图」。只有「明确判定过、判定干净且指纹未失效」才为 True；其余（不可用 / 未判定 /
-        跳过 / 口径放宽）一律 False，即维持与现状一致的保守行为。
+        1. ``sku_source_usable``：``variant_image_mode == "auto"`` 时工作簿据此决定「用规格
+           原图」还是「回退商品主图」。只有「明确判定过、判定干净且指纹未失效」才为 True；
+           其余（不可用 / 未判定 / 跳过 / 口径放宽）一律 False，即维持与现状一致的保守行为。
+        2. ``preview_overrides.excluded_variant_keys``：把「SKU 规格图检出中文」的变种并入
+           剔除键，作为服务端兜底——前端没提交（关掉「优化链接 SKU」）、手工清除或老批次
+           数据也照样不导出这些 SKU。``all_sku_chinese``（整条链接全部 SKU 含中文）时结论里
+           不含剔除键，按现状回退商品主图、商品仍导出。
         """
-        usable = False
+        state: dict[str, Any] = {}
         if draft_id:
             try:
-                usable = bool(
-                    self.sku_availability_state(int(draft_id), workspace_id=workspace_id).get("usable_source")
-                )
+                state = self.sku_availability_state(int(draft_id), workspace_id=workspace_id)
             except Exception:  # noqa: BLE001 - 取不到结论时保守回退，不影响导出
-                usable = False
-        row["sku_source_usable"] = usable
+                state = {}
+        row["sku_source_usable"] = bool(state.get("usable_source"))
+        chinese_keys = state.get("chinese_variant_keys") or []
+        if not chinese_keys:
+            return
+        overrides = row.get("preview_overrides")
+        overrides = dict(overrides) if isinstance(overrides, Mapping) else {}
+        row["preview_overrides"] = sku_availability_domain.merge_excluded_variant_keys(
+            overrides, chinese_keys,
+        )
 
     @staticmethod
     def _keep_active_sku_views(
@@ -4695,9 +4705,9 @@ USER-REQUESTED PANEL PLANNING ADDITIONS (user extra requirements only; they MUST
             draft = self.repository.get_draft(draft_id, workspace_id=workspace_id) if draft_id else None
             if draft and draft.get("preview_overrides"):
                 merged["preview_overrides"] = draft["preview_overrides"]
-            # auto 策略：把可用性结论解析成布尔随行下发（指纹校验需要当前图集，
-            # 只能在服务层做；workbooks 是纯函数模块拿不到）。
-            self.mark_row_auto_variant_source(merged, draft_id, workspace_id=workspace_id)
+            # 草稿 SKU 结论随行下发（指纹校验需要当前图集，只能在服务层做；workbooks 是
+            # 纯函数模块拿不到）：auto 策略的原图可用性 + 含中文 SKU 的兜底剔除键。
+            self.mark_row_sku_availability(merged, draft_id, workspace_id=workspace_id)
             rows.append(merged)
         if not rows:
             raise ValueError("task has no successful products to export")

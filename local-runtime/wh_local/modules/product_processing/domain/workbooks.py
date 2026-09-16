@@ -516,17 +516,17 @@ def _dxm_single_export_row(row: dict[str, Any], variant: dict[str, Any] | None) 
     if not isinstance(dimensions, dict):
         dimensions = {}
     package_fields, _ = _variant_shipping_package_fields(row, variant, preview_overrides)
-    length = _export_number(
+    length = _export_dimension(
         package_fields.get("length_cm")
         if "length_cm" in package_fields
         else core_fields.get("length_cm") if "length_cm" in core_fields else dimensions.get("length_cm")
     )
-    width = _export_number(
+    width = _export_dimension(
         package_fields.get("width_cm")
         if "width_cm" in package_fields
         else core_fields.get("width_cm") if "width_cm" in core_fields else dimensions.get("width_cm")
     )
-    height = _export_number(
+    height = _export_dimension(
         package_fields.get("height_cm")
         if "height_cm" in package_fields
         else core_fields.get("height_cm") if "height_cm" in core_fields else dimensions.get("height_cm")
@@ -564,9 +564,9 @@ def _dxm_single_export_row(row: dict[str, Any], variant: dict[str, Any] | None) 
         for text in dimensions_texts:
             parsed_lwh = _parse_dimensions(text)
             if parsed_lwh is not None:
-                length = _export_number(parsed_lwh[0])
-                width = _export_number(parsed_lwh[1])
-                height = _export_number(parsed_lwh[2])
+                length = _export_dimension(parsed_lwh[0])
+                width = _export_dimension(parsed_lwh[1])
+                height = _export_dimension(parsed_lwh[2])
                 break
 
     # 建议售价（对齐原型 _build_dxm_row）：变种建议售价 → 行建议售价 → 来源成本；预检核心字段覆盖优先
@@ -600,12 +600,15 @@ def _dxm_single_export_row(row: dict[str, Any], variant: dict[str, Any] | None) 
         stock = _normalize_stock(core_fields.get("stock"))
 
     # 店小秘重量导出统一以当前重量向上取整到 100：不足 100 按 100、
-    # 不足 200 按 200……（最低 100）。长宽高不参与重量计算。
+    # 不足 200 按 200……（最低 100）。
     # 店小秘要求材积重量（长×宽×高÷6）≤ 实际重量，否则报“材积重量大于实际重量，无法录入”。
     # 导出前兜底：若体积重量超过当前重量，以店小秘导入为准，将重量抬升到体积重量，避免导入失败。
     # 最后无论怎么算都不得超过 899g，超出封顶到 899，确保在店小秘导入范围内。
     weight = _dxm_enforce_volumetric_weight(length, width, height, _ceil_weight_for_export(weight))
     weight = _cap_dxm_weight(weight)
+    # 封顶 899g 后体积重量仍可能大于重量（长×宽×高÷6 > 899 时重量侧已无解）：
+    # 此时收缩长宽高让材积重量回到重量以内，并把长宽高重排为单调递减。
+    length, width, height = _dxm_fit_dimensions(length, width, height, weight)
 
     return [
         optimized_title,
@@ -721,6 +724,29 @@ def _export_number(value: Any) -> Any:
     return round(number, 2)
 
 
+def _export_dimension(value: Any) -> Any:
+    """把长宽高转成整数/两位小数，且**不四舍五入进位**（向下截断到两位小数）。
+
+    尺寸一旦进位就会被放大：店小秘按导出的长×宽×高÷6 算材积重量，进位后的值可能超过
+    我们校验时用的值，出现「本地校验通过、导入却报材积重量大于实际重量」。因此尺寸只
+    截断不舍入，宁小不大。空值/非法值保持空串（避免写入 0 掩盖缺失）。
+    """
+    if value in (None, ""):
+        return ""
+    try:
+        number = float(value)
+    except (TypeError, ValueError):
+        return ""
+    if not math.isfinite(number):
+        return ""
+    # 加 1e-9 抵消二进制浮点表示误差（如 4.23*100 得 422.99999999999994），
+    # 但不足以把 4.235 抬到 4.24，保证仍是「截断」而不是「进位」。
+    truncated = math.floor(number * 100 + 1e-9) / 100
+    if truncated == int(truncated):
+        return int(truncated)
+    return truncated
+
+
 def _ceil_weight_for_export(value: Any) -> Any:
     """店小秘重量导出向上取整到 100：不足 100 按 100、不足 200 按 200…（最低 100）。
 
@@ -782,6 +808,54 @@ def _dxm_enforce_volumetric_weight(length: Any, width: Any, height: Any, weight:
     if current < volumetric:
         return _ceil_weight_for_export(volumetric)
     return weight
+
+
+# 尺寸收缩下限：长宽高都不允许小于 1（一轴收缩到 1.1cm 仍不满足则继续收缩下一轴）。
+DXM_MIN_DIMENSION_CM = 1.1
+
+
+def _dxm_fit_dimensions(
+    length: Any, width: Any, height: Any, weight: Any
+) -> tuple[Any, Any, Any]:
+    """收口导出长宽高：单调递减输出，且材积重量（长×宽×高÷6）不超过导出重量。
+
+    店小秘重量最高只收 899g，因此体积重量 > 899g 时在重量侧已无解。此时按「高 → 宽 → 长」
+    的顺序收缩尺寸：每轴取「刚好让材积重量不超过重量」的值（两位小数向下取整），
+    收缩到下限 1.1cm 仍不够再收缩下一轴，保证导出行一定能过店小秘材积重量校验。
+    材积重量与长宽高顺序无关，因此先按 长 ≥ 宽 ≥ 高 重排再收缩，导出顺序天然单调递减。
+    尺寸一律向下截断（不四舍五入进位），避免进位放大导出值。尺寸缺失/非法时原样返回，
+    避免虚构数据。
+    """
+    try:
+        values = [float(length), float(width), float(height)]
+    except (TypeError, ValueError):
+        return length, width, height
+    if not all(math.isfinite(value) and value > 0 for value in values):
+        return length, width, height
+    dimensions = sorted((_export_dimension(value) for value in values), reverse=True)
+    limit = _dxm_volumetric_limit(weight)
+    if limit is not None and dimensions[0] * dimensions[1] * dimensions[2] / 6.0 > limit:
+        for index in (2, 1, 0):  # 高 -> 宽 -> 长
+            others = dimensions[(index + 1) % 3] * dimensions[(index + 2) % 3]
+            needed = math.floor(limit * 6.0 / others * 100 - 1e-6) / 100
+            if needed >= DXM_MIN_DIMENSION_CM:
+                dimensions[index] = needed
+                break
+            dimensions[index] = DXM_MIN_DIMENSION_CM
+        # 收缩只降不升，但某轴原本就小于下限时会被抬到 1.1，重排一次保证输出仍单调递减。
+        dimensions.sort(reverse=True)
+    return tuple(_export_number(value) for value in dimensions)
+
+
+def _dxm_volumetric_limit(weight: Any) -> float | None:
+    """导出重量允许的最大材积重量（g）；重量缺失/非法时返回 None（不收缩）。"""
+    try:
+        limit = float(weight)
+    except (TypeError, ValueError):
+        return None
+    if not math.isfinite(limit) or limit <= 0:
+        return None
+    return min(limit, float(DXM_WEIGHT_MAX_GRAM))
 
 
 # 尺寸文本模式：如 "30*20*10" / "30×20×10cm" / "40.5*30*20 CM"（1688 变种尺寸属性值）

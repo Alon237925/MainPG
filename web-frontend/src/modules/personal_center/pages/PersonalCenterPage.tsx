@@ -244,7 +244,14 @@ function writePendingOrderId(orderId: string) {
   }
 }
 
-export function PersonalCenterPage() {
+/** 操作答疑答不上来时带过来的原问题；nonce 让同一问题重复点击也能再次触发。 */
+export type PersonalCenterFeedbackPrefill = { question: string; nonce: number };
+
+type PersonalCenterPageProps = {
+  feedbackPrefill?: PersonalCenterFeedbackPrefill | null;
+};
+
+export function PersonalCenterPage({ feedbackPrefill = null }: PersonalCenterPageProps) {
   const account = getAuthAccount<AccountSnapshot>();
   // 头像与右上角共享：读取同一 localStorage 键，并监听 storage 事件以实时同步。
   const [avatarSrc, setAvatarSrc] = useState<string | null>(() => {
@@ -552,21 +559,20 @@ export function PersonalCenterPage() {
   }, [activePanel, loadUsage]);
 
   // 操作答疑兜底按钮：切到「意见反馈」面板、滚到反馈区，并把原问题带过去预填。
+  //
+  // 事件由 WorkspaceShell 统一接收（个人中心没打开时也要能收到，所以监听不能放在这里），
+  // 本组件只消费它传下来的 feedbackPrefill。依赖整个对象而非其中的 question 字符串：
+  // nonce 变化时对象引用会变，同一问题重复点击也能再次触发。
   const feedbackRef = useRef<HTMLDivElement>(null);
   const [prefillFeedback, setPrefillFeedback] = useState("");
   useEffect(() => {
-    const onOpenFeedback = (event: Event) => {
-      const detail = (event as CustomEvent<{ question?: string }>).detail;
-      const question = typeof detail?.question === "string" ? detail.question.trim() : "";
-      if (question) setPrefillFeedback(question);
-      setActivePanel("feedback");
-      window.requestAnimationFrame(() => {
-        feedbackRef.current?.scrollIntoView({ behavior: "smooth", block: "start" });
-      });
-    };
-    window.addEventListener("mainpg:open-feedback", onOpenFeedback);
-    return () => window.removeEventListener("mainpg:open-feedback", onOpenFeedback);
-  }, []);
+    if (!feedbackPrefill) return;
+    if (feedbackPrefill.question) setPrefillFeedback(feedbackPrefill.question);
+    setActivePanel("feedback");
+    window.requestAnimationFrame(() => {
+      feedbackRef.current?.scrollIntoView({ behavior: "smooth", block: "start" });
+    });
+  }, [feedbackPrefill]);
 
   useEffect(() => {
     if (!pendingPaymentOrderId) return;
@@ -877,6 +883,41 @@ export function PersonalCenterPage() {
                   <b>{summary?.pricing.ratio_label ?? "1 元 = 100 积分"}</b>
                 </div>
               </div>
+            </div>
+          </div>
+          <div className="personal-plan-card">
+            <div className="personal-plan-card-head">
+              <span className="personal-plan-card-label">
+                <span className="iconfont icon-gold" aria-hidden="true" />
+                {summary?.wallet.plan?.plan_label ?? "体验版"}
+              </span>
+              <span className="personal-plan-card-refresh">
+                {summary?.wallet.plan?.next_refresh_at
+                  ? `下周一 ${formatUsageTime(summary.wallet.plan.next_refresh_at).slice(5, 16)} 刷新`
+                  : ""}
+              </span>
+            </div>
+            <div className="personal-plan-card-value">
+              <b>{summary?.wallet.plan?.plan_balance ?? "--"}</b>
+              <em>/ {summary?.wallet.plan?.plan_limit ?? 500} 积分</em>
+            </div>
+            <div
+              className="personal-plan-card-meter"
+              role="progressbar"
+              aria-label="体验积分剩余额度"
+              aria-valuemin={0}
+              aria-valuemax={summary?.wallet.plan?.plan_limit ?? 500}
+              aria-valuenow={summary?.wallet.plan?.plan_balance ?? 0}
+            >
+              <span
+                style={{
+                  width: `${Math.min(100, Math.max(0, ((summary?.wallet.plan?.plan_balance ?? 0) / (summary?.wallet.plan?.plan_limit || 1)) * 100))}%`,
+                }}
+              />
+            </div>
+            <div className="personal-plan-card-foot">
+              <span>剩余体验额度</span>
+              <span>已用 {summary?.wallet.plan?.plan_used ?? 0}</span>
             </div>
           </div>
         </aside>

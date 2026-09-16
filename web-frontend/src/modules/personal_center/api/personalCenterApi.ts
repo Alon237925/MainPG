@@ -58,6 +58,14 @@ export type BillingSummary = {
     version: number;
     ledger_head_hash: string;
     updated_at: string;
+    plan: {
+      plan_type: "experience" | "flagship" | string;
+      plan_label: string;
+      plan_balance: number;
+      plan_limit: number;
+      plan_used: number;
+      next_refresh_at: string;
+    };
   };
   pricing: {
     currency: "CNY";

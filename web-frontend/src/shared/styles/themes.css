@@ -428,12 +428,12 @@
    卡片圆角各异、预检小控件跑偏、货源工作区无样式等）。此层统一语义
    并全部走 --theme-* 变量，因此切换主题（经典/暖阳/深空/水墨/怪趣/
    钻石）时这些板块的画面会自动随之适配。
-   ================================================================ *//* ---- 1. 页面头部统一为当前主题主渐变色（hero）---- *//* 维度画布：原为纯白卡，纳入 hero 渐变体系（全主题，变量自动适配）。 */.dimension-commandbar {
+   ================================================================ *//* ---- 1. 页面头部统一为当前主题主渐变色（hero）---- *//* 维度画布：原为纯白卡，纳入 hero 渐变体系（全主题，变量自动适配）。 */.dimension-page .dimension-commandbar {
   color: #fff;
   border-color: var(--theme-module-border-strong);
   background: var(--theme-hero-gradient);
   box-shadow: 0 16px 38px var(--theme-module-shadow);
-}.dimension-commandbar :is(h1, .dimension-title-row) { color: #fff; }.dimension-commandbar p { color: var(--theme-hero-text); }.dimension-commandbar .dimension-eyebrow { color: var(--theme-hero-eyebrow); }.dimension-commandbar .dimension-title-icon {
+}.dimension-page .dimension-commandbar :is(h1, .dimension-title-row) { color: #fff; }.dimension-page .dimension-commandbar p { color: var(--theme-hero-text); }.dimension-page .dimension-commandbar .dimension-eyebrow { color: var(--theme-hero-eyebrow); }.dimension-page .dimension-commandbar .dimension-title-icon {
   color: #fff;
   border-color: rgba(255, 255, 255, .32);
   background: rgba(255, 255, 255, .14);

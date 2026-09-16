@@ -169,6 +169,10 @@
 }
 .help-agent-candidates button {
   width: 100%;
+  display: flex;
+  flex-direction: column;
+  align-items: flex-start;
+  gap: 3px;
   padding: 7px 10px;
   border: 1px solid var(--theme-page-tab-active-border, #a7dafa);
   border-radius: 9px;
@@ -178,6 +182,19 @@
   text-align: left;
   cursor: pointer;
 }
+/* 候选条目上的分类标签：比正文小一号、低对比，只做区分不抢视线 */
+.help-agent-candidate-tag {
+  padding: 0 6px;
+  border-radius: 999px;
+  background: var(--theme-page-tab-bg, #f7fafc);
+  border: 1px solid var(--theme-page-tab-border, #e0eaf2);
+  color: var(--theme-text-muted, #8295aa);
+  font-size: .62rem;
+  line-height: 1.6;
+  /* 分类名长短不一（最短 4 字、最长 20 字），统一按一行显示，别在胶囊里折行 */
+  white-space: nowrap;
+}
+.help-agent-candidate-text { line-height: 1.45; word-break: break-word; }
 .help-agent-candidates button:hover:not(:disabled) { background: var(--theme-page-tab-active-bg, #eaf8ff); }
 .help-agent-candidates button:disabled { opacity: .55; cursor: default; }
 

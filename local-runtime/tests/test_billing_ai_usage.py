@@ -6,7 +6,7 @@ from pathlib import Path
 
 from fastapi import HTTPException
 
-from wh_local.billing import reserve_ai_usage, settle_ai_usage_success
+from wh_local.billing import _plan_period_key, reserve_ai_usage, settle_ai_usage_success
 from wh_local.db import init_db, transaction
 from wh_local.session import Actor
 
@@ -19,10 +19,10 @@ def _wallet_with(database_path: Path, actor: Actor, balance: int) -> None:
         )
         conn.execute(
             """
-            INSERT INTO billing_wallets (account_id, workspace_id, points_balance)
-            VALUES (?, ?, ?)
+            INSERT INTO billing_wallets (account_id, workspace_id, points_balance, plan_balance, plan_period_key)
+            VALUES (?, ?, ?, 0, ?)
             """,
-            (actor.id, actor.workspace_id, balance),
+            (actor.id, actor.workspace_id, balance, _plan_period_key()),
         )
 
 
@@ -38,10 +38,10 @@ def test_ai_usage_reservation_and_settlement_work_on_fresh_database(tmp_path: Pa
         )
         conn.execute(
             """
-            INSERT INTO billing_wallets (account_id, workspace_id, points_balance)
-            VALUES (?, ?, 1000)
+            INSERT INTO billing_wallets (account_id, workspace_id, points_balance, plan_balance, plan_period_key)
+            VALUES (?, ?, 1000, 0, ?)
             """,
-            (actor.id, actor.workspace_id),
+            (actor.id, actor.workspace_id, _plan_period_key()),
         )
 
     reserved = reserve_ai_usage(
@@ -75,8 +75,8 @@ def test_concurrent_reservations_cannot_overspend_wallet(tmp_path: Path) -> None
         conn.execute(
             # One default image reservation is 400 internal units; two callers
             # must not both reserve against this exact balance.
-            "INSERT INTO billing_wallets (account_id, workspace_id, points_balance) VALUES (?, ?, 400)",
-            (actor.id, actor.workspace_id),
+            "INSERT INTO billing_wallets (account_id, workspace_id, points_balance, plan_balance, plan_period_key) VALUES (?, ?, 400, 0, ?)",
+            (actor.id, actor.workspace_id, _plan_period_key()),
         )
 
     barrier = threading.Barrier(2)
