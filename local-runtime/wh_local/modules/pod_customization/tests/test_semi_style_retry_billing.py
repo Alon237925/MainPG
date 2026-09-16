@@ -3,6 +3,7 @@ from __future__ import annotations
 from pathlib import Path
 
 from wh_local.modules.pod_customization.billing_contract import (
+    SEMI_BILLING_PROFILE,
     PodCallOutcome,
     PodExecutionGrant,
 )
@@ -87,5 +88,34 @@ def test_semi_group_retry_freezes_images_only_and_expands_to_four_items(tmp_path
         "items": [
             {"link_idx": index, "subitems": [{"feature": "four_grid", "status": "success"}]}
             for index in range(1, 5)
+        ]
+    }
+
+
+def test_semi_batch_plan_survives_persistence_roundtrip(tmp_path: Path) -> None:
+    """半定制批次 plan 落库→读回必须保留 semi_item_count 与 billing_profile。
+
+    settle() 网络失败后，唯一自动恢复是 settle_stuck_billing_runs，它从 plan_json
+    重建计划再结算。若 semi_item_count 丢失，重建计划会走全定制按组展开分支，
+    冻结 link_count（款数）与结算 item 数（组数）不一致，远端 400，冻结积分永远无法释放。
+    """
+    billing = RecordingBilling()
+    service = _service(tmp_path, billing)
+    actor = Actor(id="operator-1", username="operator-1", role="operator", workspace_id="workspace-a")
+    service.create_semi_batch(actor, SemiBatchCreate(count=8), enqueue=False)
+
+    stored = service.repository.list_pending_billing_runs(actor.workspace_id, actor.id)[0]
+    assert stored["plan"]["semi_item_count"] == 8
+    assert stored["plan"]["billing_profile"] == SEMI_BILLING_PROFILE
+
+    plan = PodCustomizationService._billing_plan(stored["plan"])
+    assert plan.semi_item_count == 8
+    assert plan.billing_profile == SEMI_BILLING_PROFILE
+
+    outcomes = [PodCallOutcome(call.call_id, call.feature, "success") for call in plan.calls]
+    assert plan.product_batch_settlement_payload(outcomes) == {
+        "items": [
+            {"link_idx": index, "subitems": [{"feature": "four_grid", "status": "success"}]}
+            for index in range(1, 9)
         ]
     }

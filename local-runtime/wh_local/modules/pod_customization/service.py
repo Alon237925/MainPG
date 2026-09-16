@@ -18,6 +18,7 @@ from ...session import Actor
 from . import spec_card
 from .assets import PodAssetStore
 from .billing_contract import (
+    POD_BILLING_PROFILE_RANDOM,
     PodBillingAuthorizationRequired,
     PodBillingCoordinator,
     PodCallOutcome,
@@ -1930,6 +1931,8 @@ class PodCustomizationService:
                 PodPlannedCall(str(call["call_id"]), str(call["feature"]))  # type: ignore[arg-type]
                 for call in payload["calls"]
             ),
+            semi_item_count=int(payload.get("semi_item_count") or 0),
+            billing_profile=str(payload.get("billing_profile") or POD_BILLING_PROFILE_RANDOM),
         )
 
     @staticmethod
