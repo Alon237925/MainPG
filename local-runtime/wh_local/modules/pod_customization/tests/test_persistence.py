@@ -249,6 +249,47 @@ def test_startup_recovery_converges_rows_stranded_by_an_old_shutdown_fence(tmp_p
     assert stored["failed_count"] == 1
 
 
+def test_full_batch_list_excludes_semi_batches(tmp_path: Path) -> None:
+    """全定制批次列表必须排除半定制批次。
+
+    两种模式共表（pod_customization_batches.mode）。不带 mode 过滤时，全定制页启动
+    会取列表第一条当「最近批次」，于是挑到更晚创建的半定制批次，用全定制界面渲染
+    纯图案批次（表现为「当前批次 1 款 · 半定制占位模板」）。
+    """
+    service = _service(tmp_path)
+    actor = _actor()
+    template = service.upload_template(actor, name="Mug scene", filename="mug.png", content=_png())
+    service.update_template_calibration(
+        actor,
+        template["id"],
+        Calibration(
+            mask=NormalizedRect(x=0.2, y=0.2, width=0.6, height=0.6),
+            anchor=NormalizedPoint(x=0.5, y=0.5),
+        ),
+    )
+    full = service.create_batch(
+        actor,
+        BatchCreate(
+            template_id=template["id"],
+            count=4,
+            prompt_version="v1",
+            business_fields=BusinessFields(
+                product_name="Stoneware mug",
+                product_category="drinkware",
+                target_market="US",
+            ),
+            listing_fields=_listing_fields(),
+        ),
+        enqueue=False,
+    )
+    semi = service.create_semi_batch(actor, SemiBatchCreate(count=4), enqueue=False)
+
+    listed = service.list_batches(actor, limit=20, offset=0)
+    assert [item["id"] for item in listed["batches"]] == [full["id"]]
+    assert listed["total"] == 1
+    assert [item["id"] for item in service.list_semi_batches(actor, limit=20, offset=0)["batches"]] == [semi["id"]]
+
+
 def test_additive_pod_schema_does_not_delete_legacy_ai_service_pod_history(tmp_path: Path) -> None:
     database = tmp_path / "workbench.sqlite3"
     with sqlite3.connect(database) as connection:

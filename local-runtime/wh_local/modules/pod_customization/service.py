@@ -597,6 +597,9 @@ class PodCustomizationService:
             actor.id,
             limit=max(1, min(limit, 100)),
             offset=max(0, offset),
+            # 两种模式共表：这里只列全定制批次，否则全定制页会把更晚创建的半定制
+            # 批次当成「最近一批」展开，用全定制界面渲染纯图案批次。
+            mode="full",
         )
         return {"batches": [self._batch_summary(row) for row in rows], "total": total}
 
