@@ -244,7 +244,14 @@ function writePendingOrderId(orderId: string) {
   }
 }
 
-export function PersonalCenterPage() {
+/** 操作答疑答不上来时带过来的原问题；nonce 让同一问题重复点击也能再次触发。 */
+export type PersonalCenterFeedbackPrefill = { question: string; nonce: number };
+
+type PersonalCenterPageProps = {
+  feedbackPrefill?: PersonalCenterFeedbackPrefill | null;
+};
+
+export function PersonalCenterPage({ feedbackPrefill = null }: PersonalCenterPageProps) {
   const account = getAuthAccount<AccountSnapshot>();
   // 头像与右上角共享：读取同一 localStorage 键，并监听 storage 事件以实时同步。
   const [avatarSrc, setAvatarSrc] = useState<string | null>(() => {
@@ -552,21 +559,20 @@ export function PersonalCenterPage() {
   }, [activePanel, loadUsage]);
 
   // 操作答疑兜底按钮：切到「意见反馈」面板、滚到反馈区，并把原问题带过去预填。
+  //
+  // 事件由 WorkspaceShell 统一接收（个人中心没打开时也要能收到，所以监听不能放在这里），
+  // 本组件只消费它传下来的 feedbackPrefill。依赖整个对象而非其中的 question 字符串：
+  // nonce 变化时对象引用会变，同一问题重复点击也能再次触发。
   const feedbackRef = useRef<HTMLDivElement>(null);
   const [prefillFeedback, setPrefillFeedback] = useState("");
   useEffect(() => {
-    const onOpenFeedback = (event: Event) => {
-      const detail = (event as CustomEvent<{ question?: string }>).detail;
-      const question = typeof detail?.question === "string" ? detail.question.trim() : "";
-      if (question) setPrefillFeedback(question);
-      setActivePanel("feedback");
-      window.requestAnimationFrame(() => {
-        feedbackRef.current?.scrollIntoView({ behavior: "smooth", block: "start" });
-      });
-    };
-    window.addEventListener("mainpg:open-feedback", onOpenFeedback);
-    return () => window.removeEventListener("mainpg:open-feedback", onOpenFeedback);
-  }, []);
+    if (!feedbackPrefill) return;
+    if (feedbackPrefill.question) setPrefillFeedback(feedbackPrefill.question);
+    setActivePanel("feedback");
+    window.requestAnimationFrame(() => {
+      feedbackRef.current?.scrollIntoView({ behavior: "smooth", block: "start" });
+    });
+  }, [feedbackPrefill]);
 
   useEffect(() => {
     if (!pendingPaymentOrderId) return;

@@ -61,6 +61,28 @@ _STOPWORDS = frozenset(
     }
 )
 
+#: 查询侧的填充语（语气词、疑问词、叙述性套话）。
+#:
+#: ⚠️ **只用于估算「问句的信息长度」，不参与关键词子串匹配**：匹配仍在完整问句上做，
+#: 删词不会破坏 keywords 的子串命中（例如 keywords 里的「怎么上传图片」照旧能命中）。
+#:
+#: 为什么需要它：density（命中字符数 ÷ 问句长度）是关键词层的主信号，而用户把话说完整时
+#: 多出来的多半是这类填充语 —— 「我在…页面点了…，但是一直没有反应，是不是卡住了」里
+#: 真正有信息量的只有「没有反应」「卡住」几个字。用完整长度做分母会让问得越认真的用户
+#: 越难命中，与设计目标相反。
+#:
+#: 用**固定顺序的 tuple**（而不是 set），保证结果在任意进程中都一致。
+_QUERY_FILLERS: tuple[str, ...] = (
+    "可不可以", "怎么回事", "是不是", "有没有", "能不能", "为什么", "怎么样",
+    "怎么办", "什么", "请问", "你们", "我们", "这个", "那个", "刚才", "已经",
+    "但是", "然后", "不过", "而且", "因为", "所以", "还是", "就是", "有点",
+    "老是这样", "哪里", "一直", "一下", "一个", "我", "你", "的", "了", "是",
+    "吗", "呢", "啊", "吧", "呀", "嘛",
+)
+
+#: 信息长度下限。问句被填充语剪短后仍要留下可比较的分母，且不能小于命中字符数。
+_MIN_INFORMATIVE_LENGTH = 2
+
 
 # ---------------------------------------------------------------------------
 # 数据结构
@@ -131,6 +153,23 @@ def _strip_stopwords(text: str) -> str:
     return text
 
 
+def _informative_length(query_norm: str, matched_chars: int = 0) -> int:
+    """估算问句的**信息长度**：扣掉 :data:`_QUERY_FILLERS` 里的填充语后剩下的字符数。
+
+    只用于给 density 当分母，不改变任何匹配行为。这样「我在产品处理页面点了开始处理，
+    但是一直没有反应，是不是卡住了」和「任务卡住」会得到接近的密度，而不是被 27 个
+    字符的分母压到几乎为零。
+
+    下限取 ``max(剪枝后长度, 命中字符数)``：命中词也可能包含填充语（如 keywords 里的
+    「怎么上传图片」），此时密度封顶为 1.0，不会出现大于 1 的值。
+    """
+    stripped = query_norm
+    for word in _QUERY_FILLERS:
+        if word in stripped:
+            stripped = stripped.replace(word, "")
+    return max(len(stripped), matched_chars, _MIN_INFORMATIVE_LENGTH)
+
+
 # ---------------------------------------------------------------------------
 # 相似度工具
 # ---------------------------------------------------------------------------
@@ -183,14 +222,35 @@ def similarity(query: str, target: str) -> float:
 # ---------------------------------------------------------------------------
 
 
+def _keyword_hits(query_norm: str, faq: Mapping[str, Any]) -> tuple[int, int, int]:
+    """统计一条 FAQ 的**关键词命中强度**：``(命中个数, 命中总字符数, 关键词总数)``。
+
+    关键词层（打分）与模糊层（候选排序）共用同一份统计，避免两处口径漂移。
+    命中判定就是「keywords 里的词是问句的子串」，与是否命中填充语无关。
+    """
+    keywords = [str(k) for k in (faq.get("keywords") or []) if str(k).strip()]
+    matched = 0
+    matched_chars = 0
+    for kw in keywords:
+        kw_norm = normalize(kw)
+        if not kw_norm:
+            continue
+        if kw_norm in query_norm:
+            matched += 1
+            matched_chars += len(kw_norm)
+    return matched, matched_chars, len(keywords)
+
+
 def _keyword_score(query_norm: str, faq: Mapping[str, Any]) -> float:
     """计算单条 FAQ 的关键词命中得分。
 
     两个信号融合：
 
-    * **匹配密度**（主信号）：命中的关键词字符数占用户问句的比例。
+    * **匹配密度**（主信号）：命中的关键词字符数占**问句信息长度**的比例。
       短问句里命中一个长关键词就很说明问题 —— 用户只说了 4 个字，其中 2 个字
       正是这条 FAQ 的关键词，相关性已经很强。
+      分母用 :func:`_informative_length` 而不是问句原始长度：用户把话说完整时，
+      多出来的多是「我在…但是…是不是…」这类填充语，不代表更多信息量。
     * **覆盖率**（副信号）：命中数 / 关键词总数，用平方根削弱分母惩罚。
       一条 FAQ 的关键词写得越全（这正是我们鼓励的），分母越大，用户只命中
       其中两三个时反而拿不到高分 —— 会出现"写得越认真、越难命中"的荒谬结果。
@@ -200,31 +260,19 @@ def _keyword_score(query_norm: str, faq: Mapping[str, Any]) -> float:
     标题相似度作为低权重补充，用于在关键词打平时区分。
     """
     question = str(faq.get("question", ""))
-    keywords = [str(k) for k in (faq.get("keywords") or []) if str(k).strip()]
-
     question_sim = similarity(query_norm, question)
 
-    if not keywords:
+    matched, matched_chars, keyword_total = _keyword_hits(query_norm, faq)
+    if keyword_total == 0:
         return question_sim
-
-    matched = 0
-    matched_chars = 0
-    for kw in keywords:
-        kw_norm = normalize(kw)
-        if not kw_norm:
-            continue
-        # 子串命中即可：keywords 是人写的，命中即代表语义相关
-        if kw_norm in query_norm:
-            matched += 1
-            matched_chars += len(kw_norm)
 
     if matched == 0:
         # 一个关键词都没命中：只有标题高度相似时才给分，且权重较低
         return question_sim * _QUESTION_WEIGHT
 
-    coverage = (matched / len(keywords)) ** _COVERAGE_DAMPING
-    # 命中字符占问句的比例，封顶 1.0（命中词可能比问句还长）
-    density = min(1.0, matched_chars / max(1, len(query_norm)))
+    coverage = (matched / keyword_total) ** _COVERAGE_DAMPING
+    # 命中字符占问句信息量的比例，封顶 1.0（命中词可能比剪枝后的问句还长）
+    density = min(1.0, matched_chars / _informative_length(query_norm, matched_chars))
     # 命中数本身给少量加成，避免"命中 1 个"与"命中 3 个"拿到一样的分
     breadth = min(matched, 4) * 0.04
 
@@ -333,16 +381,20 @@ def fuzzy_candidates(
 
     ⚠️ **返回的 FaqHit 一律不含答案**（``answer=""``）。候选必须由用户点选确认后
     才去取答案 —— 模糊匹配可能推荐错，直接把答案甩给用户会造成"答非所问"。
+
+    ⚠️ **排序按「关键词命中强度」而不是相似度**（``命中字符数 → 命中个数 → 相似度``）。
+    用户原样打出的长短语（如"导出店小秘表格"）是最强的意图证据，命中字符数正是它的度量；
+    若按相似度排，长问句里各条保底分都挤在 0.4~0.5，顺序会退化成 ``faqs.json`` 的行序。
+    ``score`` 字段仍是相似度口径，供 :func:`search` 判断是否达到直接命中阈值。
     """
     query_norm = normalize(query)
     if not query_norm:
         return []
 
-    scored: list[FaqHit] = []
+    scored: list[tuple[tuple[int, int, float], FaqHit]] = []
     for faq in faqs:
         # 路径一：字符相似度（问题 与 关键词中取较高者）
         best = similarity(query_norm, str(faq.get("question", "")))
-        soft_hit = 0.0
         for kw in faq.get("keywords") or []:
             kw_norm = normalize(str(kw))
             if not kw_norm:
@@ -350,24 +402,31 @@ def fuzzy_candidates(
             score = similarity(query_norm, kw_norm)
             if score > best:
                 best = score
-            # 路径二：子串命中即给保底分，长关键词给得更高
-            if kw_norm in query_norm:
-                soft_hit = max(soft_hit, min(0.5, 0.3 + 0.1 * len(kw_norm)))
+
+        matched, matched_chars, _ = _keyword_hits(query_norm, faq)
+        # 路径二：子串命中即给保底分，命中的关键词越多越长给得越高（封顶 0.5）
+        soft_hit = min(0.5, 0.3 + 0.1 * matched_chars) if matched else 0.0
 
         final = max(best, soft_hit)
         if final >= floor:
             scored.append(
-                FaqHit(
-                    faq_id=str(faq.get("id", "")),
-                    question=str(faq.get("question", "")),
-                    score=final,
-                    answer="",  # ← 刻意留空：候选阶段不暴露答案
-                    category=str(faq.get("category", "")),
+                (
+                    # 排序以「用户说到的那个关键词有多长」为主：用户原样打出的长短语
+                    # （如"导出店小秘表格"）是最强的意图证据，命中字符数能直接反映它。
+                    # 命中个数、相似度作为次级区分；_keyword_score 只用于判定是否直接命中。
+                    (matched_chars, matched, final),
+                    FaqHit(
+                        faq_id=str(faq.get("id", "")),
+                        question=str(faq.get("question", "")),
+                        score=final,
+                        answer="",  # ← 刻意留空：候选阶段不暴露答案
+                        category=str(faq.get("category", "")),
+                    ),
                 )
             )
 
-    scored.sort(key=lambda h: h.score, reverse=True)
-    return scored[:top_k]
+    scored.sort(key=lambda pair: pair[0], reverse=True)
+    return [hit for _, hit in scored[:top_k]]
 
 
 # ---------------------------------------------------------------------------
@@ -429,17 +488,19 @@ def search(
     candidates = fuzzy_candidates(rewritten, faqs) if rewritten != normalized else []
     if not candidates:
         candidates = fuzzy_candidates(raw_query, faqs)
-    if candidates and candidates[0].score >= FUZZY_HIT_THRESHOLD:
-        top_id = candidates[0].faq_id
+    # 候选按「关键词命中强度」排序，但**能否直接给答案只看相似度**：
+    # 相似度足够高才敢替用户做决定，否则只给候选让用户点一下。
+    top_by_similarity = max(candidates, key=lambda c: c.score) if candidates else None
+    if top_by_similarity is not None and top_by_similarity.score >= FUZZY_HIT_THRESHOLD:
         for faq in faqs:
-            if str(faq.get("id", "")) == top_id:
+            if str(faq.get("id", "")) == top_by_similarity.faq_id:
                 return SearchResult(
                     query=raw_query,
                     normalized_query=normalized,
                     hit=FaqHit(
-                        faq_id=top_id,
+                        faq_id=top_by_similarity.faq_id,
                         question=str(faq.get("question", "")),
-                        score=candidates[0].score,
+                        score=top_by_similarity.score,
                         answer=str(faq.get("answer", "")),
                         category=str(faq.get("category", "")),
                     ),

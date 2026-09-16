@@ -95,6 +95,83 @@ export function toUserMessage(raw: string): string {
   ) {
     return "登录状态已过期，请退出后重新登录";
   }
+
+  // ---- 注册 / 登录 / 邮箱验证码 ----
+  // 后端这批 detail 全是英文，原先一条都不匹配，用户在注册页无论遇到哪种失败
+  // 都只看到「操作失败，请稍后重试」——邀请码错、邮箱已注册、验证码过期完全分不清。
+  if (/invitation code has been used up/i.test(message)) return "这个邀请码的名额已经用完了，请找对接人要一个新的";
+  if (/invitation code has expired/i.test(message)) return "邀请码已过期，请找对接人要一个新的";
+  if (/invitation code is invalid/i.test(message)) return "邀请码不正确，请核对后重新填写";
+  if (/invitation code is required/i.test(message)) return "请填写邀请码";
+  if (/please wait 60 seconds before requesting another email code/i.test(message)) {
+    return "验证码刚发过，请 60 秒后再点一次";
+  }
+  if (/too many email code requests/i.test(message)) return "这个邮箱获取验证码太频繁了（1 小时最多 5 次），请过一会儿再试";
+  if (/too many invalid email code attempts/i.test(message)) return "验证码错误次数太多，请重新获取一个新的验证码";
+  if (/invalid or expired email code/i.test(message)) return "邮箱验证码不正确或已过期，请重新获取验证码";
+  if (/a valid 6-digit email code is required/i.test(message)) return "请输入 6 位数字验证码";
+  if (/verification email could not be sent|email verification service is not configured/i.test(message)) {
+    return "验证码邮件发送失败，请稍后重试；一直失败请把提示发给我们";
+  }
+  if (/username or email already exists/i.test(message)) {
+    return "这个用户名或邮箱已经注册过了，可以直接登录；忘记密码就在登录页点「忘记密码？」重置";
+  }
+  if (/password must be at least 6 characters/i.test(message)) return "密码至少 6 位，请重新设置";
+  if (/a valid email is required/i.test(message)) return "邮箱格式不正确，请检查后重新填写";
+  if (/account not found/i.test(message)) return "找不到这个账号，请确认用户名或邮箱有没有写错";
+  if (/customer account is not active|user account is not active/i.test(message)) return "这个账号已被停用，请联系对接人";
+  if (/user is not registered on the server/i.test(message)) return "这个账号还没有在服务器上注册，请先用邮箱注册";
+  if (/invalid or expired reset token/i.test(message)) return "重置链接已失效，请回登录页重新获取验证码";
+
+  // ---- 浏览器插件 ----
+  if (/plugin session is offline|invalid plugin session|plugin session not found|missing plugin session/i.test(message)) {
+    return "插件和工作台的连接断开了，请在插件面板点「连接插件」重连";
+  }
+  if (/at most two active capture batches/i.test(message)) return "插件采集同时最多跑 2 个批次，请等前面的批次结束后再试";
+  if (/plugin queue is unavailable/i.test(message)) return "插件采集服务暂不可用，请稍后重试";
+
+  // ---- 产品库 / 利润活动 ----
+  if (/product_id_already_exists/i.test(message)) return "这个商品 ID 在产品库里已经有了，直接编辑那一条就行";
+  if (/site_code_already_exists/i.test(message)) return "这个站点已经存在了";
+  if (/site_code_invalid|site_code_path_mismatch/i.test(message)) return "站点信息对不上，请刷新页面后重试";
+  if (/numeric value (is required|must be positive)|settings value must be numeric/i.test(message)) {
+    return "数值填得不对：售价、成本、重量都要填大于或等于 0 的数字";
+  }
+  if (/only \.xlsx or \.xlsm is supported/i.test(message)) return "只支持 .xlsx 或 .xlsm 格式的表格，请换一个文件";
+  if (/no eligible products to dispatch/i.test(message)) return "没有可提交的产品，请检查勾选和站点";
+  if (/profit_activity_company_write_required/i.test(message)) return "当前账号没有修改公司数据的权限，请联系对接人";
+  // 后端把缺失字段用逗号拼在一起返回（如 product_image_required,source_url_required），
+  // 逐字翻译没意义，统一提示去补哪几列。
+  if (/^[a-z_]+_required(,[a-z_]+_required)+$/.test(message)) {
+    return "表格里还缺必填项，请把商品 ID、售价、成本、重量、商品主图和货源链接补齐后再导入";
+  }
+
+  // ---- POD 定制 ----
+  if (/POD billing request was rejected/i.test(message)) return "计费服务拒绝了这次请求，请稍后重试；一直失败就把提示发给我们";
+  if (/POD billing (permission|authentication) is required/i.test(message)) return "当前账号的 POD 计费权限有问题，请联系对接人";
+  if (/POD billing service returned an invalid response/i.test(message)) return "计费服务返回异常，请稍后重试";
+  if (/POD template upload is too large/i.test(message)) return "模板图片太大了，请换一张小一点的再传";
+  if (/POD scene optimization is not available|POD single-image regeneration is not available/i.test(message)) {
+    return "这个版本还不支持该功能";
+  }
+
+  // ---- 版本更新（后端这些错误原本原样英文展示在弹窗里）----
+  if (/SHA-256 (does not match|mismatch)|size mismatch/i.test(message)) {
+    return "更新包校验没通过，通常是下载不完整，请点「重新更新」再试一次";
+  }
+  if (/manifest/i.test(message)) return "更新信息校验失败，请稍后重试；一直失败请把提示发给我们";
+  if (/No verified (update|patch) is available to install/i.test(message)) return "没有可安装的更新包，请重新检查更新";
+  if (/MainPG-Updater\.exe is missing/i.test(message)) return "更新程序缺失，请重新安装完整版";
+  if (/Automatic updates are only available on Windows/i.test(message)) return "当前系统不支持自动更新，请手动下载安装包";
+  if (/download returned non-binary data/i.test(message)) return "更新包下载异常，请稍后重试";
+  if (/Cross-origin update actions are not allowed/i.test(message)) return "更新请求来源不被允许，请从工作台里点更新";
+
+  // ---- 其它 ----
+  if (/preview finalization exceeded the time budget/i.test(message)) return "图片发布超时了，可以点「仅重试失败图片」再试一次";
+  if (/unsupported miaoshou template kind/i.test(message)) return "妙手导出的模板类型不对，请选择「服饰类」或「非服饰类」";
+  if (/\bis not configured\b/i.test(message)) return "相关服务还没配置好，请联系对接人处理";
+  if (/provider is unavailable/i.test(message)) return "上游服务暂时不可用，请稍后重试";
+
   // 账号或密码错误
   if (/invalid username\/email or password/i.test(message)) return "账号或密码不正确，请核对后重试";
   // 积分/余额不足
@@ -131,6 +208,8 @@ export function toUserMessage(raw: string): string {
   // 核价图搜相关业务文案
   if (message.includes("no retained")) return "当前没有已保留的 SKC，无法创建货源图搜任务。";
   if (message.includes("select at least")) return "请先在图搜结果中选择至少一个候选货源后再完成入库。";
+  // 其它「xxx is required」类必填错误：给一句人话，别落通用兜底
+  if (/\bis required\b/i.test(message)) return "必填信息没填完整，请检查后再试";
   // 已是中文（含中文）→ 原样返回
   if (/[\u4e00-\u9fa5]/.test(message)) return message;
   // 其余英文 → 通用中文兜底
@@ -184,7 +263,7 @@ export async function httpJson<T>(path: string, options: RequestOptions = {}): P
   }
 
   if (!response.ok) {
-    const detail = typeof payload?.detail === "string" ? payload.detail : `请求失败 (HTTP ${response.status})`;
+    const detail = detailFromPayload(payload, response.status);
     if (isSessionExpired(response, detail)) notifySessionExpired();
     throw new Error(toUserMessage(detail));
   }
@@ -214,4 +293,21 @@ export async function httpBlob(path: string, options: RequestOptions = {}): Prom
   }
 
   return response.blob();
+}
+
+/**
+ * 从错误响应体里取出给用户看的文本。
+ *
+ * 后端有两种写法：字符串 detail，以及 `{"code": "...", "message": "中文提示"}` 这种对象
+ * detail（采集服务不可用、候选不可确认入库等）。以前只认字符串，对象会被丢掉，用户看到
+ * 的是「请求失败 (HTTP 503)」——后端写好的那句中文反而看不到。
+ */
+function detailFromPayload(payload: unknown, status: number): string {
+  const detail = (payload as { detail?: unknown } | null)?.detail;
+  if (typeof detail === "string" && detail.trim()) return detail;
+  if (detail && typeof detail === "object") {
+    const message = (detail as { message?: unknown }).message;
+    if (typeof message === "string" && message.trim()) return message;
+  }
+  return `请求失败 (HTTP ${status})`;
 }

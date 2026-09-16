@@ -36,6 +36,21 @@ class FaqLibrary:
     version: int
 
 
+def _to_local_time(value: Any) -> str:
+    """把库里存的 UTC 时间串换算成本机时区，格式仍是 ``YYYY-MM-DD HH:MM:SS``。
+
+    ``help_agent_missed_questions`` 的时间戳由 SQLite 的 ``datetime('now')`` 写入，
+    存的是 UTC；直接返回会给维护者一个比北京时间早 8 小时的错觉。只在这里做读取
+    换算，库里的存储口径保持 UTC 不变。解析失败时原样返回，不因脏数据报错。
+    """
+    text = str(value or "")
+    try:
+        parsed = datetime.strptime(text, "%Y-%m-%d %H:%M:%S").replace(tzinfo=timezone.utc)
+    except ValueError:
+        return text
+    return parsed.astimezone().strftime("%Y-%m-%d %H:%M:%S")
+
+
 def faq_data_path() -> Path:
     """定位 FAQ 数据文件，兼容源码运行与 PyInstaller 打包运行。
 
@@ -198,7 +213,12 @@ class HelpAgentService:
             conn.commit()
 
     def list_missed(self, *, limit: int = 100) -> list[dict[str, Any]]:
-        """按热度列出未命中问题（供维护者查库/接口查看）。"""
+        """按热度列出未命中问题（供维护者查库/接口查看）。
+
+        ``first_seen`` / ``last_seen`` 在库里是 UTC（SQLite ``datetime('now')``），
+        这里换算成本机时区再返回，免得维护者看到的时间比北京时间早 8 小时。
+        库里的口径不动：``purge_expired`` 仍按 UTC 比较，逻辑自洽。
+        """
         with self._connect() as conn:
             rows = conn.execute(
                 """
@@ -209,7 +229,16 @@ class HelpAgentService:
                 """,
                 (max(1, int(limit)),),
             ).fetchall()
-        return [dict(row) for row in rows]
+        return [
+            {
+                "question": row["question"],
+                "raw_sample": row["raw_sample"],
+                "hits": row["hits"],
+                "first_seen": _to_local_time(row["first_seen"]),
+                "last_seen": _to_local_time(row["last_seen"]),
+            }
+            for row in rows
+        ]
 
     def clear_missed(self) -> int:
         """清空未命中清单，返回删除条数。"""

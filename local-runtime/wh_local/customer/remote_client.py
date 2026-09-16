@@ -12,6 +12,8 @@ import requests
 from ..config import default_config, is_ip_literal_host
 from .contracts import (
     CustomerAuthActionResult,
+    CustomerAuthPermissionError,
+    CustomerAuthProtocolError,
     CustomerAuthRejected,
     CustomerAuthResult,
     CustomerAuthUnavailable,
@@ -49,29 +51,29 @@ class CustomerAuthClient:
         return bool(self.base_url)
 
     def login(self, payload: dict[str, Any]) -> CustomerAuthResult:
-        response = self._post("/api/customer/login", payload)
+        response = self._post("/api/customer/login", payload, account_action=True)
         return normalize_login_response(response, fallback_username=str(payload.get("username") or payload.get("email") or ""))
 
     def register(self, payload: dict[str, Any]) -> CustomerAuthActionResult:
-        return normalize_action_response(self._post("/api/customer/register", payload))
+        return normalize_action_response(self._post("/api/customer/register", payload, account_action=True))
 
     def activate(self, payload: dict[str, Any]) -> CustomerAuthActionResult:
-        return normalize_action_response(self._post("/api/customer/activate", payload))
+        return normalize_action_response(self._post("/api/customer/activate", payload, account_action=True))
 
     def email_code(self, payload: dict[str, Any]) -> CustomerAuthActionResult:
-        return normalize_action_response(self._post("/api/customer/email-code", payload))
+        return normalize_action_response(self._post("/api/customer/email-code", payload, account_action=True))
 
     def password_reset(self, payload: dict[str, Any]) -> CustomerAuthActionResult:
-        return normalize_action_response(self._post("/api/customer/password-reset", payload))
+        return normalize_action_response(self._post("/api/customer/password-reset", payload, account_action=True))
 
     def change_password(self, payload: dict[str, Any]) -> CustomerAuthActionResult:
-        return normalize_action_response(self._post("/api/customer/change-password", payload))
+        return normalize_action_response(self._post("/api/customer/change-password", payload, account_action=True))
 
     def forgot_password(self, payload: dict[str, Any]) -> CustomerAuthActionResult:
-        return normalize_action_response(self._post("/api/customer/forgot-password", payload))
+        return normalize_action_response(self._post("/api/customer/forgot-password", payload, account_action=True))
 
     def reset_password(self, payload: dict[str, Any]) -> CustomerAuthActionResult:
-        return normalize_action_response(self._post("/api/customer/reset-password", payload))
+        return normalize_action_response(self._post("/api/customer/reset-password", payload, account_action=True))
 
     def logout(self, remote_token: str) -> CustomerAuthActionResult:
         """Revoke a remote wh_auth_* platform session (single-login state)."""
@@ -251,6 +253,9 @@ class CustomerAuthClient:
                     response = function(*args, **kwargs)
             except CustomerBillingProtocolError:
                 raise
+            except CustomerAuthProtocolError as exc:
+                # 响应体读不出来（非 JSON / 编码异常）：这是契约被破坏，重试没有意义。
+                raise CustomerBillingProtocolError() from exc
             except (json.JSONDecodeError, UnicodeError) as exc:
                 raise CustomerBillingProtocolError() from exc
             except CustomerAuthUnavailable as exc:
@@ -277,8 +282,15 @@ class CustomerAuthClient:
             return response
         raise AssertionError("unreachable")
 
-    def _post(self, path: str, payload: dict[str, Any], headers: dict[str, str] | None = None) -> dict[str, Any]:
-        return self._request("POST", path, payload, headers)
+    def _post(
+        self,
+        path: str,
+        payload: dict[str, Any],
+        headers: dict[str, str] | None = None,
+        *,
+        account_action: bool = False,
+    ) -> dict[str, Any]:
+        return self._request("POST", path, payload, headers, account_action=account_action)
 
     def _request(
         self,
@@ -286,6 +298,8 @@ class CustomerAuthClient:
         path: str,
         payload: dict[str, Any] | None = None,
         headers: dict[str, str] | None = None,
+        *,
+        account_action: bool = False,
     ) -> dict[str, Any]:
         if not self.base_url:
             raise CustomerAuthUnavailable("customer auth service is not configured")
@@ -309,6 +323,10 @@ class CustomerAuthClient:
         if status >= 400:
             detail = _detail_from_text(response.text)
             if status in (401, 403):
+                if account_action and detail:
+                    # 账号操作要把上游原因带给用户（邀请码过期、验证码错误、密码不对…），
+                    # 折叠成固定话术会让注册/登录页只剩一句「操作失败，请稍后重试」。
+                    raise CustomerAuthPermissionError(status, detail) from None
                 raise CustomerBillingPermissionError(status) from None
             if 400 <= status < 500:
                 raise CustomerAuthRejected(
@@ -320,6 +338,10 @@ class CustomerAuthClient:
             ) from None
         try:
             return json.loads(response.text or "{}")
+        except json.JSONDecodeError as exc:
+            # 200 但响应体不是 JSON：契约被破坏。用专门的子类上报，
+            # 计费链路据此走协议错误（不重试），账号链路仍按 503 兜底。
+            raise CustomerAuthProtocolError("customer auth service returned an invalid response") from exc
         except (ValueError, TypeError) as exc:
             raise CustomerAuthUnavailable("customer auth service returned an invalid response") from exc
 
@@ -353,6 +375,10 @@ class CustomerAuthClient:
             ) from None
         try:
             return json.loads(response.text or "{}")
+        except json.JSONDecodeError as exc:
+            # 200 但响应体不是 JSON：契约被破坏。用专门的子类上报，
+            # 计费链路据此走协议错误（不重试），账号链路仍按 503 兜底。
+            raise CustomerAuthProtocolError("customer auth service returned an invalid response") from exc
         except (ValueError, TypeError) as exc:
             raise CustomerAuthUnavailable("customer auth service returned an invalid response") from exc
 

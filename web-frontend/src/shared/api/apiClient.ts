@@ -22,7 +22,14 @@ export async function apiRequest<T>(path: string, init?: RequestInit): Promise<T
     let message = `请求失败（${response.status}）`;
     try {
       const payload = (await response.json()) as { detail?: unknown };
-      if (typeof payload.detail === "string") message = payload.detail;
+      if (typeof payload.detail === "string") {
+        message = payload.detail;
+      } else if (payload.detail && typeof payload.detail === "object") {
+        // 后端部分接口把 detail 写成 {"code": "...", "message": "中文提示"}，
+        // 以前只认字符串，用户看到的是「请求失败（503）」，那句中文反而丢了。
+        const nested = (payload.detail as { message?: unknown }).message;
+        if (typeof nested === "string" && nested.trim()) message = nested;
+      }
     } catch {
       // Keep the status-based fallback when the response is not JSON.
     }

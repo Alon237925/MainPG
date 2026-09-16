@@ -15,6 +15,7 @@ import {
   startSkuRepull,
 } from "../api/dailySelectionApi";
 import { getApiToken } from "../../../shared/api/apiClient";
+import { toUserMessage } from "../../../transport/http/client";
 import { ShopCollectionPanel } from "../components/ShopCollectionPanel";
 import { PluginOneboundCapturePanel } from "../components/PluginOneboundCapturePanel";
 import type {
@@ -557,7 +558,9 @@ export function DailySelectionPage({ view = "directions", initialDirectionId, on
           return;
         }
         if (task.status === "failed") {
-          setError(task.error || "采集请求失败");
+          // 异步任务错误是后端原文（可能是英文，如 1688 collection provider is not configured），
+          // 之前是原样渲染，这里过一遍统一翻译层。
+          setError(task.error ? toUserMessage(task.error) : "采集请求失败");
           setCollecting(false);
           setCollectionTaskId(null);
           return;

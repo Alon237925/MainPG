@@ -19,11 +19,15 @@ export type ChatMessage = {
  * - ``hit``        → 直接给正文答案 + 分类标签
  * - ``candidates`` → 给候选问题列表（**不含答案**，点选后走 confirm）
  * - ``fallback``   → 给兜底文案 + 反馈按钮标记，并带上原问题供预填
+ *
+ * ``allowFeedback=false`` 用于登录前（注册/登录页）：那里没有反馈面板，
+ * 兜底文案不能再说「点下面的按钮」，要改成「登录后去哪反馈」。
  */
 export function toAssistantMessage(
   result: HelpAgentSearchResult,
   id: string,
   question = "",
+  options: { allowFeedback?: boolean } = {},
 ): ChatMessage {
   if (result.type === "hit") {
     return { id, role: "assistant", text: result.answer, category: result.category };
@@ -39,7 +43,9 @@ export function toAssistantMessage(
   return {
     id,
     role: "assistant",
-    text: "这个问题我暂时答不上来。可以点下面的按钮把问题反馈给我们，我们会补充到常见问题里。",
+    text: options.allowFeedback === false
+      ? "这个问题我暂时答不上来。登录后可以在「个人中心」的「意见反馈」里提交给我们，我们会补充到常见问题里。"
+      : "这个问题我暂时答不上来。可以点下面的按钮把问题反馈给我们，我们会补充到常见问题里。",
     fallback: true,
     sourceQuestion: question,
   };
