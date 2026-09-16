@@ -5,7 +5,8 @@ const TOKEN_KEY = "wh_demo_token";
 export function getApiToken(): string {
   const stored = window.localStorage.getItem(TOKEN_KEY);
   if (stored) return stored;
-  return import.meta.env.VITE_WH_API_TOKEN || "dev-admin-token";
+  // 生产环境绝不注入 dev-admin-token，避免会话失效后静默回退获得管理员权限。
+  return import.meta.env.VITE_WH_API_TOKEN || (import.meta.env.DEV ? "dev-admin-token" : "");
 }
 
 export async function apiRequest<T>(path: string, init?: RequestInit): Promise<T> {

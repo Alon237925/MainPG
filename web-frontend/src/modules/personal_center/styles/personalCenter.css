@@ -620,7 +620,7 @@
   grid-row: 1;
   display: flex;
   flex-direction: column;
-  gap: 16px;
+  gap: 8px;
   position: sticky;
   top: 18px;
   min-width: 0;
@@ -815,6 +815,93 @@
   background: var(--theme-module-surface, rgba(255, 255, 255, 0.94));
   border: 1px solid var(--theme-module-border, rgba(148, 163, 184, 0.2));
   box-shadow: 0 14px 36px rgba(15, 23, 42, 0.08);
+}
+
+/* 体验积分卡：与身份卡同尺寸（同圆角/内边距），大数字主体展示剩余额度 */
+.personal-plan-card {
+  margin-top: 0;
+  padding: 22px 20px;
+  border-radius: 22px;
+  background: var(--theme-module-surface-raised, rgba(255, 255, 255, 0.82));
+  border: 1px solid var(--theme-module-border, rgba(99, 179, 237, 0.25));
+  box-shadow: 0 12px 28px rgba(15, 23, 42, 0.07);
+}
+
+.personal-plan-card-head {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 8px;
+}
+
+.personal-plan-card-label {
+  display: inline-flex;
+  align-items: center;
+  gap: 7px;
+  font-size: 14px;
+  font-weight: 800;
+  color: var(--theme-module-primary-strong, #075985);
+}
+
+.personal-plan-card-label .iconfont {
+  color: var(--theme-module-primary-strong, #05bff0);
+  font-size: 16px;
+}
+
+.personal-plan-card-refresh {
+  font-size: 12px;
+  font-weight: 700;
+  color: var(--theme-text-muted, #64748b);
+}
+
+.personal-plan-card-value {
+  display: flex;
+  align-items: baseline;
+  gap: 8px;
+  margin-top: 14px;
+}
+
+.personal-plan-card-value b {
+  font-size: 36px;
+  font-weight: 900;
+  letter-spacing: -0.02em;
+  line-height: 1;
+  color: var(--theme-text-primary, #132238);
+  font-variant-numeric: tabular-nums;
+}
+
+.personal-plan-card-value em {
+  font-style: normal;
+  font-size: 13px;
+  font-weight: 700;
+  color: var(--theme-text-muted, #64748b);
+}
+
+.personal-plan-card-meter {
+  margin-top: 18px;
+  height: 12px;
+  border-radius: 999px;
+  background: var(--theme-module-surface-soft, #eef2f6);
+  overflow: hidden;
+}
+
+.personal-plan-card-meter span {
+  display: block;
+  height: 100%;
+  border-radius: 999px;
+  background: var(--theme-primary-button-gradient, linear-gradient(135deg, #0ea5ff, #20e0bd));
+  transition: width 0.6s cubic-bezier(0.22, 1, 0.36, 1);
+}
+
+.personal-plan-card-foot {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 8px;
+  margin-top: 16px;
+  font-size: 12px;
+  font-weight: 650;
+  color: var(--theme-text-muted, #64748b);
 }
 
 .personal-card-title {

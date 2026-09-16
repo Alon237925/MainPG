@@ -8,6 +8,7 @@ from fastapi import HTTPException
 
 import wh_local.billing as billing_module
 from wh_local.billing import (
+    _plan_period_key,
     batch_freeze_status,
     compute_batch_charge,
     freeze_batch_points,
@@ -31,8 +32,8 @@ def _service_account(database_path: Path, balance: int = 10000) -> Actor:
             (actor.id, actor.username),
         )
         conn.execute(
-            "INSERT INTO billing_wallets (account_id, workspace_id, points_balance) VALUES (?, ?, ?)",
-            (actor.id, actor.workspace_id, balance),
+            "INSERT INTO billing_wallets (account_id, workspace_id, points_balance, plan_balance, plan_period_key) VALUES (?, ?, ?, 0, ?)",
+            (actor.id, actor.workspace_id, balance, _plan_period_key()),
         )
     return actor
 

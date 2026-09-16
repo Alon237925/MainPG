@@ -885,6 +885,41 @@ export function PersonalCenterPage({ feedbackPrefill = null }: PersonalCenterPag
               </div>
             </div>
           </div>
+          <div className="personal-plan-card">
+            <div className="personal-plan-card-head">
+              <span className="personal-plan-card-label">
+                <span className="iconfont icon-gold" aria-hidden="true" />
+                {summary?.wallet.plan?.plan_label ?? "体验版"}
+              </span>
+              <span className="personal-plan-card-refresh">
+                {summary?.wallet.plan?.next_refresh_at
+                  ? `下周一 ${formatUsageTime(summary.wallet.plan.next_refresh_at).slice(5, 16)} 刷新`
+                  : ""}
+              </span>
+            </div>
+            <div className="personal-plan-card-value">
+              <b>{summary?.wallet.plan?.plan_balance ?? "--"}</b>
+              <em>/ {summary?.wallet.plan?.plan_limit ?? 500} 积分</em>
+            </div>
+            <div
+              className="personal-plan-card-meter"
+              role="progressbar"
+              aria-label="体验积分剩余额度"
+              aria-valuemin={0}
+              aria-valuemax={summary?.wallet.plan?.plan_limit ?? 500}
+              aria-valuenow={summary?.wallet.plan?.plan_balance ?? 0}
+            >
+              <span
+                style={{
+                  width: `${Math.min(100, Math.max(0, ((summary?.wallet.plan?.plan_balance ?? 0) / (summary?.wallet.plan?.plan_limit || 1)) * 100))}%`,
+                }}
+              />
+            </div>
+            <div className="personal-plan-card-foot">
+              <span>剩余体验额度</span>
+              <span>已用 {summary?.wallet.plan?.plan_used ?? 0}</span>
+            </div>
+          </div>
         </aside>
 
         <div className="personal-panel-content">

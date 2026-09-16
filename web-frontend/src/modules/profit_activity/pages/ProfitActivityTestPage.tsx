@@ -110,7 +110,7 @@ type SiteSettingField = {
   transform?: "percent";
 };
 
-const defaultToken = localStorage.getItem("whLocalApiToken") || "dev-admin-token";
+const defaultToken = localStorage.getItem("whLocalApiToken") || (import.meta.env.DEV ? "dev-admin-token" : "");
 const emptyProduct: ProductForm = {
   skc: "",
   store_name: "",
