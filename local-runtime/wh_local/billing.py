@@ -85,6 +85,15 @@ PLAN_BASIC_CLAIM_POINTS = 1000
 PLAN_BASIC_CLAIM_UNITS = PLAN_BASIC_CLAIM_POINTS * PLAN_UNIT_SCALE
 PLAN_BASIC_CLAIM_MAX = 4
 
+# ---------------------------------------------------------------------------
+# 每日免费领取：所有套餐（含体验版）每个北京自然日可领 100 积分进「额外积分池」。
+# 该池不设上限、不随周期重置，消费顺序在体验积分之后、充值积分之前。
+# 幂等按「北京自然日」做 key，服务端取时间，客户端改本地时钟无法重复领取。
+# 如需收口免费额度，在此加一个上限常量并在 claim_daily_extra 里校验 extra_balance。
+# ---------------------------------------------------------------------------
+DAILY_EXTRA_POINTS = 100
+DAILY_EXTRA_UNITS = DAILY_EXTRA_POINTS * PLAN_UNIT_SCALE
+
 
 def _plan_weekly_units(plan_type: str) -> int:
     """按套餐类型返回每周体验额度（0.1 积分单位）；未知类型回落默认套餐。"""
@@ -117,6 +126,28 @@ def _plan_next_refresh(period_key: str) -> str:
 
 def _plan_type_label(plan_type: str) -> str:
     return PLAN_TYPES.get(plan_type, PLAN_TYPES[PLAN_DEFAULT_TYPE])["label"]
+
+
+def _daily_period_key(now_dt: datetime | None = None) -> str:
+    """北京自然日标识（YYYY-MM-DD），作为每日免费领取的幂等周期。
+
+    时间取服务端，客户端改本地时钟不会重复领取。
+    """
+    china_tz = timezone(timedelta(hours=8))
+    dt = (now_dt or datetime.now(timezone.utc)).astimezone(china_tz)
+    return dt.date().isoformat()
+
+
+def _daily_next_refresh(period_key: str) -> str:
+    """下一个可领时刻（次日北京时间 00:00），ISO 8601 带 +08:00 偏移。"""
+    try:
+        day = datetime.strptime(period_key, "%Y-%m-%d").date()
+    except (TypeError, ValueError):
+        return ""
+    china_tz = timezone(timedelta(hours=8))
+    next_day = day + timedelta(days=1)
+    refresh = datetime(next_day.year, next_day.month, next_day.day, tzinfo=china_tz)
+    return refresh.isoformat(timespec="seconds")
 
 
 def _multiplier_category(feature_key: str) -> str:
@@ -1469,10 +1500,10 @@ def claim_basic_weekly(
     account_id: str,
     workspace_id: str = "default",
 ) -> dict[str, Any]:
-    """基础版每周领取：+1000 充值积分（永久有效），每周 1 次、最多 4 次。
+    """基础版每周领取：+1000 额外积分（进 extra_balance 子池，永久有效），每周 1 次、最多 4 次。
 
     领取资格校验：套餐为基础版、未到期、本周未领过、累计不足 4 次。
-    领到的积分直接进充值池并写台账（source_type=plan_basic_claim，按周幂等）。
+    领到的积分进额外积分子池（非充值池）并写台账（source_type=plan_basic_claim，按周幂等）。
     """
     now = _utc_now()
     period = _plan_period_key()
@@ -1529,6 +1560,63 @@ def claim_basic_weekly(
         "claim_count": new_count,
         "claim_max": PLAN_BASIC_CLAIM_MAX,
         "period": period,
+    }
+
+
+def claim_daily_extra(
+    database_path: Path,
+    account_id: str,
+    workspace_id: str = "default",
+) -> dict[str, Any]:
+    """每日免费领取：+100 额外积分（进 extra_balance 子池，永久有效、不设上限）。
+
+    所有套餐（体验版/基础版/旗舰版）均可领取，每个北京自然日 1 次。
+    资格校验只有「今天是否已领」一条：套餐、到期时间、累计次数都不参与限制，
+    因此基础版到期回落体验版后仍可继续每日领取。
+
+    幂等键按账期（北京自然日）生成，重复请求/并发重试不会重复入账。
+    """
+    now = _utc_now()
+    period = _daily_period_key()
+    with transaction(database_path) as conn:
+        _ensure_wallet(conn, account_id, workspace_id or "default")
+        wallet = conn.execute(
+            "SELECT daily_claim_date, daily_claim_count FROM billing_wallets WHERE account_id = ?",
+            (account_id,),
+        ).fetchone()
+        if wallet is None:
+            raise HTTPException(status_code=409, detail="wallet missing")
+        if str(wallet["daily_claim_date"] or "") == period:
+            raise HTTPException(status_code=409, detail="今日已领取，明天再来")
+        conn.execute(
+            """
+            UPDATE billing_wallets
+            SET extra_balance = extra_balance + ?,
+                daily_claim_date = ?, daily_claim_count = daily_claim_count + 1,
+                version = version + 1, updated_at = ?
+            WHERE account_id = ?
+            """,
+            (DAILY_EXTRA_UNITS, period, now, account_id),
+        )
+        _append_ledger(
+            conn,
+            account_id=account_id,
+            workspace_id=workspace_id or "default",
+            direction="credit",
+            points_delta=DAILY_EXTRA_UNITS,
+            source_type="daily_extra_claim",
+            source_id=f"daily:{period}",
+            idempotency_key=f"daily_extra_claim:{account_id}:{period}",
+            metadata={"claim_points": DAILY_EXTRA_POINTS, "period": period, "pool": "extra"},
+        )
+        total_days = int(wallet["daily_claim_count"] or 0) + 1
+    cache.invalidate_wallet(account_id)
+    return {
+        "ok": True,
+        "claimed_points": DAILY_EXTRA_POINTS,
+        "claim_count": total_days,
+        "period": period,
+        "next_claim_at": _daily_next_refresh(period),
     }
 
 
@@ -1813,7 +1901,8 @@ def settle_payment_order(
             )
         package_id = str(order["package_id"] or "")
         if package_id == PLAN_BASIC_PACKAGE_ID:
-            # 基础版套餐：充值积分已按 base_points 入账，此处激活 4 周套餐与每周 1500 体验额度。
+            # 基础版套餐：充值积分已按 base_points 入账，此处激活 4 周套餐与每周 500 体验额度
+            # （另有每周 1000 额外积分领取资格，见 claim_basic_weekly）。
             _activate_basic_plan(conn, account_id, now)
         settled = conn.execute(
             "SELECT * FROM billing_payment_orders WHERE order_id = ?",

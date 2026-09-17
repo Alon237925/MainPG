@@ -2328,3 +2328,21 @@
   font-size: 0.78rem;
   color: var(--theme-accent, #16a34a);
 }
+/* 基础版专属的每周 1000 领取区，作为每日领取的下挂区域 */
+.personal-plan-claim-basic {
+  display: grid;
+  gap: 8px;
+  padding-top: 8px;
+  border-top: 1px dashed var(--theme-border-soft, #e2e8f0);
+}
+.personal-plan-claim-basic .personal-plan-claim-btn.is-secondary {
+  padding: 5px 14px;
+  font-size: 0.78rem;
+  background: var(--theme-module-surface-soft, #eef2f6);
+  color: var(--theme-module-primary-strong, #075985);
+  box-shadow: inset 0 0 0 1px var(--theme-module-primary-strong, #0ea5ff);
+}
+.personal-plan-claim-basic .personal-plan-claim-btn.is-secondary:hover:not(:disabled) {
+  filter: brightness(1.04);
+  box-shadow: inset 0 0 0 1px var(--theme-module-primary-strong, #0ea5ff), 0 6px 14px rgba(14, 165, 255, 0.18);
+}

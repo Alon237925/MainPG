@@ -33,12 +33,15 @@ from ..billing import (
     BATCH_BILLING_PROFILE_POD,
     BATCH_BILLING_PROFILE_POD_SEMI,
     BATCH_BILLING_PROFILE_PRODUCT,
+    DAILY_EXTRA_POINTS,
     PLAN_BASIC_PACKAGE_ID,
     PLAN_BASIC_PRICE_CENTS,
     PLAN_BASIC_CLAIM_MAX,
     PLAN_BASIC_CLAIM_POINTS,
     TOPUP_PROMOTION_ID,
     TOPUP_PROMOTION_NAME,
+    _daily_next_refresh,
+    _daily_period_key,
     _ensure_wallet,
     _plan_next_refresh,
     _plan_period_key,
@@ -47,6 +50,7 @@ from ..billing import (
     active_pricing,
     batch_freeze_status,
     claim_basic_weekly,
+    claim_daily_extra,
     compute_batch_charge,
     freeze_batch_points,
     pricing_changelog,
@@ -1416,9 +1420,24 @@ def create_auth_app(database_path: Path | None = None) -> FastAPI:
     def claim_basic_plan_points(
         authorization: str | None = Header(default=None),
     ) -> dict[str, Any]:
-        """基础版每周领取 1000 积分（充值池，永久有效）。"""
+        """基础版每周领取 1000 积分（额外积分池，永久有效）。"""
         account = _required_account(db_path, authorization)
         return claim_basic_weekly(
+            db_path,
+            str(account["account_id"]),
+            str(account.get("workspace_id") or "default"),
+        )
+
+    @app.post("/api/customer/billing/daily-extra/claim")
+    def claim_daily_extra_points(
+        authorization: str | None = Header(default=None),
+    ) -> dict[str, Any]:
+        """每日免费领取 100 积分（额外积分池，永久有效，所有套餐可用）。
+
+        幂等按北京自然日，单账号每日仅一次；重复请求返回 409。
+        """
+        account = _required_account(db_path, authorization)
+        return claim_daily_extra(
             db_path,
             str(account["account_id"]),
             str(account.get("workspace_id") or "default"),
@@ -3223,6 +3242,10 @@ def _billing_summary(database_path: Path, account: dict[str, Any]) -> dict[str, 
         and claim_count < PLAN_BASIC_CLAIM_MAX
         and str(wallet["basic_claim_period"] if wallet else "") != _plan_period_key()
     )
+    # 每日免费领取状态：所有套餐通用，唯一条件是「今天还没领」。
+    today = _daily_period_key()
+    daily_claim_date = str(wallet["daily_claim_date"] if wallet else "")
+    daily_claimable = daily_claim_date != today
     payload = {
         "ok": True,
         "account": {
@@ -3252,6 +3275,10 @@ def _billing_summary(database_path: Path, account: dict[str, Any]) -> dict[str, 
                 "basic_claim_count": claim_count,
                 "basic_claim_max": PLAN_BASIC_CLAIM_MAX,
                 "basic_claimable": basic_claimable,
+                "daily_claim_points": DAILY_EXTRA_POINTS,
+                "daily_claimable": daily_claimable,
+                "daily_claim_date": daily_claim_date,
+                "daily_next_claim_at": _daily_next_refresh(today) if not daily_claimable else "",
                 "extra_balance": _display_billing_points(int(wallet["extra_balance"] if wallet else 0), pricing),
             },
         },

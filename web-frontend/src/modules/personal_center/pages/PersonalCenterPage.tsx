@@ -6,6 +6,7 @@ import { AVATAR_CHANGED_EVENT, AVATAR_STORAGE_KEY } from "../../../app/layout/To
 import {
   changeAccountPassword,
   claimBasicWeeklyPoints,
+  claimDailyExtraPoints,
   createTopupOrder,
   loadBillingSummary,
   loadBillingUsageHistory,
@@ -744,6 +745,8 @@ export function PersonalCenterPage({ feedbackPrefill = null }: PersonalCenterPag
 
   const [claimBusy, setClaimBusy] = useState(false);
   const [claimNotice, setClaimNotice] = useState("");
+  const [dailyClaimBusy, setDailyClaimBusy] = useState(false);
+  const [dailyClaimNotice, setDailyClaimNotice] = useState("");
 
   const claimBasicPoints = async () => {
     if (claimBusy) return;
@@ -761,6 +764,26 @@ export function PersonalCenterPage({ feedbackPrefill = null }: PersonalCenterPag
       setError(exc instanceof Error ? exc.message : "领取失败，请稍后重试");
     } finally {
       setClaimBusy(false);
+    }
+  };
+
+  /** 每日免费领取 100 积分（所有套餐通用，按北京自然日幂等）。 */
+  const claimDailyPoints = async () => {
+    if (dailyClaimBusy) return;
+    setDailyClaimBusy(true);
+    setDailyClaimNotice("");
+    setError("");
+    try {
+      const result = await claimDailyExtraPoints();
+      setDailyClaimNotice(`已领取 ${result.claimed_points} 积分，明日 00:00 后可再领`);
+      const payload = await loadBillingSummary();
+      setSummary(payload);
+      writeBalanceCache(balanceCacheKeyValue, payload);
+      lastBalanceRefreshAt.current = Date.now();
+    } catch (exc) {
+      setError(exc instanceof Error ? exc.message : "领取失败，请稍后重试");
+    } finally {
+      setDailyClaimBusy(false);
     }
   };
 
@@ -1021,41 +1044,57 @@ export function PersonalCenterPage({ feedbackPrefill = null }: PersonalCenterPag
                 <span>额外积分</span>
                 <b>{summary?.wallet.plan?.extra_balance ?? 0} 积分</b>
               </div>
-              <div
-                className="personal-plan-claim-meter"
-                role="progressbar"
-                aria-label="额外积分领取进度"
-                aria-valuemin={0}
-                aria-valuemax={summary?.wallet.plan?.basic_claim_max ?? 4}
-                aria-valuenow={summary?.wallet.plan?.basic_claim_count ?? 0}
-              >
-                <span
-                  style={{
-                    width: `${Math.min(100, Math.max(0, ((summary?.wallet.plan?.basic_claim_count ?? 0) / (summary?.wallet.plan?.basic_claim_max || 4)) * 100))}%`,
-                  }}
-                />
-              </div>
               <div className="personal-plan-claim-meta">
-                {summary?.wallet.plan?.plan_type === "basic" ? (
-                  summary!.wallet.plan.basic_claimable ? (
-                    <button
-                      type="button"
-                      className="personal-plan-claim-btn"
-                      disabled={claimBusy}
-                      onClick={claimBasicPoints}
-                    >
-                      {claimBusy ? "领取中…" : "领取 1000 积分"}
-                    </button>
-                  ) : summary!.wallet.plan.basic_claim_count >= summary!.wallet.plan.basic_claim_max ? (
-                    <span>已领满，感谢支持</span>
-                  ) : (
-                    <span>本周已领，下周一再来</span>
-                  )
+                {summary?.wallet.plan?.daily_claimable ?? true ? (
+                  <button
+                    type="button"
+                    className="personal-plan-claim-btn"
+                    disabled={dailyClaimBusy || !summary}
+                    onClick={claimDailyPoints}
+                  >
+                    {dailyClaimBusy ? "领取中…" : `每日领取 ${summary?.wallet.plan?.daily_claim_points ?? 100} 积分`}
+                  </button>
                 ) : (
-                  <span>购买基础版后，四周内每周可领</span>
+                  <span>今日已领，明天 00:00 再来</span>
                 )}
               </div>
-              {claimNotice && <p className="personal-plan-claim-notice">{claimNotice}</p>}
+              {dailyClaimNotice && <p className="personal-plan-claim-notice">{dailyClaimNotice}</p>}
+              {/* 基础版专属：四周内每周另可领 1000，与每日领取叠加 */}
+              {summary?.wallet.plan?.plan_type === "basic" && (
+                <div className="personal-plan-claim-basic">
+                  <div
+                    className="personal-plan-claim-meter"
+                    role="progressbar"
+                    aria-label="基础版每周领取进度"
+                    aria-valuemin={0}
+                    aria-valuemax={summary.wallet.plan.basic_claim_max}
+                    aria-valuenow={summary.wallet.plan.basic_claim_count}
+                  >
+                    <span
+                      style={{
+                        width: `${Math.min(100, Math.max(0, (summary.wallet.plan.basic_claim_count / (summary.wallet.plan.basic_claim_max || 4)) * 100))}%`,
+                      }}
+                    />
+                  </div>
+                  <div className="personal-plan-claim-meta">
+                    {summary.wallet.plan.basic_claimable ? (
+                      <button
+                        type="button"
+                        className="personal-plan-claim-btn is-secondary"
+                        disabled={claimBusy}
+                        onClick={claimBasicPoints}
+                      >
+                        {claimBusy ? "领取中…" : "领取基础版 1000 积分"}
+                      </button>
+                    ) : summary.wallet.plan.basic_claim_count >= summary.wallet.plan.basic_claim_max ? (
+                      <span>基础版本周额度已领满</span>
+                    ) : (
+                      <span>基础版本周已领，下周一再来</span>
+                    )}
+                  </div>
+                  {claimNotice && <p className="personal-plan-claim-notice">{claimNotice}</p>}
+                </div>
+              )}
             </div>
             <div className="personal-plan-stats">
               <div className="personal-plan-stat">
