@@ -720,15 +720,17 @@ export function PrecheckSkuManager({
                   </div>
                   {mode === 'auto' && !row.availability?.usable_source && (
                     <p className="sku-mode-hint is-warn">
-                      {row.availability?.reason === 'media_unavailable'
-                        ? '本商品规格原图素材不可用，自动模式下导出将全部回退主图。'
-                        : row.availability?.reason === 'scope_relaxed'
-                          ? '本商品当前按「宽松口径」判定，不足以直接使用规格原图，自动模式下导出将全部回退主图。'
-                          : row.availability?.reason === 'never_judged'
-                            ? '本商品尚未做过「SKU 规格图可用性判断」，自动模式下无法确认规格原图是否可用，导出将全部回退主图（即 AI 处理后的商品主图，不含中文）。'
-                            : row.availability?.judged
-                              ? '本商品判定结论为「不可用」，自动模式下导出将全部回退主图。'
-                              : '当前无法确认规格原图是否可用，自动模式下导出将全部回退主图。'}
+                      {row.availability?.reason === 'pending_sync'
+                        ? '本商品规格图还在同步，此刻无法定论（导出暂按主图）。同步完成后会自动补判，判定干净即改用规格原图，无需手动重检。'
+                        : row.availability?.reason === 'media_unavailable'
+                          ? '本商品规格原图素材不可用，自动模式下导出将全部回退主图。'
+                          : row.availability?.reason === 'scope_relaxed'
+                            ? '本商品当前按「宽松口径」判定，不足以直接使用规格原图，自动模式下导出将全部回退主图。'
+                            : row.availability?.reason === 'never_judged'
+                              ? '本商品尚未做过「SKU 规格图可用性判断」，自动模式下无法确认规格原图是否可用，导出将全部回退主图（即 AI 处理后的商品主图，不含中文）。'
+                              : row.availability?.judged
+                                ? '本商品判定结论为「不可用」，自动模式下导出将全部回退主图。'
+                                : '当前无法确认规格原图是否可用，自动模式下导出将全部回退主图。'}
                       {row.availability?.reason === 'never_judged' && ' 可先执行一次可用性判断，判定干净后会自动改用规格原图。'}
                     </p>
                   )}

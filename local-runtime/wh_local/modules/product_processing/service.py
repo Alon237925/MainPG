@@ -120,7 +120,7 @@ from .infrastructure.preview_image_repository import (
 )
 from .preview_image_service import PreviewImageService
 from .infrastructure.media_asset_repository import MediaAssetRepository, MediaMaterializationConflict
-from .media_asset_service import MediaAssetService, canonical_source_url
+from .media_asset_service import MediaAssetService, canonical_source_url, is_awaiting_sync
 from .provider_config import PREMIUM_IMAGE_MODEL, PREMIUM_IMAGE_SIZE, resolve_ai_provider
 from .server_ai_proxy import server_ai_context
 
@@ -722,6 +722,7 @@ class ProductProcessingService:
             MediaAssetRepository(repository.database),
             assets,
             public_image_fetcher=public_image_fetcher,
+            on_materialized=self._after_media_materialized,
         )
         self.preview_images = PreviewImageService(
             PreviewImageRepository(repository.database),
@@ -2808,6 +2809,33 @@ USER-REQUESTED PANEL PLANNING ADDITIONS (user extra requirements only; they MUST
             worker.start()
         return True
 
+    def _after_media_materialized(self, workspace_id: str | None) -> None:
+        """素材同步收尾后补判「等待同步」期间无法定论的 SKU 规格图可用性。
+
+        同步完成前 ``check_draft_sku_availability`` 会把链接落成 ``pending_sync`` 暂缓状态；
+        这里把那些草稿重新检一遍，让判定结果自动跟上最新图集，用户无需手动重检。
+        补判按工作区分组执行，单条失败只记日志，绝不影响已完成的物化结果。
+        """
+        try:
+            pending = self.repository.drafts_awaiting_sku_availability(workspace_id=workspace_id)
+        except Exception:  # noqa: BLE001 - 粗筛失败不影响物化结果
+            logger.warning("sku availability recheck lookup failed", exc_info=True)
+            return
+        grouped: dict[str, list[int]] = {}
+        for row in pending:
+            grouped.setdefault(str(row.get("workspace_id") or workspace_id or "local"), []).append(
+                int(row["id"])
+            )
+        for target_workspace, draft_ids in grouped.items():
+            try:
+                self.check_draft_sku_availability(draft_ids, workspace_id=target_workspace)
+            except Exception:  # noqa: BLE001 - 补判失败保持暂缓状态，等下次物化再来
+                logger.warning(
+                    "sku availability recheck failed after materialization",
+                    extra={"draft_ids": draft_ids},
+                    exc_info=True,
+                )
+
     def _launch_media_materialization(self, workspace_id: str) -> bool:
         """Start one bounded materialization worker per workspace."""
 
@@ -3857,9 +3885,11 @@ USER-REQUESTED PANEL PLANNING ADDITIONS (user extra requirements only; they MUST
     ) -> int:
         """把处理设置页的 SKU 原图可用性分类写入草稿预检覆盖。
 
-        ``classification`` 形如 ``{draft_id: "source" | "main"}``：判定「可用原图」的链接
-        记 ``source``（每个 SKU 用规格原图），其余（中文水印 / 无规格图 / 规格图过多）记
-        ``main``（统一用商品主图）。写入后预检页与导出最终版据此分流，用户仍可在预检页改。
+        ``classification`` 形如 ``{draft_id: "source" | "main" | "auto"}``：判定「可用原图」的
+        链接记 ``source``（每个 SKU 用规格原图），其余（中文水印 / 无规格图 / 规格图过多）记
+        ``main``（统一用商品主图）；``auto`` 用于「规格图还没同步完、此刻无法定论」的链接——
+        显式回落默认策略（同时清掉上一轮可能写死的 ``main``），由素材同步完成后的自动补判
+        决定最终取值。写入后预检页与导出最终版据此分流，用户仍可在预检页改。
         返回实际写入的草稿数。
         """
         if not isinstance(classification, dict) or not classification:
@@ -3872,7 +3902,7 @@ USER-REQUESTED PANEL PLANNING ADDITIONS (user extra requirements only; they MUST
             except (TypeError, ValueError):
                 continue
             mode = str(raw_mode or "").strip().lower()
-            if draft_id not in allowed or mode not in {"source", "main"}:
+            if draft_id not in allowed or mode not in {"source", "main", "auto"}:
                 continue
             try:
                 draft = self.get_draft(draft_id, workspace_id)
@@ -3953,6 +3983,9 @@ USER-REQUESTED PANEL PLANNING ADDITIONS (user extra requirements only; they MUST
         """处理设置页级「SKU 规格图可用性判断」（严格口径 + 并行 OCR）。
 
         - 只检测 role="sku" 且已 ready 的规格图；本身没有规格图的链接判为不可用；
+        - 规格图已注册但还没物化完（预检页显示「等待同步」）时不定论，落 ``pending_sync``
+          暂缓状态，由素材物化收尾自动补判——否则会把「图还没同步好」误判成「没有规格图」，
+          导出直接用商品主图替代规格原图；
         - 只统计「当前仍保留在草稿里」的 SKU（``raw_payload.source_variant_records``）
           对应的规格图，已删除 SKU 的历史绑定不计入；
         - 有规格图的 SKU 数 ≥ ``_SKU_AVAILABILITY_MAX_IMAGES``（50）的链接直接跳过，
@@ -3985,6 +4018,14 @@ USER-REQUESTED PANEL PLANNING ADDITIONS (user extra requirements only; they MUST
             raw = draft.get("raw_payload") or {}
             sku_views, scope_relaxed = self._keep_active_sku_views(groups.get("sku", []), raw)
             plan["scope_relaxed"] = scope_relaxed
+            # 只要还有规格图没同步完，此刻能看到的图集就不完整：据此得出的指纹会随剩余图
+            # 就绪而失效，结论也不可信。统一落 pending_sync 暂缓，等物化收尾后补判。
+            # 筛选后为空时以未筛选的绑定为准——绑定被「现存变种」筛掉说明不了「没有规格图」，
+            # 直接落 no_sku_image 会把还在同步的链接误判成不可用。
+            sync_probe = sku_views or groups.get("sku", [])
+            if any(is_awaiting_sync(view.get("status")) for view in sync_probe):
+                plan.update(status="pending_sync", reason="awaiting_media_sync")
+                continue
             ready_views = [
                 view
                 for view in sku_views
@@ -4047,12 +4088,12 @@ USER-REQUESTED PANEL PLANNING ADDITIONS (user extra requirements only; they MUST
             plan["chinese"] = plan["chinese"][:5]
 
         # 落库：每条草稿覆盖写自己的结论。fallback 语义由导出侧按 status 解释——
-        # clean 才用原规格图，其余（含 skipped / missing / 未判定）一律维持现状。
+        # clean 才用原规格图，其余（含 skipped / missing / pending_sync / 未判定）一律维持保守行为。
         if persist:
             judged_at = _iso_utc_now()
             for plan in plans:
                 plan["judged_at"] = judged_at
-                if plan["status"] in {"pending", "clean", "unavailable", "skipped"}:
+                if plan["status"] in {"pending", "clean", "unavailable", "skipped", "pending_sync"}:
                     try:
                         self.repository.save_draft_sku_availability(
                             int(plan["draft_id"]), plan, workspace_id=workspace_id,
@@ -4067,6 +4108,7 @@ USER-REQUESTED PANEL PLANNING ADDITIONS (user extra requirements only; they MUST
                 "clean": sum(1 for plan in plans if plan["clean"]),
                 "unavailable": sum(1 for plan in plans if plan["status"] == "unavailable"),
                 "skipped": sum(1 for plan in plans if plan["status"] == "skipped"),
+                "pending_sync": sum(1 for plan in plans if plan["status"] == "pending_sync"),
             },
         }
 

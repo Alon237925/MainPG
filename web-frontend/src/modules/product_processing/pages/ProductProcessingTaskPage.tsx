@@ -292,20 +292,31 @@ export function ProductProcessingTaskPage({ initialTaskId, initialDraftIds, init
     if (!initialDraftIds?.length) return 0;
     return initialDraftIds.filter((id) => skuResults[id]?.status === 'skipped').length;
   }, [initialDraftIds, skuResults]);
-  const skuFallbackCount = Math.max(0, skuTotalChecked - skuCleanCount);
+  // 规格图还没同步完：结论暂缓，不改写取图策略，同步完成后由后端自动补判。
+  const skuPendingSyncCount = useMemo(() => {
+    if (!initialDraftIds?.length) return 0;
+    return initialDraftIds.filter((id) => skuResults[id]?.status === 'pending_sync').length;
+  }, [initialDraftIds, skuResults]);
+  const skuFallbackCount = Math.max(0, skuTotalChecked - skuCleanCount - skuPendingSyncCount);
 
   // 检测结果 → 处理参数：variant_image_mode 分流 + 「优化链接 SKU」命中的变种剔除键。
   // - clean：规格图无中文，逐 SKU 用规格原图（source）；
   // - 检出中文且勾选了「优化链接 SKU」：剔除含中文的 SKU，剩余干净 SKU 仍用规格原图；
   // - 整条链接全是中文图（all_sku_chinese）：不剔除，回退商品主图，避免整条商品消失；
+  // - 等待同步（pending_sync）：规格图还没物化完，此刻定论不可信，显式回落 auto（同时清掉
+  //   上一轮可能写死的 main），素材同步完成后由后端自动补判，判定干净即用规格原图；
   // - 其余（无规格图 / 规格图过多 / OCR 失败）：统一用商品主图（main）。
   const skuPlan = useMemo(() => {
-    const classification: Record<number, 'source' | 'main'> = {};
+    const classification: Record<number, 'source' | 'main' | 'auto'> = {};
     const exclusions: Record<number, string[]> = {};
     if (!skuCheckDone) return { classification, exclusions };
     for (const id of initialDraftIds || []) {
       const item = skuResults[id];
       if (!item) continue;
+      if (item.status === 'pending_sync') {
+        classification[id] = 'auto';
+        continue;
+      }
       const chineseKeys = item.chinese_variant_keys || [];
       if (
         optimizeSku
@@ -680,10 +691,19 @@ export function ProductProcessingTaskPage({ initialTaskId, initialDraftIds, init
                     <div className="verify-count success">可用原图 <b>{skuCleanCount}</b></div>
                     <div className="verify-count">改用主图 <b>{skuFallbackCount}</b></div>
                     <div className="verify-count">规格图过多跳过 <b>{skuSkippedCount}</b></div>
+                    {skuPendingSyncCount > 0 && (
+                      <div className="verify-count">等待同步 <b>{skuPendingSyncCount}</b></div>
+                    )}
                   </div>
                   <p className="verify-sku-check-hint">
                     共检测 <b>{skuTotalChecked}</b> 条链接：<b>{skuCleanCount}</b> 条 SKU 规格图可用，导出时用「规格原图」；
                     <b>{skuFallbackCount}</b> 条改用「商品主图」（含 {skuSkippedCount} 条 SKU 规格图 ≥ 50 张的链接）。
+                    {skuPendingSyncCount > 0 && (
+                      <>
+                        {' '}另有 <b>{skuPendingSyncCount}</b> 条规格图还在同步，暂不定论——同步完成后会自动补判，
+                        判定干净即改用「规格原图」，无需手动重检。
+                      </>
+                    )}
                     分类已自动预置，可在预检页逐条修改。
                   </p>
                 </>

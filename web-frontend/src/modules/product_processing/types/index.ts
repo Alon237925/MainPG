@@ -321,7 +321,8 @@ export type DraftMediaResponse = {
 /** 处理设置页「SKU 规格图可用性判断」单条链接结果。 */
 export type DraftSkuAvailabilityItem = {
   draft_id: number;
-  status: "pending" | "clean" | "unavailable" | "skipped" | "missing";
+  /** pending_sync=规格图已注册但还没同步完，此刻不定论，同步完成后后端自动补判。 */
+  status: "pending" | "clean" | "unavailable" | "skipped" | "missing" | "pending_sync";
   clean: boolean;
   sku_image_count: number;
   checked: number;
@@ -341,12 +342,12 @@ export type DraftSkuAvailabilityItem = {
 
 export type DraftSkuAvailabilityResponse = {
   results: DraftSkuAvailabilityItem[];
-  summary: { total: number; clean: number; unavailable: number; skipped: number };
+  summary: { total: number; clean: number; unavailable: number; skipped: number; pending_sync?: number };
 };
 
 /** 落库在草稿上的可用性结论（刷新后读回，供前端还原标记）。 */
 export type StoredSkuAvailability = {
-  status?: "pending" | "clean" | "unavailable" | "skipped" | "missing";
+  status?: "pending" | "clean" | "unavailable" | "skipped" | "missing" | "pending_sync";
   clean?: boolean;
   sku_image_count?: number;
   checked?: number;

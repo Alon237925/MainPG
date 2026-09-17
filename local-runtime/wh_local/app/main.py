@@ -64,6 +64,7 @@ from ..modules.basic_settings.router import create_router as create_basic_settin
 from ..modules.themes.router import create_themes_router
 from ..modules.ai_service import create_router as create_ai_service_router
 from ..modules.ai_service.temporary_cos import TemporaryCosStore
+from ..modules.dashboard import create_router as create_dashboard_router
 from ..modules.guide import create_router as create_guide_router
 from ..modules.help_agent import create_router as create_help_agent_router
 from ..messages import (
@@ -548,9 +549,8 @@ def create_app(database_path: Path | None = None) -> FastAPI:
         prefix="/api",
     )
 
-    # 工作台看板（/api/dashboard/overview）：前端已就绪，但后端模块
-    # wh_local/modules/dashboard/router.py 尚未入库，import 会导致后端无法启动，
-    # 暂时摘除；等模块提交后再恢复这里的 include_router。
+    # 工作台看板（/api/dashboard/overview）：模块已入库，恢复挂载。
+    app.include_router(create_dashboard_router(db_path))
 
     # 核价及货源模块
     _register_price_verification(

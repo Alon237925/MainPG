@@ -36,6 +36,15 @@ _TRANSIENT_FETCH_TOKENS = (
     "timeout",
 )
 
+# 还没物化完的素材状态：pending=等待认领、materializing=认领中、retryable=瞬时失败待重试。
+# 这些都不是终局，所以「此刻读不出可用素材」只能算「等待同步」，不能当成终态结论。
+_AWAITING_SYNC_STATUSES = frozenset({"pending", "materializing", "retryable"})
+
+
+def is_awaiting_sync(status: Any) -> bool:
+    """该素材状态是否只是「还没同步完」（区别于终态 ready / failed）。"""
+    return str(status or "") in _AWAITING_SYNC_STATUSES
+
 
 def canonical_source_url(value: str) -> str:
     """Normalize a remote image URL for stable source-identity hashing."""
@@ -69,10 +78,13 @@ class MediaAssetService:
         repository: MediaAssetRepository,
         assets: ProductProcessingAssets,
         public_image_fetcher: Callable[[str], FetchedPublicImage] | None = None,
+        on_materialized: Callable[[str | None], None] | None = None,
     ):
         self.repository = repository
         self.assets = assets
         self.public_image_fetcher = public_image_fetcher or fetch_public_image
+        # 物化排空后的收尾钩子（服务层在此补判「等待同步」期间无法定论的 SKU 规格图可用性）。
+        self.on_materialized = on_materialized
 
     def register_remote_asset(self, workspace_id: str, source_url: str) -> dict[str, Any]:
         canonical = canonical_source_url(source_url)
@@ -340,6 +352,9 @@ class MediaAssetService:
 
         ``draft_ids`` 非空时只排空这些草稿绑定的资产（入池后的定向物化），
         避免每次入池都扫过整个工作区的历史 pending 积压。
+
+        排空后统一触发一次 ``on_materialized`` 收尾钩子：素材刚就绪的那批草稿里，
+        可能存在「此前因为图还没同步完而暂不定论」的 SKU 规格图可用性结论，需要补判。
         """
         total = {"claimed": 0, "ready": 0, "retryable": 0, "failed": 0}
         while True:
@@ -351,7 +366,19 @@ class MediaAssetService:
             for key in total:
                 total[key] += int(batch.get(key) or 0)
             if int(batch["claimed"] or 0) < max(1, int(batch_size)):
-                return total
+                break
+        self._after_materialized(workspace_id)
+        return total
+
+    def _after_materialized(self, workspace_id: str | None) -> None:
+        """物化排空后的收尾钩子：钩子失败只记日志，绝不影响已完成的物化结果。"""
+        callback = self.on_materialized
+        if callback is None:
+            return
+        try:
+            callback(workspace_id)
+        except Exception:  # noqa: BLE001 - 收尾钩子属尽力而为的后续工作
+            logger.warning("media materialization follow-up failed", exc_info=True)
 
     def retry_asset(self, asset_id: str, *, workspace_id: str) -> dict[str, Any]:
         row = self.repository.reset_asset_for_retry(asset_id, workspace_id)
