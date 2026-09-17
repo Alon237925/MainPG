@@ -15,6 +15,7 @@ from sqlalchemy.exc import IntegrityError, OperationalError
 from sqlalchemy.orm import selectinload
 from sqlalchemy.pool import StaticPool
 
+from ..domain import sku_availability
 from .database import ProductProcessingDatabase
 from .orm import (
     AiStageCacheRow,
@@ -1001,6 +1002,32 @@ class ProductProcessingRepository:
                 return {}
             value = loads(str(row.sku_availability_json or ""), {})
             return value if isinstance(value, dict) else {}
+
+    def drafts_awaiting_sku_availability(
+        self,
+        *,
+        workspace_id: str | None = None,
+        limit: int = 200,
+    ) -> list[dict[str, Any]]:
+        """列出「规格图还没同步完、结论处于暂缓状态」的草稿，供物化收尾后自动补判。
+
+        只按落库 JSON 里的 ``status`` 粗筛（结论对当前图集是否仍然有效，由补判时用
+        实时图集重新校验），返回 ``[{"id": int, "workspace_id": str}, ...]``。
+        """
+        pattern = '%"status":"' + sku_availability.STATUS_PENDING_SYNC + '"%'
+        with self.database.sessions.begin() as session:
+            statement = select(ProductDraftRow.id, ProductDraftRow.workspace_id).where(
+                ProductDraftRow.sku_availability_json.like(pattern)
+            )
+            if workspace_id is not None:
+                statement = statement.where(ProductDraftRow.workspace_id == workspace_id)
+            statement = statement.order_by(
+                ProductDraftRow.updated_at.desc(), ProductDraftRow.id.desc()
+            ).limit(max(1, int(limit)))
+            return [
+                {"id": int(row[0]), "workspace_id": str(row[1] or "")}
+                for row in session.execute(statement).all()
+            ]
 
     def save_draft_preview_overrides(
         self,

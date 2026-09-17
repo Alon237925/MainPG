@@ -23,6 +23,10 @@ STATUS_UNAVAILABLE = "unavailable"
 STATUS_SKIPPED = "skipped"
 STATUS_MISSING = "missing"
 STATUS_PENDING = "pending"
+# 规格图已注册但还没物化完（预检页显示「等待同步」）。这不是结论：此刻检不出规格图只是
+# 暂时现象，据部分图得出的结论也会在剩余图就绪后因指纹变化失效。落成暂缓状态后由
+# 素材物化收尾自动补判，避免把链接提前判死、导出直接用商品主图替代规格原图。
+STATUS_PENDING_SYNC = "pending_sync"
 
 # 只有这两种状态是「明确判定过」，其余一律视为未判定。
 DECIDED_STATUSES = frozenset({STATUS_CLEAN, STATUS_UNAVAILABLE})

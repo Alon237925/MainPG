@@ -37,6 +37,13 @@ const providerMeta = {
   alipay: { label: "支付宝", icon: "iconfont icon-alipay-circle-fill", className: "is-alipay" },
 } as const;
 
+/** 「升级体验」弹窗里的基础版套餐（¥39.9）：立得 4000 充值积分 + 四周每周 1500 体验额度。 */
+const PLAN_BASIC_PRODUCT: BillingPackage = {
+  package_id: "plan_basic",
+  label: "基础版",
+  amount_cents: 3990,
+};
+
 function money(amountCents: number) {
   return `¥${(amountCents / 100).toFixed(2)}`;
 }
@@ -289,6 +296,23 @@ export function PersonalCenterPage({ feedbackPrefill = null }: PersonalCenterPag
 
   const [summary, setSummary] = useState<BillingSummary | null>(cachedBalance?.summary ?? null);
   const [activePanel, setActivePanel] = useState<"wallet" | "usage" | "pricing" | "model" | "version" | "feedback">("wallet");
+
+  // 体验版卡高度对齐上面的深色 profile 卡：测量 profile 高度并同步给体验版卡。
+  const profileCardRef = useRef<HTMLDivElement | null>(null);
+  const [profileCardHeight, setProfileCardHeight] = useState<number | null>(null);
+  useEffect(() => {
+    const el = profileCardRef.current;
+    if (!el) return;
+    const update = () => setProfileCardHeight(el.offsetHeight);
+    update();
+    const observer = new ResizeObserver(update);
+    observer.observe(el);
+    window.addEventListener("resize", update);
+    return () => {
+      observer.disconnect();
+      window.removeEventListener("resize", update);
+    };
+  }, []);
   // 可用积分与总积分的数字滚动动画（首次直接用缓存值，不闪）。
   const animatedAvailablePoints = useAnimatedNumber(summary?.wallet.available_points);
   const animatedTotalPoints = useAnimatedNumber(summary?.wallet.points_balance);
@@ -320,6 +344,7 @@ export function PersonalCenterPage({ feedbackPrefill = null }: PersonalCenterPag
   const [paymentNotice, setPaymentNotice] = useState("");
   const [pendingPaymentOrderId, setPendingPaymentOrderId] = useState(readPendingOrderId);
   const [passwordOpen, setPasswordOpen] = useState(false);
+  const [upgradeOpen, setUpgradeOpen] = useState(false);
   const [currentPassword, setCurrentPassword] = useState("");
   const [newPassword, setNewPassword] = useState("");
   const [confirmPassword, setConfirmPassword] = useState("");
@@ -794,6 +819,49 @@ export function PersonalCenterPage({ feedbackPrefill = null }: PersonalCenterPag
           </section>
         </div>, document.body)}
 
+      {upgradeOpen && createPortal(
+        <div className="personal-password-layer" onMouseDown={() => setUpgradeOpen(false)}>
+          <section
+            className="personal-password-dialog"
+            role="dialog"
+            aria-modal="true"
+            aria-labelledby="personal-upgrade-title"
+            onMouseDown={(event) => event.stopPropagation()}
+          >
+            <header>
+              <div>
+                <span>PLAN UPGRADE</span>
+                <h2 id="personal-upgrade-title">升级体验</h2>
+                <p>购买基础版，立即到账 4000 积分，并享受四周每周 1500 体验额度。</p>
+              </div>
+              <button type="button" onClick={() => setUpgradeOpen(false)} aria-label="关闭">×</button>
+            </header>
+            <div className="personal-upgrade-body">
+              <div className="personal-upgrade-plan-card">
+                <div className="personal-upgrade-plan-head">
+                  <b>基础版</b>
+                  <span className="personal-upgrade-plan-price">{money(PLAN_BASIC_PRODUCT.amount_cents)}</span>
+                </div>
+                <ul className="personal-upgrade-plan-benefits">
+                  <li><b>购买立得 4000 积分</b>（充值积分，长期可用）</li>
+                  <li>每周体验上限提升至 <b>1500 积分</b></li>
+                  <li>有效期 <b>四周</b>，到期自动回到体验版</li>
+                </ul>
+                <button
+                  type="button"
+                  className="personal-upgrade-plan-buy"
+                  disabled={creating}
+                  onClick={() => submitTopup(PLAN_BASIC_PRODUCT)}
+                >
+                  {creating ? "正在创建订单…" : "立即购买"}
+                </button>
+                {paymentNotice && <p className="personal-upgrade-plan-notice">{paymentNotice}</p>}
+                {error && <p className="personal-upgrade-plan-error">{error}</p>}
+              </div>
+            </div>
+          </section>
+        </div>, document.body)}
+
       {error && <div className="personal-alert is-error">{error}</div>}
       {loading && <div className="personal-alert">正在读取服务器账户与积分数据...</div>}
 
@@ -826,7 +894,7 @@ export function PersonalCenterPage({ feedbackPrefill = null }: PersonalCenterPag
 
       <div className="personal-content-layout">
         <aside className="personal-sidebar" aria-label="个人中心侧栏">
-          <div className="personal-profile">
+          <div className="personal-profile" ref={profileCardRef}>
             <span className="personal-hero-glow" aria-hidden="true" />
             <span className="personal-hero-glow is-two" aria-hidden="true" />
             <div className="personal-profile-head">
@@ -885,18 +953,24 @@ export function PersonalCenterPage({ feedbackPrefill = null }: PersonalCenterPag
               </div>
             </div>
           </div>
-          <div className="personal-plan-card">
+          <div
+            className="personal-plan-card"
+            style={profileCardHeight === null ? undefined : { height: `${profileCardHeight}px` }}
+          >
             <div className="personal-plan-card-head">
               <span className="personal-plan-card-label">
                 <span className="iconfont icon-gold" aria-hidden="true" />
                 {summary?.wallet.plan?.plan_label ?? "体验版"}
               </span>
-              <span className="personal-plan-card-refresh">
-                {summary?.wallet.plan?.next_refresh_at
-                  ? `下周一 ${formatUsageTime(summary.wallet.plan.next_refresh_at).slice(5, 16)} 刷新`
-                  : ""}
-              </span>
+              <button type="button" className="personal-plan-upgrade" onClick={() => setUpgradeOpen(true)}>
+                升级体验
+              </button>
             </div>
+            {summary?.wallet.plan?.next_refresh_at && (
+              <div className="personal-plan-card-refresh">
+                下周一 {formatUsageTime(summary.wallet.plan.next_refresh_at).slice(5, 16)} 刷新
+              </div>
+            )}
             <div className="personal-plan-card-value">
               <b>{summary?.wallet.plan?.plan_balance ?? "--"}</b>
               <em>/ {summary?.wallet.plan?.plan_limit ?? 500} 积分</em>
@@ -915,10 +989,25 @@ export function PersonalCenterPage({ feedbackPrefill = null }: PersonalCenterPag
                 }}
               />
             </div>
-            <div className="personal-plan-card-foot">
-              <span>剩余体验额度</span>
-              <span>已用 {summary?.wallet.plan?.plan_used ?? 0}</span>
+            <div className="personal-plan-stats">
+              <div className="personal-plan-stat">
+                <span>剩余额度</span>
+                <b>{summary?.wallet.plan?.plan_balance ?? "--"}</b>
+              </div>
+              <div className="personal-plan-stat">
+                <span>已使用</span>
+                <b>{summary?.wallet.plan?.plan_used ?? 0}</b>
+              </div>
+              <div className="personal-plan-stat">
+                <span>刷新周期</span>
+                <b>每周一</b>
+              </div>
             </div>
+            {summary?.wallet.plan?.plan_expire_at && (
+              <div className="personal-plan-expire">
+                有效期至 {formatUsageTime(summary.wallet.plan.plan_expire_at).slice(0, 16)}
+              </div>
+            )}
           </div>
         </aside>
 
