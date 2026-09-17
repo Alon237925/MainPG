@@ -67,12 +67,26 @@ POD_BASE_POINTS_PER_STYLE = 45
 # ---------------------------------------------------------------------------
 PLAN_TYPES = {
     "experience": {"label": "体验版", "weekly_points": 500},
+    "basic": {"label": "基础版", "weekly_points": 1500},
     "flagship": {"label": "旗舰版", "weekly_points": 500},
 }
 PLAN_DEFAULT_TYPE = "experience"
 PLAN_UNIT_SCALE = 10
 PLAN_WEEKLY_POINTS = 500
 PLAN_WEEKLY_UNITS = PLAN_WEEKLY_POINTS * PLAN_UNIT_SCALE
+# 基础版（¥40 购买套餐）：立得 4000 充值积分（走普通充值入账）+ 每周 1500 体验额度，
+# 购买日起生效 4 周，到期自动回落体验版。续期从现有到期时间顺延 28 天。
+PLAN_BASIC_PACKAGE_ID = "plan_basic"
+PLAN_BASIC_PRICE_CENTS = 3990
+PLAN_BASIC_GRANT_POINTS = 4000
+PLAN_BASIC_DURATION_DAYS = 28
+PLAN_BASIC_WEEKLY_UNITS = 1500 * PLAN_UNIT_SCALE
+
+
+def _plan_weekly_units(plan_type: str) -> int:
+    """按套餐类型返回每周体验额度（0.1 积分单位）；未知类型回落默认套餐。"""
+    weekly = PLAN_TYPES.get(plan_type, PLAN_TYPES[PLAN_DEFAULT_TYPE]).get("weekly_points")
+    return int(weekly or PLAN_WEEKLY_POINTS) * PLAN_UNIT_SCALE
 
 
 def _plan_period_key(now_dt: datetime | None = None) -> str:
@@ -1391,14 +1405,58 @@ def _ensure_wallet(conn: Any, account_id: str, workspace_id: str) -> None:
         """,
         (account_id, workspace_id or "default", PLAN_WEEKLY_UNITS, period, PLAN_DEFAULT_TYPE, now, now),
     )
-    # 跨周期惰性重置：体验积分重置为满额（不累积），plan_type 保持不变。
+    # 基础版到期自动回落体验版：每次调用都检查（不依赖跨周刷新），到期即清套餐与额度。
     conn.execute(
         """
         UPDATE billing_wallets
-        SET plan_balance = ?, plan_period_key = ?, version = version + 1, updated_at = ?
+        SET plan_type = ?, plan_expire_at = '', plan_balance = ?,
+            plan_period_key = ?, version = version + 1, updated_at = ?
+        WHERE account_id = ? AND plan_expire_at <> '' AND plan_expire_at <= ?
+        """,
+        (PLAN_DEFAULT_TYPE, PLAN_WEEKLY_UNITS, period, now, account_id, now),
+    )
+    # 跨周期惰性重置：体验积分重置为满额（不累积），按当前套餐周额度，plan_type 保持不变。
+    conn.execute(
+        """
+        UPDATE billing_wallets
+        SET plan_balance = CASE plan_type WHEN 'basic' THEN ? ELSE ? END,
+            plan_period_key = ?, version = version + 1, updated_at = ?
         WHERE account_id = ? AND plan_period_key <> ?
         """,
-        (PLAN_WEEKLY_UNITS, period, now, account_id, period),
+        (PLAN_BASIC_WEEKLY_UNITS, PLAN_WEEKLY_UNITS, period, now, account_id, period),
+    )
+
+
+def _activate_basic_plan(conn: Any, account_id: str, now: str) -> None:
+    """激活/续期基础版：体验池重置为 1500/周，生效 4 周（续期从现有到期时间顺延）。
+
+    立得 4000 积分由 settle_payment_order 的 base_points 普通充值入账处理，
+    这里只负责套餐状态与体验额度。调用方必须先跑过 _ensure_wallet（含过期回落），
+    保证 wallet 行存在且 plan_type 为干净状态。
+    """
+    period = _plan_period_key()
+    row = conn.execute(
+        "SELECT plan_expire_at FROM billing_wallets WHERE account_id = ?",
+        (account_id,),
+    ).fetchone()
+    existing_expire = str(row["plan_expire_at"] or "") if row is not None else ""
+    # 续期语义：当前仍在基础版有效期内 → 到期时间 +28 天；否则从此刻起算 28 天。
+    base = existing_expire if existing_expire > now else now
+    try:
+        base_dt = datetime.fromisoformat(base)
+        if base_dt.tzinfo is None:
+            base_dt = base_dt.replace(tzinfo=timezone.utc)
+        expire_at = (base_dt + timedelta(days=PLAN_BASIC_DURATION_DAYS)).isoformat(timespec="seconds")
+    except ValueError:
+        expire_at = (datetime.now(timezone.utc) + timedelta(days=PLAN_BASIC_DURATION_DAYS)).isoformat(timespec="seconds")
+    conn.execute(
+        """
+        UPDATE billing_wallets
+        SET plan_type = ?, plan_balance = ?, plan_period_key = ?,
+            plan_expire_at = ?, version = version + 1, updated_at = ?
+        WHERE account_id = ?
+        """,
+        ("basic", PLAN_BASIC_WEEKLY_UNITS, period, expire_at, now, account_id),
     )
 
 
@@ -1655,6 +1713,10 @@ def settle_payment_order(
                     "total_points": total_points,
                 },
             )
+        package_id = str(order["package_id"] or "")
+        if package_id == PLAN_BASIC_PACKAGE_ID:
+            # 基础版套餐：充值积分已按 base_points 入账，此处激活 4 周套餐与每周 1500 体验额度。
+            _activate_basic_plan(conn, account_id, now)
         settled = conn.execute(
             "SELECT * FROM billing_payment_orders WHERE order_id = ?",
             (str(order["order_id"]),),

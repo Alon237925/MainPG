@@ -1094,6 +1094,8 @@ def _migrate_core_schema(conn: sqlite3.Connection) -> None:
     _ensure_column(conn, "billing_wallets", "plan_balance", "INTEGER NOT NULL DEFAULT 0")
     _ensure_column(conn, "billing_wallets", "plan_period_key", "TEXT NOT NULL DEFAULT ''")
     _ensure_column(conn, "billing_wallets", "plan_type", "TEXT NOT NULL DEFAULT 'experience'")
+    # 基础版购买套餐到期时刻（ISO 8601 UTC）；空串=不过期。到期由 _ensure_wallet 惰性回落。
+    _ensure_column(conn, "billing_wallets", "plan_expire_at", "TEXT NOT NULL DEFAULT ''")
     # 登录状态字段：账号级单端登录限制（云端认证服务与本地工作台共用同一 schema）。
     _ensure_column(conn, "auth_accounts", "login_status", "TEXT NOT NULL DEFAULT 'offline'")
     # 本地会话表保存远端 wh_auth_* token，登出时联动撤销云端登录态。

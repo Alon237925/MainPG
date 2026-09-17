@@ -65,6 +65,8 @@ export type BillingSummary = {
       plan_limit: number;
       plan_used: number;
       next_refresh_at: string;
+      /** 基础版套餐到期时刻（ISO 8601）；空串=无到期限制（体验版/旗舰版）。 */
+      plan_expire_at: string;
     };
   };
   pricing: {

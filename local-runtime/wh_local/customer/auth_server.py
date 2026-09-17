@@ -33,13 +33,15 @@ from ..billing import (
     BATCH_BILLING_PROFILE_POD,
     BATCH_BILLING_PROFILE_POD_SEMI,
     BATCH_BILLING_PROFILE_PRODUCT,
-    PLAN_WEEKLY_UNITS,
+    PLAN_BASIC_PACKAGE_ID,
+    PLAN_BASIC_PRICE_CENTS,
     TOPUP_PROMOTION_ID,
     TOPUP_PROMOTION_NAME,
     _ensure_wallet,
     _plan_next_refresh,
     _plan_period_key,
     _plan_type_label,
+    _plan_weekly_units,
     active_pricing,
     batch_freeze_status,
     compute_batch_charge,
@@ -106,6 +108,12 @@ TOPUP_PACKAGE_CENTS = {
         "label": str(product["label"]),
     }
     for package_id, product in BILLING_TOPUP_PRODUCTS.items()
+}
+# 基础版套餐（「升级体验」弹窗专属，不进入充值页套餐列表）：
+# ¥40 = 4000 充值积分（标准价 1:100）+ 4 周每周 1500 体验额度。套餐状态由支付结算激活。
+PLAN_BASIC_PACKAGE = {
+    "amount_cents": PLAN_BASIC_PRICE_CENTS,
+    "label": "基础版 · 四周体验",
 }
 CUSTOM_TOPUP_MIN_CENTS = 100
 CUSTOM_TOPUP_MAX_CENTS = 300_000
@@ -3147,7 +3155,7 @@ def _billing_summary(database_path: Path, account: dict[str, Any]) -> dict[str, 
         wallet = conn.execute(
             """
             SELECT points_balance, locked_points, manual_frozen_points, version, ledger_head_hash,
-                   updated_at, plan_balance, plan_period_key, plan_type
+                   updated_at, plan_balance, plan_period_key, plan_type, plan_expire_at
             FROM billing_wallets
             WHERE account_id = ?
             """,
@@ -3189,6 +3197,9 @@ def _billing_summary(database_path: Path, account: dict[str, Any]) -> dict[str, 
             """,
             (account_id,),
         ).fetchall()
+    plan_type = str(wallet["plan_type"] if wallet else "experience")
+    plan_balance_units = int(wallet["plan_balance"] if wallet else 0)
+    plan_weekly_units = _plan_weekly_units(plan_type)
     payload = {
         "ok": True,
         "account": {
@@ -3207,12 +3218,13 @@ def _billing_summary(database_path: Path, account: dict[str, Any]) -> dict[str, 
             "ledger_head_hash": wallet["ledger_head_hash"] if wallet else "",
             "updated_at": wallet["updated_at"] if wallet else "",
             "plan": {
-                "plan_type": wallet["plan_type"] if wallet else "experience",
-                "plan_label": _plan_type_label(wallet["plan_type"] if wallet else "experience"),
-                "plan_balance": _display_billing_points(int(wallet["plan_balance"] if wallet else 0), pricing),
-                "plan_limit": _display_billing_points(PLAN_WEEKLY_UNITS, pricing),
-                "plan_used": _display_billing_points(max(0, PLAN_WEEKLY_UNITS - int(wallet["plan_balance"] if wallet else 0)), pricing),
+                "plan_type": plan_type,
+                "plan_label": _plan_type_label(plan_type),
+                "plan_balance": _display_billing_points(plan_balance_units, pricing),
+                "plan_limit": _display_billing_points(plan_weekly_units, pricing),
+                "plan_used": _display_billing_points(max(0, plan_weekly_units - plan_balance_units), pricing),
                 "next_refresh_at": _plan_next_refresh(wallet["plan_period_key"] if wallet else ""),
+                "plan_expire_at": wallet["plan_expire_at"] if wallet else "",
             },
         },
         "pricing": pricing,
@@ -3360,13 +3372,15 @@ def _create_topup_order(database_path: Path, account: dict[str, Any], payload: d
         pass
     if provider not in PAYMENT_PROVIDERS:
         raise HTTPException(status_code=400, detail="provider must be wechat or alipay")
-    if package_id != "custom" and package_id not in TOPUP_PACKAGE_CENTS:
+    if package_id != "custom" and package_id != PLAN_BASIC_PACKAGE_ID and package_id not in TOPUP_PACKAGE_CENTS:
         raise HTTPException(status_code=400, detail="unknown topup package")
     if not 16 <= len(idempotency_key) <= 128:
         raise HTTPException(status_code=400, detail="idempotency_key is required")
 
     if package_id == "custom":
         product = {"amount_cents": _custom_topup_amount(payload), "label": "自定义积分充值"}
+    elif package_id == PLAN_BASIC_PACKAGE_ID:
+        product = {"amount_cents": PLAN_BASIC_PRICE_CENTS, "label": PLAN_BASIC_PACKAGE["label"]}
     else:
         product = TOPUP_PACKAGE_CENTS[package_id]
     pricing = active_pricing(database_path)
@@ -3465,6 +3479,11 @@ def _topup_order_response(
         "message": "支付网关尚未配置。订单已在服务器生成 pending 记录，待商户参数和回调验签接入后才可收款入账。",
     }
     if order["provider"] == "alipay" and alipay_is_configured():
+        package_label = (
+            PLAN_BASIC_PACKAGE["label"]
+            if order["package_id"] == PLAN_BASIC_PACKAGE_ID
+            else TOPUP_PACKAGE_CENTS.get(str(order["package_id"]), {}).get("label", str(order["package_id"]))
+        )
         payment = {
             "provider": "alipay",
             "mode": "page_pay",
@@ -3472,7 +3491,7 @@ def _topup_order_response(
             "pay_url": build_page_payment_url(
                 out_trade_no=str(order["out_trade_no"]),
                 amount_cents=int(order["amount_cents"]),
-                subject=f"界野电商平台 {order['package_id']} 积分充值",
+                subject=f"界野电商平台 {package_label} 积分充值",
                 expires_at=str(order["expires_at"]),
             ),
             "message": "请在浏览器中完成支付宝付款。付款成功后积分会自动到账。",
