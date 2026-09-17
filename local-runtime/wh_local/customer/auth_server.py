@@ -35,6 +35,8 @@ from ..billing import (
     BATCH_BILLING_PROFILE_PRODUCT,
     PLAN_BASIC_PACKAGE_ID,
     PLAN_BASIC_PRICE_CENTS,
+    PLAN_BASIC_CLAIM_MAX,
+    PLAN_BASIC_CLAIM_POINTS,
     TOPUP_PROMOTION_ID,
     TOPUP_PROMOTION_NAME,
     _ensure_wallet,
@@ -44,6 +46,7 @@ from ..billing import (
     _plan_weekly_units,
     active_pricing,
     batch_freeze_status,
+    claim_basic_weekly,
     compute_batch_charge,
     freeze_batch_points,
     pricing_changelog,
@@ -1408,6 +1411,18 @@ def create_auth_app(database_path: Path | None = None) -> FastAPI:
     ) -> dict[str, Any]:
         _required_account(db_path, authorization)
         return _topup_quote(db_path, payload)
+
+    @app.post("/api/customer/billing/plan-basic/claim")
+    def claim_basic_plan_points(
+        authorization: str | None = Header(default=None),
+    ) -> dict[str, Any]:
+        """基础版每周领取 1000 积分（充值池，永久有效）。"""
+        account = _required_account(db_path, authorization)
+        return claim_basic_weekly(
+            db_path,
+            str(account["account_id"]),
+            str(account.get("workspace_id") or "default"),
+        )
 
     @app.post("/api/customer/billing/usage/reserve")
     def reserve_billing_usage(
@@ -3155,7 +3170,8 @@ def _billing_summary(database_path: Path, account: dict[str, Any]) -> dict[str, 
         wallet = conn.execute(
             """
             SELECT points_balance, locked_points, manual_frozen_points, version, ledger_head_hash,
-                   updated_at, plan_balance, plan_period_key, plan_type, plan_expire_at
+                   updated_at, plan_balance, plan_period_key, plan_type, plan_expire_at,
+                   basic_claim_period, basic_claim_count, extra_balance
             FROM billing_wallets
             WHERE account_id = ?
             """,
@@ -3200,6 +3216,13 @@ def _billing_summary(database_path: Path, account: dict[str, Any]) -> dict[str, 
     plan_type = str(wallet["plan_type"] if wallet else "experience")
     plan_balance_units = int(wallet["plan_balance"] if wallet else 0)
     plan_weekly_units = _plan_weekly_units(plan_type)
+    # 基础版每周领取状态：可领 = 套餐有效（过期已被 _ensure_wallet 回落）且未领满且本周未领。
+    claim_count = int(wallet["basic_claim_count"] if wallet else 0)
+    basic_claimable = (
+        plan_type == "basic"
+        and claim_count < PLAN_BASIC_CLAIM_MAX
+        and str(wallet["basic_claim_period"] if wallet else "") != _plan_period_key()
+    )
     payload = {
         "ok": True,
         "account": {
@@ -3213,7 +3236,7 @@ def _billing_summary(database_path: Path, account: dict[str, Any]) -> dict[str, 
             "locked_points": _display_billing_points(int(wallet["locked_points"] if wallet else 0), pricing),
             "manual_frozen_points": _display_billing_points(int(wallet["manual_frozen_points"] if wallet else 0), pricing),
             "frozen_points": _display_billing_points(int((wallet["locked_points"] if wallet else 0) + (wallet["manual_frozen_points"] if wallet else 0)), pricing),
-            "available_points": _display_billing_points(int((wallet["plan_balance"] if wallet else 0) + (wallet["points_balance"] if wallet else 0) - (wallet["locked_points"] if wallet else 0) - (wallet["manual_frozen_points"] if wallet else 0)), pricing),
+            "available_points": _display_billing_points(int((wallet["plan_balance"] if wallet else 0) + (wallet["extra_balance"] if wallet else 0) + (wallet["points_balance"] if wallet else 0) - (wallet["locked_points"] if wallet else 0) - (wallet["manual_frozen_points"] if wallet else 0)), pricing),
             "version": int(wallet["version"] if wallet else 0),
             "ledger_head_hash": wallet["ledger_head_hash"] if wallet else "",
             "updated_at": wallet["updated_at"] if wallet else "",
@@ -3225,6 +3248,11 @@ def _billing_summary(database_path: Path, account: dict[str, Any]) -> dict[str, 
                 "plan_used": _display_billing_points(max(0, plan_weekly_units - plan_balance_units), pricing),
                 "next_refresh_at": _plan_next_refresh(wallet["plan_period_key"] if wallet else ""),
                 "plan_expire_at": wallet["plan_expire_at"] if wallet else "",
+                "basic_claim_points": PLAN_BASIC_CLAIM_POINTS if plan_type == "basic" else 0,
+                "basic_claim_count": claim_count,
+                "basic_claim_max": PLAN_BASIC_CLAIM_MAX,
+                "basic_claimable": basic_claimable,
+                "extra_balance": _display_billing_points(int(wallet["extra_balance"] if wallet else 0), pricing),
             },
         },
         "pricing": pricing,

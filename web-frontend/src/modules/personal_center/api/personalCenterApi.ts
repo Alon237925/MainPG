@@ -67,6 +67,16 @@ export type BillingSummary = {
       next_refresh_at: string;
       /** 基础版套餐到期时刻（ISO 8601）；空串=无到期限制（体验版/旗舰版）。 */
       plan_expire_at: string;
+      /** 基础版每周领取：每次可领积分（非基础版为 0）。 */
+      basic_claim_points: number;
+      /** 已领取次数。 */
+      basic_claim_count: number;
+      /** 领取次数上限（4 次）。 */
+      basic_claim_max: number;
+      /** 当前是否可领取（服务端已算好：套餐有效 + 未领满 + 本周未领）。 */
+      basic_claimable: boolean;
+      /** 额外积分独立子池实时余额（领取 +1000，消费时在体验之后、充值之前扣）。 */
+      extra_balance: number;
     };
   };
   pricing: {
@@ -193,6 +203,17 @@ export function createTopupOrder(input: {
       idempotency_key: `idem_${crypto.randomUUID().replace(/-/g, "")}`,
     },
   });
+}
+
+/** 基础版每周领取 1000 积分（充值池，永久有效）。 */
+export function claimBasicWeeklyPoints() {
+  return httpJson<{
+    ok: boolean;
+    claimed_points: number;
+    claim_count: number;
+    claim_max: number;
+    period: string;
+  }>("/api/customer/billing/plan-basic/claim", { method: "POST" });
 }
 
 /**

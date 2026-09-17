@@ -5,6 +5,7 @@ import { clearAuthSession, getAuthAccount } from "../../../transport/http/client
 import { AVATAR_CHANGED_EVENT, AVATAR_STORAGE_KEY } from "../../../app/layout/TopNavigation";
 import {
   changeAccountPassword,
+  claimBasicWeeklyPoints,
   createTopupOrder,
   loadBillingSummary,
   loadBillingUsageHistory,
@@ -37,7 +38,7 @@ const providerMeta = {
   alipay: { label: "支付宝", icon: "iconfont icon-alipay-circle-fill", className: "is-alipay" },
 } as const;
 
-/** 「升级体验」弹窗里的基础版套餐（¥39.9）：立得 4000 充值积分 + 四周每周 1500 体验额度。 */
+/** 「升级体验」弹窗里的基础版套餐（¥39.9）：立得 4000 充值积分 + 四周每周可领 1000。 */
 const PLAN_BASIC_PRODUCT: BillingPackage = {
   package_id: "plan_basic",
   label: "基础版",
@@ -741,6 +742,28 @@ export function PersonalCenterPage({ feedbackPrefill = null }: PersonalCenterPag
     }
   };
 
+  const [claimBusy, setClaimBusy] = useState(false);
+  const [claimNotice, setClaimNotice] = useState("");
+
+  const claimBasicPoints = async () => {
+    if (claimBusy) return;
+    setClaimBusy(true);
+    setClaimNotice("");
+    setError("");
+    try {
+      const result = await claimBasicWeeklyPoints();
+      setClaimNotice(`已领取 ${result.claimed_points} 积分（第 ${result.claim_count}/${result.claim_max} 周）`);
+      const payload = await loadBillingSummary();
+      setSummary(payload);
+      writeBalanceCache(balanceCacheKeyValue, payload);
+      lastBalanceRefreshAt.current = Date.now();
+    } catch (exc) {
+      setError(exc instanceof Error ? exc.message : "领取失败，请稍后重试");
+    } finally {
+      setClaimBusy(false);
+    }
+  };
+
   return (
     <section className="personal-center-page">
       {/* portal 到 body：workspace-tab-panel 的 fill-mode 入场动画创建层叠上下文，
@@ -832,7 +855,7 @@ export function PersonalCenterPage({ feedbackPrefill = null }: PersonalCenterPag
               <div>
                 <span>PLAN UPGRADE</span>
                 <h2 id="personal-upgrade-title">升级体验</h2>
-                <p>购买基础版，立即到账 4000 积分，并享受四周每周 1500 体验额度。</p>
+                <p>购买基础版，立得 4000 积分，四周内每周可领 1000 积分，领到即永久。</p>
               </div>
               <button type="button" onClick={() => setUpgradeOpen(false)} aria-label="关闭">×</button>
             </header>
@@ -843,9 +866,9 @@ export function PersonalCenterPage({ feedbackPrefill = null }: PersonalCenterPag
                   <span className="personal-upgrade-plan-price">{money(PLAN_BASIC_PRODUCT.amount_cents)}</span>
                 </div>
                 <ul className="personal-upgrade-plan-benefits">
-                  <li><b>购买立得 4000 积分</b>（充值积分，长期可用）</li>
-                  <li>每周体验上限提升至 <b>1500 积分</b></li>
-                  <li>有效期 <b>四周</b>，到期自动回到体验版</li>
+                  <li><b>购买立得 4000 积分</b>（充值积分，永久有效）</li>
+                  <li>四周内<b>每周可领 1000 积分</b>（领到即永久）</li>
+                  <li>四周后到期，当周没领不补</li>
                 </ul>
                 <button
                   type="button"
@@ -971,6 +994,10 @@ export function PersonalCenterPage({ feedbackPrefill = null }: PersonalCenterPag
                 下周一 {formatUsageTime(summary.wallet.plan.next_refresh_at).slice(5, 16)} 刷新
               </div>
             )}
+            <div className="personal-plan-block-head">
+              <span>体验积分</span>
+              <span>每周一刷新</span>
+            </div>
             <div className="personal-plan-card-value">
               <b>{summary?.wallet.plan?.plan_balance ?? "--"}</b>
               <em>/ {summary?.wallet.plan?.plan_limit ?? 500} 积分</em>
@@ -988,6 +1015,47 @@ export function PersonalCenterPage({ feedbackPrefill = null }: PersonalCenterPag
                   width: `${Math.min(100, Math.max(0, ((summary?.wallet.plan?.plan_balance ?? 0) / (summary?.wallet.plan?.plan_limit || 1)) * 100))}%`,
                 }}
               />
+            </div>
+            <div className="personal-plan-claim">
+              <div className="personal-plan-claim-head">
+                <span>额外积分</span>
+                <b>{summary?.wallet.plan?.extra_balance ?? 0} 积分</b>
+              </div>
+              <div
+                className="personal-plan-claim-meter"
+                role="progressbar"
+                aria-label="额外积分领取进度"
+                aria-valuemin={0}
+                aria-valuemax={summary?.wallet.plan?.basic_claim_max ?? 4}
+                aria-valuenow={summary?.wallet.plan?.basic_claim_count ?? 0}
+              >
+                <span
+                  style={{
+                    width: `${Math.min(100, Math.max(0, ((summary?.wallet.plan?.basic_claim_count ?? 0) / (summary?.wallet.plan?.basic_claim_max || 4)) * 100))}%`,
+                  }}
+                />
+              </div>
+              <div className="personal-plan-claim-meta">
+                {summary?.wallet.plan?.plan_type === "basic" ? (
+                  summary!.wallet.plan.basic_claimable ? (
+                    <button
+                      type="button"
+                      className="personal-plan-claim-btn"
+                      disabled={claimBusy}
+                      onClick={claimBasicPoints}
+                    >
+                      {claimBusy ? "领取中…" : "领取 1000 积分"}
+                    </button>
+                  ) : summary!.wallet.plan.basic_claim_count >= summary!.wallet.plan.basic_claim_max ? (
+                    <span>已领满，感谢支持</span>
+                  ) : (
+                    <span>本周已领，下周一再来</span>
+                  )
+                ) : (
+                  <span>购买基础版后，四周内每周可领</span>
+                )}
+              </div>
+              {claimNotice && <p className="personal-plan-claim-notice">{claimNotice}</p>}
             </div>
             <div className="personal-plan-stats">
               <div className="personal-plan-stat">
