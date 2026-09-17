@@ -1050,6 +1050,8 @@ class PodCustomizationRepository:
             {
                 "idempotency_key": plan.idempotency_key,
                 "calls": [call.payload() for call in plan.calls],
+                "semi_item_count": plan.semi_item_count,
+                "billing_profile": plan.billing_profile,
             },
             ensure_ascii=False,
             separators=(",", ":"),
