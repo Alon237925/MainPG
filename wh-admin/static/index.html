@@ -5,6 +5,10 @@
 <meta name="viewport" content="width=device-width, initial-scale=1.0">
 <title>电商工作台 · 后台管理系统</title>
 <link rel="stylesheet" href="static/shadcn.css">
+<!-- 公告正文 Markdown 渲染：与客户端共用同一套 marked 配置（客户端见 web-frontend/src/shared/lib/announcementMarkdown.ts） -->
+<!-- 注意：后台静态路由是 /static/{filename}，只支持单段路径，所以这两个库平铺在 static/ 下，不要放进子目录 -->
+<script src="static/marked.umd.js"></script>
+<script src="static/dompurify.min.js"></script>
 
 <style>
 /* 侧边栏「用户反馈」新反馈红点徽章 */
@@ -136,7 +140,7 @@
         <div class="stats-grid" id="billing-stats"></div>
         <div class="card table-wrap billing-rank-card"><table><thead><tr><th>#</th><th>&#x8D26;&#x6237;</th><th>&#x603B;&#x79EF;&#x5206;</th><th>&#x53EF;&#x7528;&#x79EF;&#x5206;</th><th>&#x4EFB;&#x52A1;&#x51BB;&#x7ED3;</th><th>&#x4EBA;&#x5DE5;&#x51BB;&#x7ED3;</th><th>&#x5DF2;&#x6D88;&#x8017;</th></tr></thead><tbody id="billing-ranking-body"></tbody></table></div>
         <div class="card filters"><input id="billing-search" class="input" placeholder="&#x641C;&#x7D22;&#x8D26;&#x53F7; / &#x8D26;&#x6237; ID / &#x90AE;&#x7BB1;"><span id="billing-count" class="count"></span></div>
-        <div class="card table-wrap"><table><thead><tr><th>&#x8D26;&#x6237;</th><th>&#x603B;&#x79EF;&#x5206;</th><th>&#x53EF;&#x7528;&#x79EF;&#x5206;</th><th>&#x4EFB;&#x52A1;&#x51BB;&#x7ED3;</th><th>&#x7BA1;&#x7406;&#x5458;&#x51BB;&#x7ED3;</th><th>&#x6210;&#x529F;&#x6B21;&#x6570;</th><th>&#x5DF2;&#x6263;&#x79EF;&#x5206;</th><th>&#x66F4;&#x65B0;&#x65F6;&#x95F4;</th><th>&#x64CD;&#x4F5C;</th></tr></thead><tbody id="billing-body"></tbody></table></div>
+        <div class="card table-wrap"><table><thead><tr><th>&#x8D26;&#x6237;</th><th>&#x603B;&#x79EF;&#x5206;</th><th>&#x4F53;&#x9A8C;&#x79EF;&#x5206;</th><th>&#x989D;&#x5916;&#x79EF;&#x5206;</th><th>&#x53EF;&#x7528;&#x79EF;&#x5206;</th><th>&#x4EFB;&#x52A1;&#x51BB;&#x7ED3;</th><th>&#x7BA1;&#x7406;&#x5458;&#x51BB;&#x7ED3;</th><th>&#x6210;&#x529F;&#x6B21;&#x6570;</th><th>&#x5DF2;&#x6263;&#x79EF;&#x5206;</th><th>&#x66F4;&#x65B0;&#x65F6;&#x95F4;</th><th>&#x64CD;&#x4F5C;</th></tr></thead><tbody id="billing-body"></tbody></table></div>
       </section>
 
       <section id="section-billing-usage" class="section">
@@ -219,12 +223,23 @@
       </section>
 
       <section id="section-announcements" class="section">
-        <div class="section-head"><div><h2>公告管理</h2><p>发布平台公告，客户端工作台会自动同步并在右上角显示未读红点；下线或删除后，客户端下次同步会撤回该条</p></div></div>
+        <div class="section-head"><div><h2>公告管理</h2><p>发布平台公告，客户端工作台会自动同步；带图片的公告会在用户登录后以居中轮播弹窗展示，下线或删除后客户端下次同步会撤回该条</p></div></div>
         <div class="card form-card">
           <h3 id="announcement-form-title">发布新公告</h3>
           <div class="inline-form" id="announcement-form-grid" style="grid-template-columns:1fr; align-items:start; gap:14px">
             <label>标题<input id="announcement-title" class="input" maxlength="120" placeholder="公告标题"></label>
-            <label>正文（支持多行）<textarea id="announcement-content" class="input announcement-textarea" rows="3" placeholder="公告内容"></textarea></label>
+            <label>正文（支持 Markdown：`# 小标题`、`- 要点`、`1. 步骤`、`**加粗**`、`::: tip 提示` 等）<textarea id="announcement-content" class="input announcement-textarea" rows="3" placeholder="公告内容，支持 Markdown 排版"></textarea></label>
+            <div>
+              <div class="label-text">公告图片（可选，最多 6 张，单张不超过 2MB）</div>
+              <div class="announcement-images" style="margin-top:6px">
+                <div class="announcement-image-grid" id="announcement-image-preview"></div>
+                <label class="announcement-image-add" id="announcement-image-add">
+                  <input type="file" id="announcement-image-input" accept="image/png,image/jpeg,image/gif,image/webp" multiple hidden>
+                  <span>+ 添加图片</span>
+                </label>
+              </div>
+              <div class="announcement-image-hint" id="announcement-image-hint"></div>
+            </div>
             <div>
               <div class="label-text">发送范围</div>
               <div class="announcement-form-actions" style="margin-top:6px">
@@ -239,11 +254,12 @@
             </div>
             <div class="announcement-form-actions">
               <button id="announcement-save-btn" class="btn btn-primary">发布公告</button>
+              <button id="announcement-preview-btn" class="btn btn-ghost">预览效果</button>
               <button id="announcement-cancel-btn" class="btn btn-ghost hidden">取消编辑</button>
             </div>
           </div>
         </div>
-        <div class="card table-wrap"><table><thead><tr><th>状态</th><th>标题</th><th>正文</th><th>范围</th><th>发布时间（北京时间）</th><th>操作</th></tr></thead><tbody id="announcements-body"></tbody></table></div>
+        <div class="card table-wrap"><table><thead><tr><th>状态</th><th>标题</th><th>正文</th><th>图片</th><th>范围</th><th>发布时间（北京时间）</th><th>操作</th></tr></thead><tbody id="announcements-body"></tbody></table></div>
       </section>
 
       <section id="section-logs" class="section">
@@ -373,6 +389,25 @@
 <div id="revenue-mask" class="mask hidden"><div class="modal"><h3>查看累计金额收入</h3><p class="msg">该数据仅限管理员查看，请输入当前账号的登录密码进行验证。</p><label>登录密码<input id="revenue-password" class="input" type="password" autocomplete="current-password"></label><div id="revenue-error" class="form-error"></div><div class="modal-actions"><button id="revenue-cancel" class="btn btn-ghost">取消</button><button id="revenue-submit" class="btn btn-primary">验证并查看</button></div></div></div>
 <div id="failure-detail-mask" class="mask hidden"><div class="modal modal-wide"><h3 id="failure-detail-title">失败明细</h3><p id="failure-detail-sub" class="msg"></p><div class="table-wrap"><table style="min-width:860px"><thead><tr><th>SKC</th><th>商品标题</th><th>状态</th><th>错误类型</th><th>失败原因 / 排错细节</th></tr></thead><tbody id="failure-detail-body"></tbody></table></div><div class="modal-actions"><button id="failure-detail-close" class="btn btn-primary">关闭</button></div></div></div>
 <div id="logup-detail-mask" class="mask hidden"><div class="modal modal-wide"><h3 id="logup-detail-title">日志详情</h3><p id="logup-detail-sub" class="msg"></p><pre id="logup-detail-content" class="log-content"></pre><div class="modal-actions"><button id="logup-detail-close" class="btn btn-primary">关闭</button></div></div></div>
+<div id="announcement-preview-mask" class="mask hidden">
+  <div class="modal announcement-preview-modal">
+    <button type="button" class="announcement-preview-close" id="announcement-preview-close" aria-label="关闭预览">×</button>
+    <div class="announcement-preview-head">
+      <span class="announcement-preview-eyebrow">平台公告</span>
+      <span class="announcement-preview-badge">预览效果</span>
+    </div>
+    <h3 id="announcement-preview-title"></h3>
+    <div class="announcement-preview-carousel hidden" id="announcement-preview-carousel">
+      <div class="announcement-preview-track" id="announcement-preview-track"></div>
+      <button type="button" class="announcement-preview-nav is-prev" id="announcement-preview-prev" aria-label="上一张">‹</button>
+      <button type="button" class="announcement-preview-nav is-next" id="announcement-preview-next" aria-label="下一张">›</button>
+      <span class="announcement-preview-counter" id="announcement-preview-counter"></span>
+    </div>
+    <div class="announcement-preview-dots hidden" id="announcement-preview-dots"></div>
+    <div class="announcement-preview-content" id="announcement-preview-content"></div>
+    <div class="modal-actions"><button type="button" class="btn btn-primary" id="announcement-preview-done">我知道了</button></div>
+  </div>
+</div>
 <div id="toast"></div>
 
 <script src="static/chart.umd.min.js"></script>
@@ -519,7 +554,7 @@ async function loadBilling(){try{const data=await api('/api/billing?limit=500');
 async function loadBillingUsage(reset=true){if(reset){BILLING_USAGE=[];BILLING_USAGE_CURSOR='';BILLING_USAGE_MORE=false;}const sp=usageFilterParams();if(BILLING_USAGE_CURSOR)sp.set('cursor',BILLING_USAGE_CURSOR);try{const data=await api('/api/billing/usage?'+sp.toString());const rows=data.usage||[];if(reset)BILLING_USAGE=rows;else BILLING_USAGE=BILLING_USAGE.concat(rows);BILLING_USAGE_CURSOR=data.next_cursor||'';BILLING_USAGE_MORE=!!data.has_more;renderBillingUsage();}catch(error){if(error.message!=='__AUTH__')toast(error.message,'error');}}
 async function loadBillingSummary(){try{BILLING_SUMMARY=await api('/api/billing/summary');renderBillingSummary();}catch(error){if(error.message!=='__AUTH__')toast(error.message,'error');}}
 function renderBillingSummary(){const s=BILLING_SUMMARY;if(!s)return;const w=s.wallet||{},c=s.consumed||{},t=s.topup||{},u=s.users||{};const cards=[{label:'全平台总积分',value:Number(w.total_points||0).toLocaleString(),sub:`${Number(w.funded_accounts||0).toLocaleString()} 个账户有余额`,accent:true},{label:'可用积分',value:Number(w.available_points||0).toLocaleString(),sub:`任务冻结 ${Number(w.task_locked_points||0).toLocaleString()} · 人工冻结 ${Number(w.manual_frozen_points||0).toLocaleString()}`},{label:'已消耗积分',value:Number(c.charged_points||0).toLocaleString(),sub:`今日消耗 ${Number(c.today_charged_points||0).toLocaleString()} · ${Number(c.charged_accounts||0)} 个账户产生消耗`},{label:'充值总额',value:`¥${Number(t.amount_cny||0).toLocaleString()}`,sub:`${Number(t.orders||0)} 笔已支付订单 · ${Number(t.accounts||0)} 个账户充值`},{label:'用户数',value:Number(u.total||0).toLocaleString(),sub:`活跃 ${Number(u.active||0).toLocaleString()} · 在线 ${Number(u.online||0).toLocaleString()}`}];$('billing-stats').innerHTML=cards.map(x=>`<div class="stat-card${x.accent?' is-accent':''}"><div class="stat-label">${x.label}</div><div class="stat-value">${x.value}</div><div class="stat-sub">${x.sub||''}</div></div>`).join('');const rows=s.ranking||[];$('billing-ranking-body').innerHTML=rows.length?rows.map((r,i)=>`<tr><td>${i+1}</td><td><b>${esc(r.username||'-')}</b><br><span class="mono">${esc(r.account_id)}</span></td><td>${Number(r.points_balance||0).toLocaleString()}</td><td>${Number(r.available_points||0).toLocaleString()}</td><td>${Number(r.locked_points||0).toLocaleString()}</td><td>${Number(r.manual_frozen_points||0).toLocaleString()}</td><td>${Number(r.charged_points||0).toLocaleString()}</td></tr>`).join(''):'<tr><td class="empty" colspan="7">暂无账户</td></tr>';}
-function renderBillingWallets(){const query=($('billing-search').value||'').trim().toLowerCase();const rows=BILLING.filter(item=>!query||`${item.username||''} ${item.account_id||''} ${item.email||''}`.toLowerCase().includes(query));$('billing-count').textContent=`共 ${rows.length} / ${BILLING.length} 个账户`;$('billing-body').innerHTML=rows.length?rows.map(item=>{const balance=Number(item.points_balance||0),taskLocked=Number(item.locked_points||0),manualFrozen=Number(item.manual_frozen_points||0),available=balance-taskLocked-manualFrozen;return `<tr><td><b>${esc(item.username||'-')}</b><br><span class="mono">${esc(item.account_id)}</span></td><td>${balance.toLocaleString()}</td><td>${available.toLocaleString()}</td><td>${taskLocked.toLocaleString()}</td><td>${manualFrozen.toLocaleString()}</td><td>${Number(item.success_usage||0).toLocaleString()}</td><td>${Number(item.charged_points||0).toLocaleString()}</td><td>${fmtTime(item.updated_at)}</td><td><button class="link-btn green" data-billing-action="adjust" data-id="${esc(item.account_id)}" data-name="${esc(item.username||item.account_id)}">调账</button><button class="link-btn red" data-billing-action="freeze" data-id="${esc(item.account_id)}" data-name="${esc(item.username||item.account_id)}" data-frozen="${manualFrozen}" data-max-freeze="${Math.max(0,balance-taskLocked)}">冻结</button>${manualFrozen>0?`<button class="link-btn" data-billing-action="release" data-id="${esc(item.account_id)}" data-name="${esc(item.username||item.account_id)}" data-frozen="${manualFrozen}">释放</button>`:''}${taskLocked>0?`<button class="link-btn" data-billing-action="task-release" data-id="${esc(item.account_id)}" data-name="${esc(item.username||item.account_id)}" data-frozen="${taskLocked}">释放任务冻结</button>`:''}</td></tr>`;}).join(''):'<tr><td class="empty" colspan="9">暂无积分钱包</td></tr>';}
+function renderBillingWallets(){const query=($('billing-search').value||'').trim().toLowerCase();const rows=BILLING.filter(item=>!query||`${item.username||''} ${item.account_id||''} ${item.email||''}`.toLowerCase().includes(query));$('billing-count').textContent=`共 ${rows.length} / ${BILLING.length} 个账户`;$('billing-body').innerHTML=rows.length?rows.map(item=>{const balance=Number(item.points_balance||0),taskLocked=Number(item.locked_points||0),manualFrozen=Number(item.manual_frozen_points||0),available=balance-taskLocked-manualFrozen;const planBalance=Number(item.plan_balance||0),planLimit=Number(item.plan_limit||500),planLabel=item.plan_label||'体验版';const claimCount=Number(item.basic_claim_count||0),claimMax=Number(item.basic_claim_max||4);const extraCell=item.plan_type==='basic'?`${claimCount}/${claimMax} 周${item.plan_expire_at?`<br><span class="mono">至 ${fmtTime(item.plan_expire_at).slice(0,10)}</span>`:''}`:'-';return `<tr><td><b>${esc(item.username||'-')}</b><br><span class="mono">${esc(item.account_id)}</span></td><td>${balance.toLocaleString()}</td><td>${planBalance.toLocaleString()}/${planLimit}<br><span class="mono">${esc(planLabel)}</span></td><td>${extraCell}</td><td>${available.toLocaleString()}</td><td>${taskLocked.toLocaleString()}</td><td>${manualFrozen.toLocaleString()}</td><td>${Number(item.success_usage||0).toLocaleString()}</td><td>${Number(item.charged_points||0).toLocaleString()}</td><td>${fmtTime(item.updated_at)}</td><td><button class="link-btn green" data-billing-action="adjust" data-id="${esc(item.account_id)}" data-name="${esc(item.username||item.account_id)}">调账</button><button class="link-btn red" data-billing-action="freeze" data-id="${esc(item.account_id)}" data-name="${esc(item.username||item.account_id)}" data-frozen="${manualFrozen}" data-max-freeze="${Math.max(0,balance-taskLocked)}">冻结</button>${manualFrozen>0?`<button class="link-btn" data-billing-action="release" data-id="${esc(item.account_id)}" data-name="${esc(item.username||item.account_id)}" data-frozen="${manualFrozen}">释放</button>`:''}${taskLocked>0?`<button class="link-btn" data-billing-action="task-release" data-id="${esc(item.account_id)}" data-name="${esc(item.username||item.account_id)}" data-frozen="${taskLocked}">释放任务冻结</button>`:''}</td></tr>`;}).join(''):'<tr><td class="empty" colspan="11">暂无积分钱包</td></tr>';}
 function renderBillingUsage(){const rows=BILLING_USAGE;const loaded=rows.length;const hasMore=BILLING_USAGE_MORE;$('billing-usage-count').textContent=`已加载 ${loaded} 条${hasMore?' · 还有更多，可点击「加载更多」':''}`; $('billing-usage-more-wrap').style.display=hasMore&&loaded?'':'none'; $('billing-usage-body').innerHTML=rows.length?rows.map(item=>{const available=Number(item.points_balance||0)-Number(item.locked_points||0)-Number(item.manual_frozen_points||0);const status=item.status==='succeeded'?'成功':item.status==='failed'?'已释放':'冻结中';const statusClass=item.status==='succeeded'?'badge-success':item.status==='failed'?'badge-muted':'badge-warning';const isBatchFrozen=(item.feature_key||'').indexOf('.batch')>-1&&(item.status==='frozen');const releaseBtn=isBatchFrozen?`<button class="link-btn" data-batch-release="${esc(String(item.usage_id||'').replace(/^batch:/,''))}" data-name="${esc(item.username||item.account_id)}">释放</button>`:'';return `<tr><td>${fmtTime(item.created_at)}</td><td><b>${esc(item.username||'-')}</b><br><span class="mono">${esc(item.account_id)}</span></td><td>${available.toLocaleString()} / ${Number(item.points_balance||0).toLocaleString()}</td><td>${esc(item.feature_key)}</td><td><span class="badge ${statusClass}">${status}</span></td><td>${Number(item.reserved_points||0)} / ${Number(item.charged_points||0)} / ${Number(item.refunded_points||0)}</td><td>${esc(item.model||item.provider||'-')}</td><td class="mono">${esc(item.provider_task_id||'-')}</td><td>${esc(item.app_version||'-')}</td><td>${releaseBtn}</td></tr>`;}).join(''):'<tr><td class="empty" colspan="10">当前筛选下暂无 AI 消费记录</td></tr>';}
 $('billing-search').oninput=()=>renderBillingWallets();$('billing-usage-body').onclick=event=>{const button=event.target.closest('[data-batch-release]');if(!button)return;const name=button.dataset.name||'';const freezeId=button.dataset.batchRelease;const reason=prompt(`为 ${name} 释放任务冻结（整批归还）？填写释放原因（会写入服务器账本）`,'管理员释放任务冻结');if(reason===null)return;askConfirm('确认释放任务冻结',`将释放该任务批次（${freezeId}）的全部冻结积分。`,async()=>{await api(`/api/billing/batch/${freezeId}/release`,{method:'POST',body:JSON.stringify({reason})});toast('任务冻结已释放','success');await loadBilling();await loadBillingUsage(true);});};$('billing-usage-search').oninput=()=>loadBillingUsage(true);$('billing-usage-from').onchange=()=>loadBillingUsage(true);$('billing-usage-to').onchange=()=>loadBillingUsage(true);$('billing-usage-reset').onclick=()=>{$('billing-usage-search').value='';$('billing-usage-from').value='';$('billing-usage-to').value='';loadBillingUsage(true);};$('billing-usage-more').onclick=()=>loadBillingUsage(false);$('billing-body').onclick=event=>{const button=event.target.closest('[data-billing-action]');if(!button)return;const name=button.dataset.name||button.dataset.id;if(button.dataset.billingAction==='adjust'){const raw=prompt(`为 ${name} 调整积分（正数充值，负数扣减）`,'');if(raw===null)return;const delta=Number.parseInt(raw,10);if(!Number.isInteger(delta)||delta===0){toast('请输入非零整数','error');return;}const reason=prompt('填写调账原因（会写入服务器账本）','管理员调账');if(reason===null)return;askConfirm('确认调账',`将为 ${name} 调整 ${delta>0?'+':''}${delta.toLocaleString()} 积分\n原因：${reason}`,async()=>{await api(`/api/billing/${button.dataset.id}/adjust`,{method:'POST',body:JSON.stringify({points_delta:delta,reason})});toast('积分已调整','success');await loadBilling();});return;}if(button.dataset.billingAction==='release'){const raw=prompt(`为 ${name} 释放人工冻结积分（可释放数量：${Number(button.dataset.frozen).toLocaleString()}）`,'');if(raw===null)return;const release=Number.parseInt(raw,10);if(!Number.isInteger(release)||release<1){toast('请输入正整数','error');return;}if(release>Number(button.dataset.frozen)){toast('释放数量不能超过当前人工冻结','error');return;}const reason=prompt('填写释放原因（会写入服务器账本）','管理员释放冻结');if(reason===null)return;askConfirm('确认释放冻结',`将为 ${name} 释放 ${release.toLocaleString()} 积分（人工冻结）。`,async()=>{await api(`/api/billing/${button.dataset.id}/release`,{method:'POST',body:JSON.stringify({release_points:release,reason})});toast(`已释放 ${release.toLocaleString()} 积分`,'success');await loadBilling();});return;}if(button.dataset.billingAction==='task-release'){const raw=prompt(`为 ${name} 释放任务冻结积分（可释放数量：${Number(button.dataset.frozen).toLocaleString()}）`,'');if(raw===null)return;const release=Number.parseInt(raw,10);if(!Number.isInteger(release)||release<1){toast('请输入正整数','error');return;}if(release>Number(button.dataset.frozen)){toast('释放数量不能超过当前任务冻结','error');return;}const reason=prompt('填写释放原因（会写入服务器账本）','管理员释放任务冻结');if(reason===null)return;askConfirm('确认释放任务冻结',`将为 ${name} 释放 ${release.toLocaleString()} 积分（任务冻结）。\n该数额将从旧到新抵扣对应冻结批次。`,async()=>{await api(`/api/billing/${button.dataset.id}/task-release`,{method:'POST',body:JSON.stringify({release_points:release,reason})});toast(`已释放 ${release.toLocaleString()} 积分`,'success');await loadBilling();});return;}const raw=prompt(`为 ${name} 设置管理员冻结积分（0 为全部解冻；最多 ${Number(button.dataset.maxFreeze).toLocaleString()}）`,button.dataset.frozen||'0');if(raw===null)return;const frozen=Number.parseInt(raw,10);if(!Number.isInteger(frozen)||frozen<0||frozen>Number(button.dataset.maxFreeze)){toast('冻结积分超出可设置范围','error');return;}const reason=prompt('填写冻结或解冻原因（会写入服务器账本）',frozen?'管理员风险冻结':'管理员解除冻结');if(reason===null)return;askConfirm('确认设置冻结积分',`将 ${name} 的管理员冻结积分设置为 ${frozen.toLocaleString()}。`,async()=>{await api(`/api/billing/${button.dataset.id}/freeze`,{method:'POST',body:JSON.stringify({frozen_points:frozen,reason})});toast(frozen?'积分已冻结':'积分已全部解冻','success');await loadBilling();});};
 
@@ -715,6 +750,10 @@ let ANNOUNCEMENT_EDITING_ID = null;
 let ANNOUNCE_TARGET = [];          // 当前表单选中的定向账号 ID
 let ANNOUNCE_USERS = [];           // /api/users 缓存
 let ANNOUNCE_USERS_LOADED = false;
+let ANNOUNCE_IMAGES = [];          // 当前表单待上传图片：[{name,mime,size,data}]
+const ANNOUNCE_IMAGE_MAX = 6;
+const ANNOUNCE_IMAGE_MIMES = ['image/png', 'image/jpeg', 'image/gif', 'image/webp'];
+const ANNOUNCE_IMAGE_MAX_BYTES = 2 * 1024 * 1024;
 async function loadAnnounceUsers() {
   if (ANNOUNCE_USERS_LOADED) return;
   try {
@@ -759,6 +798,170 @@ function autoGrowAnnouncementTextarea() {
   el.style.height = Math.min(el.scrollHeight + 2, 340) + 'px';
 }
 $('announcement-content').addEventListener('input', autoGrowAnnouncementTextarea);
+function renderAnnounceImages() {
+  $('announcement-image-preview').innerHTML = ANNOUNCE_IMAGES.map((img, index) => `
+    <div class="announcement-image-item">
+      <img src="data:${img.mime};base64,${img.data}" alt="${esc(img.name || '公告图片')}">
+      <button type="button" class="announcement-image-remove" data-ann-image-remove="${index}" title="移除">×</button>
+    </div>`).join('');
+  $('announcement-image-add').classList.toggle('hidden', ANNOUNCE_IMAGES.length >= ANNOUNCE_IMAGE_MAX);
+  $('announcement-image-hint').textContent = ANNOUNCE_IMAGES.length
+    ? `已选 ${ANNOUNCE_IMAGES.length}/${ANNOUNCE_IMAGE_MAX} 张，用户登录后会以轮播弹窗展示`
+    : '支持 PNG / JPG / GIF / WebP，不选图片则弹窗只展示标题与正文';
+}
+// 公告正文 Markdown 渲染：与客户端共用同一套 marked 配置与清洗策略。
+// 客户端对应实现 web-frontend/src/shared/lib/announcementMarkdown.ts，改动请两边同步。
+const ANNOUNCE_CALLOUT_TITLES = { tip: '小贴士', info: '说明', warning: '注意', danger: '重要提醒' };
+const ANNOUNCE_MARKDOWN_READY = typeof marked !== 'undefined' && typeof DOMPurify !== 'undefined';
+const ANNOUNCE_MARKED = ANNOUNCE_MARKDOWN_READY ? new marked.Marked({ gfm: true, breaks: true }) : null;
+if (ANNOUNCE_MARKED) {
+  ANNOUNCE_MARKED.use({
+    extensions: [{
+      name: 'callout',
+      level: 'block',
+      start(src) {
+        const index = src.search(/^:::[ \t]*[a-zA-Z]+/m);
+        return index < 0 ? undefined : index;
+      },
+      tokenizer(src) {
+        const match = /^:::[ \t]*([a-zA-Z]+)[ \t]*([^\n]*)\n([\s\S]*?)\n:::[ \t]*(?:\n+|$)/.exec(src);
+        if (!match) return undefined;
+        const kind = match[1].toLowerCase();
+        if (!(kind in ANNOUNCE_CALLOUT_TITLES)) return undefined;
+        const title = match[2].trim();
+        return {
+          type: 'callout',
+          raw: match[0],
+          kind,
+          titleTokens: title ? this.lexer.inlineTokens(title) : [],
+          tokens: this.lexer.blockTokens(match[3].trim(), []),
+        };
+      },
+      renderer(token) {
+        const titleHtml = token.titleTokens.length
+          ? this.parser.parseInline(token.titleTokens)
+          : ANNOUNCE_CALLOUT_TITLES[token.kind];
+        return `<div class="ann-callout is-${token.kind}">`
+          + `<p class="ann-callout-title">${titleHtml}</p>`
+          + `<div class="ann-callout-body">${this.parser.parse(token.tokens)}</div>`
+          + `</div>\n`;
+      },
+    }],
+  });
+}
+// 兼容老公告的写法：历史内容习惯敲成「1.对免费用户更友好」「-要点」（标记后不带空格），
+// GFM 要求标记后必须有空格才算列表，否则整段会挤成一坨纯文本。这里补一个空格让老公告也有新排版。
+// 只兜底最明确的情况：有序仅 1~9 且后面非数字/空白（`1.4.6版本` 不受影响）；
+// 无序仅 - / + 且后面紧跟中英文（`---` 分割线、`*斜体*`、`-20 度` 不受影响）；围栏代码块内不动。
+const ANNOUNCE_LEGACY_ORDERED_RE = /^([1-9])\.(?=[^\s\d])/;
+const ANNOUNCE_LEGACY_BULLET_RE = /^([-+])(?=[\u4e00-\u9fffA-Za-z])/;
+function normalizeAnnounceMarkers(source) {
+  let inFence = false;
+  return source.split('\n').map(line => {
+    if (/^\s*(?:```|~~~)/.test(line)) {
+      inFence = !inFence;
+      return line;
+    }
+    if (inFence) return line;
+    return line.replace(ANNOUNCE_LEGACY_ORDERED_RE, '$1. ').replace(ANNOUNCE_LEGACY_BULLET_RE, '$1 ');
+  }).join('\n');
+}
+// vendor 资源异常时退化成纯文本，避免一处报错拖垮整个后台脚本。
+function renderAnnouncementHtml(markdown) {
+  const source = String(markdown || '').trim();
+  if (!source) return '';
+  if (!ANNOUNCE_MARKED) return esc(source).replace(/\n/g, '<br>');
+  return DOMPurify.sanitize(ANNOUNCE_MARKED.parse(normalizeAnnounceMarkers(source)));
+}
+// 公告预览：发布前先看用户实际会看到的样子（居中弹窗 + 多图轮播）。
+// 图片统一 contain 自适应，尺寸比例不同的图都完整显示、不变形、不撑破弹窗。
+let ANNOUNCE_PREVIEW_SLIDE = 0;
+function renderAnnouncePreview() {
+  const total = Number($('announcement-preview-track').dataset.count || '0');
+  $('announcement-preview-track').style.transform = `translateX(-${ANNOUNCE_PREVIEW_SLIDE * 100}%)`;
+  $('announcement-preview-prev').disabled = ANNOUNCE_PREVIEW_SLIDE <= 0;
+  $('announcement-preview-next').disabled = ANNOUNCE_PREVIEW_SLIDE >= total - 1;
+  $('announcement-preview-counter').textContent = `${ANNOUNCE_PREVIEW_SLIDE + 1} / ${total}`;
+  Array.from($('announcement-preview-dots').children).forEach((dot, index) => {
+    dot.classList.toggle('is-active', index === ANNOUNCE_PREVIEW_SLIDE);
+  });
+}
+function setAnnouncePreviewSlide(next) {
+  const total = Number($('announcement-preview-track').dataset.count || '0');
+  ANNOUNCE_PREVIEW_SLIDE = Math.max(0, Math.min(total - 1, next));
+  renderAnnouncePreview();
+}
+function openAnnouncementPreview(title, content, images) {
+  const list = (Array.isArray(images) ? images : []).filter(img => img && img.data);
+  const contentHtml = renderAnnouncementHtml(content);
+  $('announcement-preview-title').textContent = title || '（未填写标题）';
+  $('announcement-preview-content').innerHTML = contentHtml;
+  $('announcement-preview-content').classList.toggle('hidden', !contentHtml);
+  $('announcement-preview-carousel').classList.toggle('hidden', !list.length);
+  $('announcement-preview-dots').classList.toggle('hidden', list.length < 2);
+  $('announcement-preview-counter').classList.toggle('hidden', list.length < 2);
+  $('announcement-preview-track').dataset.count = String(list.length);
+  $('announcement-preview-track').innerHTML = list.map((img, index) => `
+    <div class="announcement-preview-slide">
+      <img src="data:${img.mime};base64,${img.data}" alt="${esc(img.name || '公告图片 ' + (index + 1))}">
+    </div>`).join('');
+  $('announcement-preview-dots').innerHTML = list.length > 1
+    ? list.map((_, index) => `<button type="button" class="announcement-preview-dot" data-ann-preview-dot="${index}" aria-label="查看第 ${index + 1} 张"></button>`).join('')
+    : '';
+  ANNOUNCE_PREVIEW_SLIDE = 0;
+  renderAnnouncePreview();
+  $('announcement-preview-mask').classList.remove('hidden');
+}
+function closeAnnouncementPreview() { $('announcement-preview-mask').classList.add('hidden'); }
+$('announcement-preview-btn').onclick = () => {
+  const title = $('announcement-title').value.trim();
+  if (!title) { toast('请先填写公告标题', 'error'); return; }
+  openAnnouncementPreview(title, $('announcement-content').value, ANNOUNCE_IMAGES);
+};
+$('announcement-preview-close').onclick = closeAnnouncementPreview;
+$('announcement-preview-done').onclick = closeAnnouncementPreview;
+$('announcement-preview-mask').onclick = event => { if (event.target === $('announcement-preview-mask')) closeAnnouncementPreview(); };
+$('announcement-preview-prev').onclick = () => setAnnouncePreviewSlide(ANNOUNCE_PREVIEW_SLIDE - 1);
+$('announcement-preview-next').onclick = () => setAnnouncePreviewSlide(ANNOUNCE_PREVIEW_SLIDE + 1);
+$('announcement-preview-dots').onclick = event => {
+  const dot = event.target.closest('[data-ann-preview-dot]');
+  if (dot) setAnnouncePreviewSlide(Number(dot.dataset.annPreviewDot));
+};
+document.addEventListener('keydown', event => {
+  if ($('announcement-preview-mask').classList.contains('hidden')) return;
+  if (event.key === 'Escape') { closeAnnouncementPreview(); return; }
+  if (event.key === 'ArrowLeft') setAnnouncePreviewSlide(ANNOUNCE_PREVIEW_SLIDE - 1);
+  else if (event.key === 'ArrowRight') setAnnouncePreviewSlide(ANNOUNCE_PREVIEW_SLIDE + 1);
+});
+function readImageAsBase64(file) {
+  return new Promise((resolve, reject) => {
+    const reader = new FileReader();
+    reader.onload = () => resolve(String(reader.result || '').split(',')[1] || '');
+    reader.onerror = () => reject(new Error('读取失败'));
+    reader.readAsDataURL(file);
+  });
+}
+$('announcement-image-input').onchange = async event => {
+  const files = Array.from(event.target.files || []);
+  event.target.value = '';
+  for (const file of files) {
+    if (ANNOUNCE_IMAGES.length >= ANNOUNCE_IMAGE_MAX) { toast(`最多上传 ${ANNOUNCE_IMAGE_MAX} 张图片`, 'error'); break; }
+    if (!ANNOUNCE_IMAGE_MIMES.includes(file.type)) { toast(`「${file.name}」格式不支持`, 'error'); continue; }
+    if (file.size > ANNOUNCE_IMAGE_MAX_BYTES) { toast(`「${file.name}」超过 2MB`, 'error'); continue; }
+    try {
+      const data = await readImageAsBase64(file);
+      if (!data) { toast(`「${file.name}」读取失败`, 'error'); continue; }
+      ANNOUNCE_IMAGES.push({ name: file.name, mime: file.type, size: file.size, data });
+    } catch (error) { toast(`「${file.name}」读取失败`, 'error'); }
+  }
+  renderAnnounceImages();
+};
+$('announcement-image-preview').onclick = event => {
+  const button = event.target.closest('[data-ann-image-remove]');
+  if (!button) return;
+  ANNOUNCE_IMAGES.splice(Number(button.dataset.annImageRemove), 1);
+  renderAnnounceImages();
+};
 function resetAnnouncementForm() {
   ANNOUNCEMENT_EDITING_ID = null;
   $('announcement-form-title').textContent = '发布新公告';
@@ -767,6 +970,8 @@ function resetAnnouncementForm() {
   $('announcement-title').value = '';
   $('announcement-content').value = '';
   ANNOUNCE_TARGET = [];
+  ANNOUNCE_IMAGES = [];
+  renderAnnounceImages();
   $('ann-user-search').value = '';
   setAnnounceTargetMode(false);
   autoGrowAnnouncementTextarea();
@@ -779,6 +984,8 @@ function fillAnnouncementForm(item) {
   $('announcement-title').value = item.title;
   $('announcement-content').value = item.content || '';
   ANNOUNCE_TARGET = Array.isArray(item.target_account_ids) ? item.target_account_ids.slice() : [];
+  ANNOUNCE_IMAGES = Array.isArray(item.images) ? item.images.map(img => ({ name: img.name || '', mime: img.mime || 'image/png', size: img.size || 0, data: img.data || '' })).filter(img => img.data) : [];
+  renderAnnounceImages();
   $('ann-user-search').value = '';
   setAnnounceTargetMode(ANNOUNCE_TARGET.length > 0);
   renderAnnounceUserPicker();
@@ -798,6 +1005,10 @@ function renderAnnouncements() {
     const isLong = content.length > 100 || (content.match(/\n/g) || []).length >= 3;
     const targets = Array.isArray(item.target_account_ids) ? item.target_account_ids : [];
     const scope = targets.length ? `<span class="badge badge-warning">指定 ${targets.length} 人</span>` : '<span class="badge badge-muted">全部用户</span>';
+    const images = Array.isArray(item.images) ? item.images : [];
+    const imageCell = images.length
+      ? `<div class="announcement-thumbs" data-ann-preview="${item.id}" title="点击预览发布效果"><img src="data:${images[0].mime};base64,${images[0].data}" alt="">${images.length > 1 ? `<span class="announcement-thumb-more">+${images.length - 1}</span>` : ''}</div>`
+      : '<span style="color:#9ca3af">-</span>';
     return `<tr>
       <td>${on ? '<span class="badge badge-success">已上线</span>' : '<span class="badge badge-muted">已下线</span>'}</td>
       <td><b>${esc(item.title)}</b></td>
@@ -805,6 +1016,7 @@ function renderAnnouncements() {
         <div class="announcement-body-clamp" data-ann-content data-id="${item.id}">${esc(content || '-')}</div>
         ${isLong ? `<button class="announcement-toggle" data-ann-toggle data-id="${item.id}">展开</button>` : ''}
       </td>
+      <td>${imageCell}</td>
       <td>${scope}</td>
       <td>${fmtTime(item.published_at)}</td>
       <td>
@@ -813,7 +1025,7 @@ function renderAnnouncements() {
         <button class="link-btn red" data-announcement-action="delete" data-id="${item.id}" data-title="${esc(item.title)}">删除</button>
       </td>
     </tr>`;
-  }).join('') : '<tr><td class="empty" colspan="6">暂无公告，发布第一条吧</td></tr>';
+  }).join('') : '<tr><td class="empty" colspan="7">暂无公告，发布第一条吧</td></tr>';
 }
 resetAnnouncementForm();
 $('announcement-save-btn').onclick = async () => {
@@ -823,11 +1035,12 @@ $('announcement-save-btn').onclick = async () => {
   $('announcement-save-btn').disabled = true;
   try {
     const targets = currentAnnounceTargets();
+    const images = ANNOUNCE_IMAGES.map(img => ({ name: img.name, mime: img.mime, data: img.data }));
     if (ANNOUNCEMENT_EDITING_ID == null) {
-      await api('/api/announcements', { method: 'POST', body: JSON.stringify({ title, content, target_account_ids: targets }) });
+      await api('/api/announcements', { method: 'POST', body: JSON.stringify({ title, content, target_account_ids: targets, images }) });
       toast('公告已发布', 'success');
     } else {
-      await api(`/api/announcements/${ANNOUNCEMENT_EDITING_ID}`, { method: 'PATCH', body: JSON.stringify({ title, content, target_account_ids: targets }) });
+      await api(`/api/announcements/${ANNOUNCEMENT_EDITING_ID}`, { method: 'PATCH', body: JSON.stringify({ title, content, target_account_ids: targets, images }) });
       toast('公告已保存', 'success');
     }
     resetAnnouncementForm();
@@ -837,6 +1050,12 @@ $('announcement-save-btn').onclick = async () => {
 };
 $('announcement-cancel-btn').onclick = resetAnnouncementForm;
 $('announcements-body').onclick = event => {
+  const preview = event.target.closest('[data-ann-preview]');
+  if (preview) {
+    const row = ANNOUNCEMENTS.find(item => item.id === Number(preview.dataset.annPreview));
+    if (row) openAnnouncementPreview(row.title, row.content, row.images);
+    return;
+  }
   const toggle = event.target.closest('.announcement-toggle');
   if (toggle) {
     const body = toggle.closest('tr').querySelector('.announcement-body-clamp');
