@@ -291,9 +291,12 @@ class CustomerAuthClient:
                 status_code = getattr(exc, "status_code", None)
                 if type(status_code) is not int or not 400 <= status_code < 500:
                     raise CustomerBillingProtocolError() from exc
+                # 保留上游 detail（如「今日已领取，明天再来」）：4xx 是可预期的业务
+                # 拒绝，把原文带给用户比一句笼统英文有用得多。
+                upstream = str(getattr(exc, "message", "") or "")
                 raise CustomerAuthRejected(
                     status_code,
-                    "remote billing request was rejected",
+                    upstream or "remote billing request was rejected",
                 ) from exc
             except CustomerBillingPermissionError:
                 raise

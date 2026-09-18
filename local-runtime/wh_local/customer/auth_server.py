@@ -3180,7 +3180,9 @@ def _billing_summary(database_path: Path, account: dict[str, Any]) -> dict[str, 
     # 展示型余额/流水缓存（短 TTL）；冻结/结算/充值等写路径会主动失效。
     pricing = active_pricing(database_path)
     promotion = topup_promotion_status()
-    cache_key = f"wallet:{account_id}:topup:fixed-package-tiered-bonus:{pricing['rule_version']}:plan:{_plan_period_key()}"
+    # 键必须与 cache.invalidate_wallet(account_id) 删除的键一致，否则领取/充值/结算
+    # 之后 30s 内刷新 summary 仍命中旧缓存（余额"不涨"）。维度差异由 30s 短 TTL 兜底。
+    cache_key = f"wallet:{account_id}"
     cached = _cache.cache_get(cache_key)
     if cached is not None:
         return cached
