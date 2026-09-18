@@ -19,10 +19,6 @@ const THEME_MASCOT: Record<ThemeId, string> = {
 
 const POSITION_KEY = "mainpg.balanceBall.position";
 const DRAG_THRESHOLD_PX = 6;
-/** 无任何交互时，每隔 30 分钟自动翻面展示一次吉祥物（彩蛋）。 */
-const IDLE_FLIP_INTERVAL_MS = 30 * 60 * 1000;
-/** 自动展示时图面停留时长，之后翻回数字面。 */
-const AUTO_SHOW_MS = 5000;
 const POLL_INTERVAL_MS = 60_000;
 const BALL_SIZE = 80;
 
@@ -64,8 +60,6 @@ export function BalanceFloatingBall() {
     const saved = readPosition();
     return saved ? clampPosition(saved) : defaultPosition();
   });
-  const flipTimerRef = useRef<number | null>(null);
-  const autoShowTimerRef = useRef<number | null>(null);
   const positionRef = useRef(position);
   positionRef.current = position;
   const dragRef = useRef({ active: false, moved: false, startX: 0, startY: 0, originX: 0, originY: 0 });
@@ -78,29 +72,6 @@ export function BalanceFloatingBall() {
       // 静默失败：保留旧值，等下一轮刷新
     }
   }, []);
-
-  // 空闲翻转计时：无任何交互满 30 分钟，自动翻到图面展示 5 秒再翻回。
-  const scheduleIdleFlip = useCallback(() => {
-    if (flipTimerRef.current != null) window.clearTimeout(flipTimerRef.current);
-    flipTimerRef.current = window.setTimeout(() => {
-      flipTimerRef.current = null;
-      setFlipped(true);
-      if (autoShowTimerRef.current != null) window.clearTimeout(autoShowTimerRef.current);
-      autoShowTimerRef.current = window.setTimeout(() => {
-        setFlipped(false);
-        autoShowTimerRef.current = null;
-        scheduleIdleFlip();
-      }, AUTO_SHOW_MS);
-    }, IDLE_FLIP_INTERVAL_MS);
-  }, []);
-
-  useEffect(() => {
-    scheduleIdleFlip();
-    return () => {
-      if (flipTimerRef.current != null) window.clearTimeout(flipTimerRef.current);
-      if (autoShowTimerRef.current != null) window.clearTimeout(autoShowTimerRef.current);
-    };
-  }, [scheduleIdleFlip]);
 
   useEffect(() => {
     void refresh();
@@ -116,15 +87,10 @@ export function BalanceFloatingBall() {
     };
   }, [refresh]);
 
-  // 手动点击：纯切换（不自动翻回），并重置 30 分钟空闲计时。
+  // 手动点击：纯切换（翻过去就停，再点翻回）。
   const flip = useCallback(() => {
     setFlipped((current) => !current);
-    if (autoShowTimerRef.current != null) {
-      window.clearTimeout(autoShowTimerRef.current);
-      autoShowTimerRef.current = null;
-    }
-    scheduleIdleFlip();
-  }, [scheduleIdleFlip]);
+  }, []);
 
   const onPointerDown = (event: React.PointerEvent<HTMLDivElement>) => {
     dragRef.current = {
@@ -157,7 +123,6 @@ export function BalanceFloatingBall() {
       try {
         window.localStorage.setItem(POSITION_KEY, JSON.stringify(positionRef.current));
       } catch { /* ignore */ }
-      scheduleIdleFlip(); // 拖动也算交互，重置空闲计时
     } else {
       flip();
     }
