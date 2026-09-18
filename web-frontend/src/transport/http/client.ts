@@ -127,6 +127,15 @@ export function toUserMessage(raw: string): string {
   if (/username or email already exists/i.test(message)) {
     return "这个用户名或邮箱已经注册过了，可以直接登录；忘记密码就在登录页点「忘记密码？」重置";
   }
+  // ---- 修改用户名 ----
+  if (/username is required/i.test(message)) return "请输入新的用户名";
+  if (/username must be 3-32 characters/i.test(message)) return "用户名需要 3-32 个字符";
+  if (/username contains unsupported characters/i.test(message)) return "用户名只能包含中英文、数字、下划线和连字符";
+  if (/new username must be different/i.test(message)) return "新用户名不能与当前用户名相同";
+  if (/username already taken/i.test(message)) return "这个用户名已被占用，换一个试试";
+  if (/username can only be changed once every 30 days/i.test(message)) return "30 天内只能修改一次用户名，过段时间再来";
+  if (/a verified email is required to change username/i.test(message)) return "当前账号没有绑定邮箱，无法修改用户名";
+  if (/missing account/i.test(message)) return "账号信息缺失，请重新登录后再试";
   if (/password must be at least 6 characters/i.test(message)) return "密码至少 6 位，请重新设置";
   if (/a valid email is required/i.test(message)) return "邮箱格式不正确，请检查后重新填写";
   if (/account not found/i.test(message)) return "找不到这个账号，请确认用户名或邮箱有没有写错";

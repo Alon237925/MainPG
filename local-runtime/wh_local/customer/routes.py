@@ -140,7 +140,7 @@ def create_customer_router(remote_auth: CustomerAuthClient, sessions: LocalSessi
         try:
             if not hasattr(remote_auth, "change_username"):
                 raise CustomerAuthUnavailable("remote account service is not configured")
-            return remote_auth.change_username(payload, remote_token_from_local_session(authorization))
+            return _public_action(remote_auth.change_username(payload, remote_token_from_local_session(authorization)))
         except Exception as exc:
             handle_auth_error(exc)
 
