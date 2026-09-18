@@ -2,14 +2,14 @@
 .balance-ball {
   position: fixed;
   z-index: 900; /* 低于弹窗层(1500)，高于普通内容 */
-  width: 68px;
-  height: 68px;
+  width: 80px;
+  height: 80px;
   perspective: 800px;
   cursor: grab;
   user-select: none;
   -webkit-user-select: none;
   touch-action: none;
-  filter: drop-shadow(0 6px 16px rgba(15, 23, 42, 0.22));
+  filter: drop-shadow(0 8px 20px rgba(15, 23, 42, 0.24));
   outline: none;
 }
 
@@ -55,7 +55,7 @@
 }
 
 .balance-ball-label {
-  font-size: 11px;
+  font-size: 12px;
   font-weight: 750;
   letter-spacing: 0.06em;
   opacity: 0.92;
@@ -63,17 +63,17 @@
 }
 
 .balance-ball-face.is-front b {
-  font-size: 18px;
+  font-size: 22px;
   font-weight: 800;
   line-height: 1.15;
-  max-width: 60px;
+  max-width: 70px;
   overflow: hidden;
   text-overflow: ellipsis;
   white-space: nowrap;
 }
 
 .balance-ball-face.is-front b.is-compact {
-  font-size: 13px;
+  font-size: 15px;
 }
 
 .balance-ball-face.is-back {
