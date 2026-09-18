@@ -753,15 +753,39 @@ export function PersonalCenterPage({ feedbackPrefill = null }: PersonalCenterPag
     setClaimBusy(true);
     setClaimNotice("");
     setError("");
+    let result: Awaited<ReturnType<typeof claimBasicWeeklyPoints>> | null = null;
     try {
-      const result = await claimBasicWeeklyPoints();
-      setClaimNotice(`已领取 ${result.claimed_points} 积分（第 ${result.claim_count}/${result.claim_max} 周）`);
+      result = await claimBasicWeeklyPoints();
+    } catch (exc) {
+      setError(exc instanceof Error ? exc.message : "领取失败，请稍后重试");
+      setClaimBusy(false);
+      return;
+    }
+    // 领取已成功：先给即时反馈；后面 summary 刷新失败也不误报"领取失败"。
+    setClaimNotice(`已领取 ${result.claimed_points} 积分（第 ${result.claim_count}/${result.claim_max} 周）`);
+    try {
       const payload = await loadBillingSummary();
       setSummary(payload);
       writeBalanceCache(balanceCacheKeyValue, payload);
       lastBalanceRefreshAt.current = Date.now();
-    } catch (exc) {
-      setError(exc instanceof Error ? exc.message : "领取失败，请稍后重试");
+    } catch {
+      // 概要刷新失败：用领取结果乐观更新当前展示，避免"已入账却显示没变"。
+      setSummary((current) =>
+        current
+          ? {
+              ...current,
+              wallet: {
+                ...current.wallet,
+                plan: {
+                  ...current.wallet.plan,
+                  extra_balance: (current.wallet.plan.extra_balance ?? 0) + result.claimed_points,
+                  basic_claim_count: result.claim_count,
+                  basic_claimable: result.claim_count < result.claim_max,
+                },
+              },
+            }
+          : current,
+      );
     } finally {
       setClaimBusy(false);
     }
@@ -773,15 +797,40 @@ export function PersonalCenterPage({ feedbackPrefill = null }: PersonalCenterPag
     setDailyClaimBusy(true);
     setDailyClaimNotice("");
     setError("");
+    let result: Awaited<ReturnType<typeof claimDailyExtraPoints>> | null = null;
     try {
-      const result = await claimDailyExtraPoints();
-      setDailyClaimNotice(`已领取 ${result.claimed_points} 积分，明日 00:00 后可再领`);
+      result = await claimDailyExtraPoints();
+    } catch (exc) {
+      setError(exc instanceof Error ? exc.message : "领取失败，请稍后重试");
+      setDailyClaimBusy(false);
+      return;
+    }
+    // 领取已成功：先给即时反馈；后面 summary 刷新失败也不误报"领取失败"。
+    setDailyClaimNotice(`已领取 ${result.claimed_points} 积分，明日 00:00 后可再领`);
+    try {
       const payload = await loadBillingSummary();
       setSummary(payload);
       writeBalanceCache(balanceCacheKeyValue, payload);
       lastBalanceRefreshAt.current = Date.now();
-    } catch (exc) {
-      setError(exc instanceof Error ? exc.message : "领取失败，请稍后重试");
+    } catch {
+      // 概要刷新失败：用领取结果乐观更新当前展示，避免"已入账却显示没变"。
+      setSummary((current) =>
+        current
+          ? {
+              ...current,
+              wallet: {
+                ...current.wallet,
+                plan: {
+                  ...current.wallet.plan,
+                  extra_balance: (current.wallet.plan.extra_balance ?? 0) + result.claimed_points,
+                  daily_claimable: false,
+                  daily_claim_date: result.period,
+                  daily_next_claim_at: result.next_claim_at,
+                },
+              },
+            }
+          : current,
+      );
     } finally {
       setDailyClaimBusy(false);
     }
