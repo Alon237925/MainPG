@@ -360,7 +360,7 @@ class SQLiteCustomerAuthService:
         self._require_email_verification()
         email = _normalize_email(_text(payload, "email"))
         purpose = _text(payload, "purpose").lower() or "register"
-        if purpose not in {"register", "reset_password"}:
+        if purpose not in {"register", "reset_password", "change_username"}:
             raise ValueError("unsupported email code purpose")
 
         now_dt = datetime.now(timezone.utc)
@@ -379,6 +379,8 @@ class SQLiteCustomerAuthService:
             if purpose == "register" and existing_account is not None:
                 return _email_code_success()
             if purpose == "reset_password" and existing_account is None:
+                return _email_code_success()
+            if purpose == "change_username" and existing_account is None:
                 return _email_code_success()
 
             recently_sent = conn.execute(
@@ -571,6 +573,113 @@ class SQLiteCustomerAuthService:
             ok=True,
             message="if the account exists, a verification code has been sent to its email",
         )
+
+    def change_username(self, payload: dict[str, Any]) -> CustomerAuthActionResult:
+        """修改登录用户名：需已登录（account_id）+ 绑定邮箱验证码（purpose=change_username）。
+
+        规则：30 天限一次、新名 3~32 字符（中英文/数字/下划线/连字符）、
+        工作区范围内唯一、验证码一次性消费。成功/失败均写 auth_security_events。
+        """
+        self._require_email_verification()
+        account_id = _text(payload, "account_id")
+        new_username = _text(payload, "new_username").strip()
+        code = _text(payload, "code") or _text(payload, "email_code")
+        if not account_id:
+            raise PermissionError("missing account")
+        if not new_username:
+            raise ValueError("username is required")
+        if not 3 <= len(new_username) <= 32:
+            raise ValueError("username must be 3-32 characters")
+        if not re.fullmatch(r"[\w\u4e00-\u9fa5-]+", new_username):
+            raise ValueError("username contains unsupported characters")
+        if not re.fullmatch(r"\d{6}", code):
+            raise ValueError("a valid 6-digit email code is required")
+        now = _utc_now()
+
+        with transaction(self.database_path) as conn:
+            account = conn.execute(
+                "SELECT username, email FROM auth_accounts WHERE account_id = ?",
+                (account_id,),
+            ).fetchone()
+            if account is None:
+                raise PermissionError("account not found")
+            old_username = str(account["username"] or "")
+            email = _normalize_email(str(account["email"] or ""))
+            if not email:
+                _log_security_event(conn, account_id, "change_username", False, {"reason": "no bound email"})
+                raise PermissionError("a verified email is required to change username")
+            if new_username == old_username:
+                raise ValueError("new username must be different from the current one")
+
+        # 验证码校验（内部自开事务，错码 attempts 递增并抛出）。
+        verification_id = self._validate_email_code(email, code, purpose="change_username")
+
+        with transaction(self.database_path) as conn:
+            # 频率限制：30 天内只允许成功改一次。
+            cutoff = (datetime.now(timezone.utc) - timedelta(days=30)).isoformat(timespec="seconds")
+            recent = conn.execute(
+                """
+                SELECT 1 FROM auth_security_events
+                WHERE account_id = ? AND event_type = 'change_username' AND success = 1
+                  AND created_at > ?
+                LIMIT 1
+                """,
+                (account_id, cutoff),
+            ).fetchone()
+            if recent is not None:
+                _log_security_event(conn, account_id, "change_username", False, {"reason": "rate limited"})
+                raise PermissionError("username can only be changed once every 30 days")
+
+            taken = conn.execute(
+                "SELECT 1 FROM auth_accounts WHERE lower(username) = lower(?) AND account_id <> ?",
+                (new_username, account_id),
+            ).fetchone()
+            if taken is not None:
+                _log_security_event(conn, account_id, "change_username", False, {"reason": "username taken"})
+                raise ValueError("username already taken")
+
+            # 与重置密码一致：事务内二次校验，防止同一验证码被并发消费。
+            verification = conn.execute(
+                """
+                SELECT token_hash, expires_at, attempts
+                FROM auth_email_verifications
+                WHERE verification_id = ? AND email = ? AND purpose = 'change_username' AND used_at = ''
+                """,
+                (verification_id, email),
+            ).fetchone()
+            expected_code_hash = _email_code_digest(
+                self.email_code_secret,
+                verification_id,
+                email,
+                "change_username",
+                code,
+            )
+            if (
+                verification is None
+                or str(verification["expires_at"]) <= now
+                or int(verification["attempts"]) >= EMAIL_CODE_MAX_ATTEMPTS
+                or not hmac.compare_digest(str(verification["token_hash"]), expected_code_hash)
+            ):
+                _log_security_event(conn, account_id, "change_username", False, {"reason": "invalid code"})
+                raise PermissionError("invalid or expired email code")
+
+            conn.execute(
+                "UPDATE auth_accounts SET username = ?, updated_at = ? WHERE account_id = ?",
+                (new_username, now, account_id),
+            )
+            conn.execute(
+                "UPDATE auth_email_verifications SET used_at = ? WHERE verification_id = ? AND used_at = ''",
+                (now, verification_id),
+            )
+            _log_security_event(
+                conn,
+                account_id,
+                "change_username",
+                True,
+                {"old_username": old_username, "new_username": new_username},
+            )
+
+        return CustomerAuthActionResult(ok=True, message="username changed")
 
     def reset_password(self, payload: dict[str, Any]) -> CustomerAuthActionResult:
         new_password = _text(payload, "new_password") or _text(payload, "password")

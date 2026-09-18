@@ -1971,6 +1971,20 @@ def create_auth_app(database_path: Path | None = None) -> FastAPI:
     def change_password(payload: dict[str, Any]) -> dict[str, Any]:
         return _action_response(_call_action(service.change_password, payload))
 
+    @app.post("/api/customer/change-username")
+    def change_username(
+        payload: dict[str, Any],
+        authorization: str | None = Header(default=None),
+    ) -> dict[str, Any]:
+        """修改登录用户名：已登录 + 绑定邮箱验证码（purpose=change_username），30 天限一次。
+
+        account_id 由服务端从 token 解析注入，不信任请求体，防止改他人账号。
+        """
+        account = _required_account(db_path, authorization)
+        enriched_payload = dict(payload)
+        enriched_payload["account_id"] = str(account["account_id"])
+        return _action_response(_call_action(service.change_username, enriched_payload))
+
     @app.post("/api/customer/forgot-password")
     def forgot_password(payload: dict[str, Any], request: Request) -> dict[str, Any]:
         enriched_payload = dict(payload)

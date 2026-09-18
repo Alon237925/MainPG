@@ -69,6 +69,19 @@ class CustomerAuthClient:
     def change_password(self, payload: dict[str, Any]) -> CustomerAuthActionResult:
         return normalize_action_response(self._post("/api/customer/change-password", payload, account_action=True))
 
+    def change_username(self, payload: dict[str, Any], remote_token: str) -> CustomerAuthActionResult:
+        """修改登录用户名（服务端校验已登录 + 邮箱验证码，30 天限一次）。"""
+        if not remote_token:
+            raise CustomerAuthPermissionError()
+        return normalize_action_response(
+            self._post(
+                "/api/customer/change-username",
+                payload,
+                headers={"Authorization": f"Bearer {remote_token}"},
+                account_action=True,
+            )
+        )
+
     def forgot_password(self, payload: dict[str, Any]) -> CustomerAuthActionResult:
         return normalize_action_response(self._post("/api/customer/forgot-password", payload, account_action=True))
 

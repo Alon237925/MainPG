@@ -202,6 +202,39 @@
   font-size: 14px;
 }
 
+.personal-username-code-row {
+  display: flex;
+  gap: 8px;
+  width: 100%;
+}
+
+.personal-username-code-row input {
+  flex: 1;
+  min-width: 0;
+}
+
+.personal-username-code-btn {
+  flex: none;
+  padding: 0 14px;
+  border: 1px solid var(--theme-module-primary-strong, #0ea5ff);
+  border-radius: 10px;
+  background: transparent;
+  color: var(--theme-module-primary-strong, #0ea5ff);
+  font-size: 0.8rem;
+  font-weight: 700;
+  white-space: nowrap;
+  cursor: pointer;
+}
+
+.personal-username-code-btn:hover:not(:disabled) {
+  background: var(--theme-module-primary-soft, rgba(14, 165, 255, 0.12));
+}
+
+.personal-username-code-btn:disabled {
+  opacity: 0.55;
+  cursor: not-allowed;
+}
+
 .personal-password-layer {
   position: fixed;
   inset: 0;

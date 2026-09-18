@@ -132,6 +132,18 @@ def create_customer_router(remote_auth: CustomerAuthClient, sessions: LocalSessi
         except Exception as exc:
             handle_auth_error(exc)
 
+    @router.post("/change-username")
+    def change_username(
+        payload: dict[str, Any],
+        authorization: str | None = Header(default=None),
+    ) -> dict[str, Any]:
+        try:
+            if not hasattr(remote_auth, "change_username"):
+                raise CustomerAuthUnavailable("remote account service is not configured")
+            return remote_auth.change_username(payload, remote_token_from_local_session(authorization))
+        except Exception as exc:
+            handle_auth_error(exc)
+
     @router.post("/forgot-password")
     def forgot_password(payload: dict[str, Any]) -> dict[str, Any]:
         try:

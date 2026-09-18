@@ -1,10 +1,11 @@
 import { type FormEvent, useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { createPortal } from "react-dom";
 
-import { clearAuthSession, getAuthAccount } from "../../../transport/http/client";
+import { clearAuthSession, getAuthAccount, getAuthToken, saveAuthSession } from "../../../transport/http/client";
 import { AVATAR_CHANGED_EVENT, AVATAR_STORAGE_KEY } from "../../../app/layout/TopNavigation";
 import {
   changeAccountPassword,
+  changeUsername,
   claimBasicWeeklyPoints,
   claimDailyExtraPoints,
   createTopupOrder,
@@ -15,6 +16,7 @@ import {
   quoteCustomTopup,
   saveImageModel,
   savePodImageModel,
+  sendUsernameChangeCode,
   type BillingPackage,
   type BillingSummary,
   type BillingUsageEntry,
@@ -353,6 +355,14 @@ export function PersonalCenterPage({ feedbackPrefill = null }: PersonalCenterPag
   const [passwordBusy, setPasswordBusy] = useState(false);
   const [passwordSuccess, setPasswordSuccess] = useState("");
   const [passwordError, setPasswordError] = useState("");
+  const [usernameOpen, setUsernameOpen] = useState(false);
+  const [newUsername, setNewUsername] = useState("");
+  const [usernameCode, setUsernameCode] = useState("");
+  const [usernameBusy, setUsernameBusy] = useState(false);
+  const [usernameError, setUsernameError] = useState("");
+  const [usernameNotice, setUsernameNotice] = useState("");
+  const [codeBusy, setCodeBusy] = useState(false);
+  const [codeCooldown, setCodeCooldown] = useState(0);
   // 消费流水刷新保护：30 秒内（含页面刷新，随缓存持久化）相同筛选条件不重复请求；筛选变更因缓存键变化自动重新拉取。
   const USAGE_REFRESH_COOLDOWN_MS = 30_000;
   // 消费流水筛选条件（服务板块/状态/日期）。
@@ -706,6 +716,110 @@ export function PersonalCenterPage({ feedbackPrefill = null }: PersonalCenterPag
     }
   };
 
+  useEffect(() => {
+    if (codeCooldown <= 0) return;
+    const timer = window.setInterval(
+      () => setCodeCooldown((seconds) => Math.max(0, seconds - 1)),
+      1000,
+    );
+    return () => window.clearInterval(timer);
+  }, [codeCooldown]);
+
+  useEffect(() => {
+    if (!usernameOpen) return;
+    const previousOverflow = document.body.style.overflow;
+    const closeOnEscape = (event: KeyboardEvent) => {
+      if (event.key === "Escape" && !usernameBusy) setUsernameOpen(false);
+    };
+    document.body.style.overflow = "hidden";
+    window.addEventListener("keydown", closeOnEscape);
+    return () => {
+      document.body.style.overflow = previousOverflow;
+      window.removeEventListener("keydown", closeOnEscape);
+    };
+  }, [usernameBusy, usernameOpen]);
+
+  const openUsernameDialog = () => {
+    setNewUsername("");
+    setUsernameCode("");
+    setUsernameError("");
+    setUsernameNotice("");
+    setCodeCooldown(0);
+    setUsernameOpen(true);
+  };
+
+  const closeUsernameDialog = () => {
+    if (!usernameBusy) setUsernameOpen(false);
+  };
+
+  const sendUsernameCode = async () => {
+    const email = account?.email;
+    if (!email) {
+      setUsernameError("当前账号没有绑定邮箱，无法修改用户名");
+      return;
+    }
+    setUsernameError("");
+    setUsernameNotice("");
+    setCodeBusy(true);
+    try {
+      await sendUsernameChangeCode(email);
+      setCodeCooldown(60);
+      setUsernameNotice("验证码已发送到账号绑定邮箱，请查收");
+    } catch (exc) {
+      setUsernameError(exc instanceof Error ? exc.message : "验证码发送失败，请稍后重试");
+    } finally {
+      setCodeBusy(false);
+    }
+  };
+
+  const submitUsernameChange = async (event: FormEvent<HTMLFormElement>) => {
+    event.preventDefault();
+    setUsernameError("");
+    setUsernameNotice("");
+    const trimmed = newUsername.trim();
+    if (!trimmed) {
+      setUsernameError("请输入新的用户名");
+      return;
+    }
+    if (trimmed.length < 3 || trimmed.length > 32) {
+      setUsernameError("用户名需要 3-32 个字符");
+      return;
+    }
+    if (trimmed === (account?.username || summary?.account.username)) {
+      setUsernameError("新用户名不能与当前用户名相同");
+      return;
+    }
+    if (!/^[\w\u4e00-\u9fa5-]+$/.test(trimmed)) {
+      setUsernameError("用户名只能包含中英文、数字、下划线和连字符");
+      return;
+    }
+    if (!/^\d{6}$/.test(usernameCode.trim())) {
+      setUsernameError("请输入 6 位数字验证码");
+      return;
+    }
+    setUsernameBusy(true);
+    try {
+      await changeUsername({ new_username: trimmed, code: usernameCode.trim() });
+      // 更新本地缓存的 account，保持登录态（改名不需要重新登录）
+      const current = getAuthAccount<AccountSnapshot>();
+      if (current) {
+        saveAuthSession(getAuthToken(), { ...current, username: trimmed });
+      }
+      setUsernameNotice("用户名修改成功，下次登录请使用新用户名");
+      setNewUsername("");
+      setUsernameCode("");
+      setUsernameOpen(false);
+      window.setTimeout(() => window.location.reload(), 600);
+    } catch (exc) {
+      const message = exc instanceof Error ? exc.message : "修改用户名失败";
+      setUsernameError(
+        message.includes("already taken") ? "这个用户名已被占用，换一个试试" : message,
+      );
+    } finally {
+      setUsernameBusy(false);
+    }
+  };
+
   const submitTopup = async (product?: BillingPackage | null) => {
     if (!product) return;
     setCreating(true);
@@ -914,6 +1028,72 @@ export function PersonalCenterPage({ feedbackPrefill = null }: PersonalCenterPag
           </section>
         </div>, document.body)}
 
+      {usernameOpen && createPortal(
+        <div className="personal-password-layer" onMouseDown={closeUsernameDialog}>
+          <section
+            className="personal-password-dialog"
+            role="dialog"
+            aria-modal="true"
+            aria-labelledby="personal-username-title"
+            onMouseDown={(event) => event.stopPropagation()}
+          >
+            <header>
+              <div>
+                <span>ACCOUNT PROFILE</span>
+                <h2 id="personal-username-title">修改用户名</h2>
+                <p>新用户名会作为登录名使用，验证码将发送到账号绑定邮箱，30 天内只能修改一次。</p>
+              </div>
+              <button type="button" onClick={closeUsernameDialog} disabled={usernameBusy} aria-label="关闭">×</button>
+            </header>
+            <form onSubmit={(event) => void submitUsernameChange(event)}>
+              <label>
+                <span>新用户名</span>
+                <input
+                  autoFocus
+                  type="text"
+                  autoComplete="username"
+                  value={newUsername}
+                  onChange={(event) => setNewUsername(event.target.value)}
+                  placeholder="3-32 个字符，中英文、数字、下划线、连字符"
+                  minLength={3}
+                  maxLength={32}
+                  required
+                />
+              </label>
+              <label>
+                <span>邮箱验证码</span>
+                <div className="personal-username-code-row">
+                  <input
+                    type="text"
+                    inputMode="numeric"
+                    autoComplete="one-time-code"
+                    value={usernameCode}
+                    onChange={(event) => setUsernameCode(event.target.value.replace(/\D/g, "").slice(0, 6))}
+                    placeholder="6 位数字验证码"
+                    required
+                  />
+                  <button
+                    type="button"
+                    className="personal-username-code-btn"
+                    onClick={() => void sendUsernameCode()}
+                    disabled={codeBusy || codeCooldown > 0}
+                  >
+                    {codeBusy ? "发送中…" : codeCooldown > 0 ? `${codeCooldown} 秒后重发` : "发送验证码"}
+                  </button>
+                </div>
+              </label>
+              {usernameError && <p className="personal-password-message is-error">{usernameError}</p>}
+              {usernameNotice && <p className="personal-password-message is-success">{usernameNotice}</p>}
+              <footer>
+                <button type="button" onClick={closeUsernameDialog} disabled={usernameBusy}>取消</button>
+                <button className="is-primary" type="submit" disabled={usernameBusy}>
+                  {usernameBusy ? "正在修改…" : "确认修改"}
+                </button>
+              </footer>
+            </form>
+          </section>
+        </div>, document.body)}
+
       {upgradeOpen && createPortal(
         <div className="personal-password-layer" onMouseDown={() => setUpgradeOpen(false)}>
           <section
@@ -1007,6 +1187,10 @@ export function PersonalCenterPage({ feedbackPrefill = null }: PersonalCenterPag
               <button className="personal-password-entry" type="button" onClick={openPasswordDialog}>
                 <span className="iconfont icon-key" aria-hidden="true" />
                 <span>修改密码</span>
+              </button>
+              <button className="personal-password-entry" type="button" onClick={openUsernameDialog}>
+                <span className="iconfont icon-user" aria-hidden="true" />
+                <span>修改用户名</span>
               </button>
             </div>
 

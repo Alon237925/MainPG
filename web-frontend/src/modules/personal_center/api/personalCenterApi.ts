@@ -261,6 +261,23 @@ export function changeAccountPassword(input: {
   });
 }
 
+/** 发送改用户名用的邮箱验证码（发到账号绑定邮箱）。 */
+export function sendUsernameChangeCode(email: string) {
+  return httpJson<{ ok: boolean; message: string }>("/api/customer/email-code", {
+    method: "POST",
+    body: { email, purpose: "change_username" },
+    token: "",
+  });
+}
+
+/** 修改登录用户名：服务端校验已登录 + 邮箱验证码，30 天限一次。 */
+export function changeUsername(input: { new_username: string; code: string }) {
+  return httpJson<{ ok: boolean; message: string }>("/api/customer/change-username", {
+    method: "POST",
+    body: input,
+  });
+}
+
 export type ImageModelChoice = {
   value: string;
   label: string;
