@@ -19,8 +19,10 @@ const THEME_MASCOT: Record<ThemeId, string> = {
 
 const POSITION_KEY = "mainpg.balanceBall.position";
 const DRAG_THRESHOLD_PX = 6;
+/** 数字面朝外且 5 分钟无交互时，自动翻到图面；图面保持不动。 */
+const IDLE_FLIP_INTERVAL_MS = 5 * 60 * 1000;
 const POLL_INTERVAL_MS = 60_000;
-const BALL_SIZE = 80;
+const BALL_SIZE = 88;
 
 type BallPosition = { x: number; y: number };
 
@@ -56,6 +58,8 @@ export function BalanceFloatingBall() {
   const { theme } = useTheme();
   const [points, setPoints] = useState<number | null>(null);
   const [flipped, setFlipped] = useState(false);
+  const flippedRef = useRef(false);
+  const idleTimerRef = useRef<number | null>(null);
   const [position, setPosition] = useState<BallPosition>(() => {
     const saved = readPosition();
     return saved ? clampPosition(saved) : defaultPosition();
@@ -73,6 +77,28 @@ export function BalanceFloatingBall() {
     }
   }, []);
 
+  const clearIdleTimer = useCallback(() => {
+    if (idleTimerRef.current != null) {
+      window.clearTimeout(idleTimerRef.current);
+      idleTimerRef.current = null;
+    }
+  }, []);
+
+  // 数字面朝外时启动 5 分钟计时：到点自动翻到图面（图面保持不动）。
+  const scheduleIdleFlip = useCallback(() => {
+    clearIdleTimer();
+    idleTimerRef.current = window.setTimeout(() => {
+      idleTimerRef.current = null;
+      flippedRef.current = true;
+      setFlipped(true);
+    }, IDLE_FLIP_INTERVAL_MS);
+  }, [clearIdleTimer]);
+
+  useEffect(() => {
+    scheduleIdleFlip();
+    return clearIdleTimer;
+  }, [scheduleIdleFlip, clearIdleTimer]);
+
   useEffect(() => {
     void refresh();
     const onChanged = () => { void refresh(); };
@@ -87,10 +113,17 @@ export function BalanceFloatingBall() {
     };
   }, [refresh]);
 
-  // 手动点击：纯切换（翻过去就停，再点翻回）。
+  // 手动点击：数字面→图面（取消计时，图面常驻）；图面→数字面（重新计时 5 分钟）。
   const flip = useCallback(() => {
-    setFlipped((current) => !current);
-  }, []);
+    const next = !flippedRef.current;
+    flippedRef.current = next;
+    setFlipped(next);
+    if (next) {
+      clearIdleTimer();
+    } else {
+      scheduleIdleFlip();
+    }
+  }, [clearIdleTimer, scheduleIdleFlip]);
 
   const onPointerDown = (event: React.PointerEvent<HTMLDivElement>) => {
     dragRef.current = {
@@ -123,6 +156,8 @@ export function BalanceFloatingBall() {
       try {
         window.localStorage.setItem(POSITION_KEY, JSON.stringify(positionRef.current));
       } catch { /* ignore */ }
+      // 拖动算交互：数字面时重置 5 分钟计时
+      if (!flippedRef.current) scheduleIdleFlip();
     } else {
       flip();
     }
