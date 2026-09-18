@@ -43,9 +43,9 @@ export function clearAuthSession() {
 
 const SESSION_EXPIRED_EVENT = "auth:session-expired";
 
-/** 通知应用层登录状态已失效（登录超时 / 远程会话缺失），用于自动返回登录页。 */
-export function notifySessionExpired(): void {
-  window.dispatchEvent(new CustomEvent(SESSION_EXPIRED_EVENT));
+/** 通知应用层登录状态已失效（登录超时 / 远程会话缺失 / 被顶替），用于自动返回登录页。 */
+export function notifySessionExpired(reason?: string): void {
+  window.dispatchEvent(new CustomEvent(SESSION_EXPIRED_EVENT, { detail: reason || "" }));
 }
 
 export function isSessionExpired(response: Response, detail: string): boolean {
@@ -55,7 +55,7 @@ export function isSessionExpired(response: Response, detail: string): boolean {
     return false;
   }
   if (response.status === 401) return true;
-  return /login session expired|remote customer session is missing|invalid bearer token|missing bearer token/i.test(detail);
+  return /login session expired|remote customer session is missing|invalid bearer token|missing bearer token|session revoked/i.test(detail);
 }
 
 /**
@@ -127,6 +127,10 @@ export function toUserMessage(raw: string): string {
   if (/username or email already exists/i.test(message)) {
     return "这个用户名或邮箱已经注册过了，可以直接登录；忘记密码就在登录页点「忘记密码？」重置";
   }
+  // ---- 登录与会话 ----
+  if (/too many failed login attempts/i.test(message)) return "登录失败次数过多，请 15 分钟后再试";
+  if (/session revoked/i.test(message)) return "你的账号已在其他设备登录，本机已退出";
+  if (/login session expired|invalid bearer token|missing bearer token/i.test(message)) return "登录状态已失效，请重新登录";
   // ---- 修改用户名 ----
   if (/username is required/i.test(message)) return "请输入新的用户名";
   if (/username must be 3-32 characters/i.test(message)) return "用户名需要 3-32 个字符";
@@ -284,7 +288,7 @@ export async function httpJson<T>(path: string, options: RequestOptions = {}): P
 
   if (!response.ok) {
     const detail = detailFromPayload(payload, response.status);
-    if (isSessionExpired(response, detail)) notifySessionExpired();
+    if (isSessionExpired(response, detail)) notifySessionExpired(detail);
     throw new Error(toUserMessage(detail));
   }
 
@@ -308,7 +312,7 @@ export async function httpBlob(path: string, options: RequestOptions = {}): Prom
 
   if (!response.ok) {
     const detail = await response.text().catch(() => "请求失败");
-    if (isSessionExpired(response, detail)) notifySessionExpired();
+    if (isSessionExpired(response, detail)) notifySessionExpired(detail);
     throw new Error(toUserMessage(detail || "请求失败"));
   }
 

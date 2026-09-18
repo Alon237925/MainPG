@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import base64
 import json
+import re
 import threading
 import time
 from typing import Any
@@ -25,6 +26,12 @@ from .contracts import (
 _BILLING_MAX_ATTEMPTS = 5
 _BILLING_RETRY_DELAYS = (0.2, 0.6, 1.2, 2.0)
 _BILLING_REQUEST_GATE = threading.BoundedSemaphore(2)
+
+# 会话失效类 401 detail：透传给前端识别（被顶替/过期），不回折叠成固定话术。
+_SESSION_FAILURE_DETAIL = re.compile(
+    r"session revoked|login session expired|invalid bearer token|missing bearer token",
+    re.IGNORECASE,
+)
 
 
 class CustomerAuthClient:
@@ -364,6 +371,10 @@ class CustomerAuthClient:
                 if account_action and detail:
                     # 账号操作要把上游原因带给用户（邀请码过期、验证码错误、密码不对…），
                     # 折叠成固定话术会让注册/登录页只剩一句「操作失败，请稍后重试」。
+                    raise CustomerAuthPermissionError(status, detail) from None
+                if status == 401 and detail and _SESSION_FAILURE_DETAIL.search(detail):
+                    # 会话失效类 401（被顶替/过期）：透传 detail，前端据此给出
+                    # 明确提示并回登录页，而不是把用户留在工作区反复报错。
                     raise CustomerAuthPermissionError(status, detail) from None
                 raise CustomerBillingPermissionError(status) from None
             if 400 <= status < 500:

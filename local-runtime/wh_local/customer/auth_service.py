@@ -29,7 +29,11 @@ EMAIL_CODE_MAX_ATTEMPTS = 5
 DEFAULT_WORKSPACE_NAME = "本地演示工作区"
 # 会话失联阈值：前端心跳间隔约 30 秒，超过该阈值未刷新 last_used_at 视为
 # 已关闭页面/断线，允许该账号重新登录并撤销旧会话。
-SESSION_STALE_SECONDS = 90
+SESSION_STALE_SECONDS = 300
+
+# 登录防爆破：15 分钟内同账号连续失败 5 次即锁定，之后登录直接拒绝。
+LOGIN_MAX_FAILURES = 5
+LOGIN_LOCK_WINDOW_SECONDS = 15 * 60
 
 
 class SQLiteCustomerAuthService:
@@ -103,6 +107,26 @@ class SQLiteCustomerAuthService:
                     (row["account_id"], row["username"], row["email"], "account is not active", _utc_now()),
                 )
                 raise PermissionError("customer account is not active")
+
+            # 登录防爆破：15 分钟内同账号连续失败达到上限后锁定，密码比对之前拒绝，
+            # 避免攻击者无限试密码。窗口外的旧失败自然滑出，锁定自动解除。
+            lock_since = _utc_ago(LOGIN_LOCK_WINDOW_SECONDS)
+            failed_count = conn.execute(
+                """
+                SELECT COUNT(*) AS total FROM auth_login_logs
+                WHERE account_id = ? AND success = 0 AND created_at > ?
+                """,
+                (row["account_id"], lock_since),
+            ).fetchone()["total"]
+            if int(failed_count) >= LOGIN_MAX_FAILURES:
+                conn.execute(
+                    """
+                    INSERT INTO auth_login_logs (account_id, username, email, success, failure_reason, created_at)
+                    VALUES (?, ?, ?, 0, ?, ?)
+                    """,
+                    (row["account_id"], row["username"], row["email"], "too many failed login attempts", _utc_now()),
+                )
+                raise PermissionError("too many failed login attempts, please try again later")
 
             if not _verify_password(password, row["salt"], row["password_hash"], int(row["iterations"])):
                 conn.execute(
@@ -941,6 +965,32 @@ def _log_security_event(
             _utc_now(),
         ),
     )
+
+
+def refresh_stale_login_status(database_path: Path) -> int:
+    """把"所有平台会话均已过期/撤销"的账号从 online 回落为 offline。
+
+    login_status 只有登录（置 online）和显式登出（置 offline）两条写入路径：
+    用户直接关客户端不点退出时会永远停在 online。此函数由 auth server 的
+    维护线程周期调用，让在线状态随会话生命周期自动收敛。
+    """
+    now = _utc_now()
+    with transaction(database_path) as conn:
+        cursor = conn.execute(
+            """
+            UPDATE auth_accounts
+            SET login_status = 'offline', updated_at = ?
+            WHERE login_status = 'online'
+              AND NOT EXISTS (
+                  SELECT 1 FROM auth_platform_sessions s
+                  WHERE s.account_id = auth_accounts.account_id
+                    AND s.revoked_at = ''
+                    AND s.expires_at > ?
+              )
+            """,
+            (now, now),
+        )
+        return int(cursor.rowcount or 0)
 
 
 def purge_expired_customer_feedback(

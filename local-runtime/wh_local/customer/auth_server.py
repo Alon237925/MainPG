@@ -84,7 +84,7 @@ from ..pod_billing import (
     update_pod_pricing_items,
 )
 from ..session import Actor
-from .auth_service import SQLiteCustomerAuthService, purge_expired_customer_feedback
+from .auth_service import SQLiteCustomerAuthService, purge_expired_customer_feedback, refresh_stale_login_status
 from .credential_vault import CredentialVaultError, active_secret, enabled_secrets
 from .contracts import CustomerAuthActionResult, CustomerAuthResult, CustomerAuthUnavailable
 from .email_sender import TencentCloudSESEmailSender
@@ -918,6 +918,23 @@ def create_auth_app(database_path: Path | None = None) -> FastAPI:
         daemon=True,
     )
     purge_thread.start()
+
+    # 在线状态维护：每 10 分钟把"会话已全部失效"的账号从 online 回落 offline，
+    # 修正"直接关客户端不点退出导致永远 online"的挂起问题。
+    def _login_status_refresh_loop() -> None:
+        while True:
+            try:
+                time.sleep(10 * 60)
+                refresh_stale_login_status(db_path)
+            except Exception:
+                time.sleep(10 * 60)
+
+    status_thread = threading.Thread(
+        target=_login_status_refresh_loop,
+        name="login-status-refresh",
+        daemon=True,
+    )
+    status_thread.start()
 
     @app.on_event("shutdown")
     def _stop_batch_ttl_sweep() -> None:
@@ -2199,6 +2216,10 @@ def _issue_platform_session(
     return {"session_id": session_id, "token": token, "expires_at": expires_at}
 
 
+class SessionRevokedError(RuntimeError):
+    """平台会话已被撤销（他端登录顶替/登出/改密），区别于过期与不存在。"""
+
+
 def _account_by_token(database_path: Path, token: str) -> dict[str, Any] | None:
     """按 token 查账户；命中 Redis 会话缓存直接返回，DB miss 时回填。
 
@@ -2235,6 +2256,14 @@ def _account_by_token(database_path: Path, token: str) -> dict[str, Any] | None:
             (token_hash, now),
         ).fetchone()
         if row is None:
+            # 区分"会话被撤销"（他端登录顶替/登出/改密）与"过期/不存在"，
+            # 让被顶替的前端收到可识别的提示，而不是笼统的会话过期。
+            revoked = conn.execute(
+                "SELECT 1 FROM auth_platform_sessions WHERE token_hash = ? AND revoked_at <> ''",
+                (token_hash,),
+            ).fetchone()
+            if revoked is not None:
+                raise SessionRevokedError()
             return None
         conn.execute(
             "UPDATE auth_platform_sessions SET last_used_at = ? WHERE token_hash = ?",
@@ -2260,7 +2289,10 @@ def _account_by_token(database_path: Path, token: str) -> dict[str, Any] | None:
 
 def _required_account(database_path: Path, authorization: str | None) -> dict[str, Any]:
     token = _bearer_token(authorization)
-    account = _account_by_token(database_path, token)
+    try:
+        account = _account_by_token(database_path, token)
+    except SessionRevokedError:
+        raise HTTPException(status_code=401, detail="session revoked, account signed in on another device")
     if account is None:
         raise HTTPException(status_code=401, detail="invalid bearer token")
     if str(account.get("account_status") or "").lower() not in {"active", ""}:
