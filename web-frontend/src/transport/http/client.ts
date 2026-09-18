@@ -49,6 +49,11 @@ export function notifySessionExpired(): void {
 }
 
 export function isSessionExpired(response: Response, detail: string): boolean {
+  // 认证入口自身的 401 是业务拒绝（密码错/验证码错/账号停用），不是会话过期，
+  // 不能触发回登录页（否则登录页输错密码会被"踢"）。
+  if (/invalid (username\/email or password)|invalid or expired (reset token|email code)|a valid 6-digit email code is required|user is not registered on the server|customer account is not active/i.test(detail)) {
+    return false;
+  }
   if (response.status === 401) return true;
   return /login session expired|remote customer session is missing|invalid bearer token|missing bearer token/i.test(detail);
 }
@@ -66,9 +71,15 @@ const interceptorWindow = window as unknown as Record<string, unknown>;
 if (!interceptorWindow[FETCH_INTERCEPTOR_KEY]) {
   interceptorWindow[FETCH_INTERCEPTOR_KEY] = true;
   const originalFetch = window.fetch.bind(window);
+  // 认证入口的 401 是业务拒绝（密码/验证码错误），不应触发会话过期回登录页。
+  const AUTH_ENTRY_PATH =
+    /\/api\/customer\/(login|register|activate|email-code|password-reset|change-password|forgot-password)(\/|$)/i;
   window.fetch = async (input: RequestInfo | URL, init?: RequestInit): Promise<Response> => {
     const response = await originalFetch(input, init);
-    if (response.status === 401) notifySessionExpired();
+    if (response.status === 401) {
+      const url = typeof input === "string" ? input : input instanceof URL ? input.pathname : input.url;
+      if (!AUTH_ENTRY_PATH.test(url)) notifySessionExpired();
+    }
     return response;
   };
 }
