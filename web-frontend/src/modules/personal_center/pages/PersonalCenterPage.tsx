@@ -2,6 +2,7 @@ import { type FormEvent, useCallback, useEffect, useMemo, useRef, useState } fro
 import { createPortal } from "react-dom";
 
 import { clearAuthSession, getAuthAccount, getAuthToken, saveAuthSession } from "../../../transport/http/client";
+import { notifyBalanceChanged } from "../../../shared/balanceEvents";
 import { AVATAR_CHANGED_EVENT, AVATAR_STORAGE_KEY } from "../../../app/layout/TopNavigation";
 import {
   changeAccountPassword,
@@ -877,6 +878,7 @@ export function PersonalCenterPage({ feedbackPrefill = null }: PersonalCenterPag
     }
     // 领取已成功：先给即时反馈；后面 summary 刷新失败也不误报"领取失败"。
     setClaimNotice(`已领取 ${result.claimed_points} 积分（第 ${result.claim_count}/${result.claim_max} 周）`);
+    notifyBalanceChanged();
     try {
       const payload = await loadBillingSummary();
       setSummary(payload);
@@ -921,6 +923,7 @@ export function PersonalCenterPage({ feedbackPrefill = null }: PersonalCenterPag
     }
     // 领取已成功：先给即时反馈；后面 summary 刷新失败也不误报"领取失败"。
     setDailyClaimNotice(`已领取 ${result.claimed_points} 积分，明日 00:00 后可再领`);
+    notifyBalanceChanged();
     try {
       const payload = await loadBillingSummary();
       setSummary(payload);
