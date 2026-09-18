@@ -684,6 +684,18 @@
   gap: 12px;
 }
 
+.personal-profile-actions {
+  flex: none;
+  display: flex;
+  flex-direction: column;
+  align-items: stretch;
+  gap: 8px;
+}
+
+.personal-profile-actions .personal-password-entry {
+  justify-content: center;
+}
+
 .personal-profile-id {
   min-width: 0;
   flex: 1 1 auto;

@@ -1184,14 +1184,16 @@ export function PersonalCenterPage({ feedbackPrefill = null }: PersonalCenterPag
                 <p>个人中心</p>
                 <h1>{account?.username || summary?.account.username || "当前用户"}</h1>
               </div>
-              <button className="personal-password-entry" type="button" onClick={openPasswordDialog}>
-                <span className="iconfont icon-key" aria-hidden="true" />
-                <span>修改密码</span>
-              </button>
-              <button className="personal-password-entry" type="button" onClick={openUsernameDialog}>
-                <span className="iconfont icon-user" aria-hidden="true" />
-                <span>修改用户名</span>
-              </button>
+              <div className="personal-profile-actions">
+                <button className="personal-password-entry" type="button" onClick={openPasswordDialog}>
+                  <span className="iconfont icon-key" aria-hidden="true" />
+                  <span>修改密码</span>
+                </button>
+                <button className="personal-password-entry" type="button" onClick={openUsernameDialog}>
+                  <span className="iconfont icon-user" aria-hidden="true" />
+                  <span>修改用户名</span>
+                </button>
+              </div>
             </div>
 
             <div className="personal-profile-balance">
