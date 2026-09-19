@@ -292,83 +292,143 @@
   color: var(--theme-accent, #0aa6cc);
 }
 
-/* 整店采集保持舒展，避免低信息密度的内容横向硬铺满整页。 */
+/* 整店采集：以任务工作台重组，减少横幅和套娃卡片的视觉负担。 */
 .shop-collection-panel {
-  max-width: 1560px;
-  margin: 0 auto;
-  gap: 18px;
+  max-width: none;
+  margin: 0;
+  gap: 16px;
+  padding: 4px 0 28px;
 }
 
 .shop-collection-header {
-  padding: 22px 26px;
-  border-radius: 18px;
+  position: relative;
+  padding: 20px 24px;
+  border-color: var(--theme-module-border, #d8e9f3);
+  border-radius: 16px;
+  background: linear-gradient(115deg, var(--theme-module-surface-raised, #fff), var(--theme-module-surface-soft, #f7fafc));
+  box-shadow: none;
 }
 
-.shop-collection-header .shop-collection-title { gap: 14px; }
-.shop-collection-header .shop-collection-title .iconfont { width: 42px; height: 42px; border-radius: 13px; }
-.shop-collection-header strong { font-size: 1.2rem; }
-.shop-collection-header p { max-width: 720px; line-height: 1.6; }
-.shop-collection-header .shop-collection-persistent { padding: 7px 10px; }
+.shop-collection-header::before {
+  position: absolute;
+  top: 20px;
+  bottom: 20px;
+  left: 0;
+  width: 4px;
+  border-radius: 0 4px 4px 0;
+  background: var(--theme-accent, #0aa6cc);
+  content: "";
+}
+
+.shop-collection-header .shop-collection-title { align-items: center; gap: 13px; }
+.shop-collection-header .shop-collection-title .iconfont {
+  width: 40px;
+  height: 40px;
+  border-radius: 12px;
+  color: var(--theme-accent, #0aa6cc);
+  background: var(--theme-module-surface-tint, #eaf8ff);
+}
+.shop-collection-header strong { color: var(--theme-text-primary, #13233a); font-size: 1.12rem; }
+.shop-collection-header p { max-width: 760px; color: var(--theme-text-secondary, #527089); line-height: 1.55; }
+.shop-collection-header .shop-collection-persistent {
+  padding: 6px 10px;
+  color: var(--theme-accent, #0aa6cc);
+  background: var(--theme-module-surface-tint, #eaf8ff);
+}
 
 .shop-collection-create {
-  grid-template-columns: minmax(160px, 190px) minmax(420px, 1fr) auto;
-  gap: 16px;
-  padding: 18px 20px;
-  border-radius: 15px;
+  grid-template-columns: minmax(170px, 210px) minmax(320px, 1fr) auto;
+  align-items: end;
+  gap: 14px;
+  padding: 16px 20px;
+  border-color: var(--theme-module-border, #d8e9f3);
+  border-radius: 14px;
+  background: var(--theme-module-surface-raised, #fff);
+  box-shadow: none;
 }
 
-.shop-collection-create label { gap: 7px; }
+.shop-collection-create label { gap: 6px; }
 .shop-collection-create select,
 .shop-collection-create input,
-.shop-collection-create button { min-height: 42px; }
-.shop-collection-create button { padding: 9px 18px; }
+.shop-collection-create button { min-height: 40px; }
+.shop-collection-create button { padding: 9px 17px; }
 
 .shop-collection-grid {
-  grid-template-columns: minmax(300px, 360px) minmax(0, 1fr);
+  grid-template-columns: minmax(250px, 300px) minmax(0, 1fr);
   align-items: start;
-  gap: 20px;
+  gap: 16px;
 }
 
 .shop-batch-list,
-.shop-batch-detail { border-radius: 15px; }
+.shop-batch-detail {
+  border-color: var(--theme-module-border, #d8e9f3);
+  border-radius: 14px;
+  box-shadow: none;
+}
+
+.shop-batch-list {
+  position: sticky;
+  top: 16px;
+  max-height: calc(100vh - 120px);
+  overflow-y: auto;
+}
+
 .shop-section-title,
-.shop-items-heading { padding: 15px 18px; }
-.shop-batch-list > button { padding: 15px 18px; }
-.shop-batch-list > button span { gap: 5px; }
+.shop-items-heading { padding: 14px 16px; }
+.shop-batch-list > button { padding: 13px 16px; }
+.shop-batch-list > button:hover { background: var(--theme-module-surface-soft, #f7fafc); }
+.shop-batch-list > button.is-selected {
+  background: var(--theme-module-surface-tint, #eaf8ff);
+  box-shadow: inset 3px 0 var(--theme-accent, #0aa6cc);
+}
+.shop-batch-list > button span { gap: 4px; }
 .shop-empty { padding: 24px; }
 
-.shop-batch-summary { padding: 20px 22px; }
-.shop-progress { min-width: 190px; }
+.shop-batch-summary { padding: 20px 22px 16px; }
+.shop-batch-summary strong { font-size: 1.05rem; }
+.shop-progress { min-width: 180px; }
 
 .shop-batch-stats {
-  display: flex;
-  flex-wrap: wrap;
-  gap: 10px;
-  padding: 14px 18px;
+  display: grid;
+  grid-template-columns: repeat(4, minmax(0, 1fr));
+  gap: 0;
+  margin: 0 22px;
+  padding: 0 0 16px;
   border: 0;
+  border-bottom: 1px solid var(--theme-module-border, #d8e9f3);
   background: transparent;
 }
 
 .shop-batch-stats span {
-  flex: 0 1 142px;
-  gap: 5px;
-  padding: 13px 15px;
-  border: 1px solid var(--theme-module-border, #d8e9f3);
-  border-radius: 10px;
-  background: var(--theme-module-surface-soft, #f7fafc);
+  display: flex;
+  align-items: baseline;
+  gap: 6px;
+  padding: 2px 16px;
+  border: 0;
+  border-right: 1px solid var(--theme-module-border, #d8e9f3);
+  border-radius: 0;
+  background: transparent;
   text-align: left;
 }
 
-.shop-batch-actions { gap: 9px; padding: 16px 18px; }
+.shop-batch-stats span:first-child { padding-left: 0; }
+.shop-batch-stats span:last-child { border-right: 0; }
+.shop-batch-stats b { font-size: 1.08rem; }
+
+.shop-batch-actions { gap: 8px; padding: 14px 22px; }
 .shop-batch-actions button,
-.shop-pagination button { padding: 8px 12px; }
-.shop-batch-warning { margin: 0 18px 14px; padding: 10px 12px; }
+.shop-pagination button { padding: 7px 11px; }
+.shop-batch-warning { margin: 0 22px 14px; padding: 9px 11px; }
 
 .shop-items-list { min-height: 0; }
-.shop-items-list article { padding: 13px 18px; }
-.shop-pagination { gap: 9px; padding: 14px 18px; }
+.shop-items-list article { padding: 12px 16px; }
+.shop-items-list article:hover { background: var(--theme-module-surface-soft, #f7fafc); }
+.shop-pagination { gap: 8px; padding: 13px 16px; }
 
 @media (max-width: 760px) {
-  .shop-collection-panel { max-width: none; }
-  .shop-batch-stats span { flex-basis: calc(50% - 5px); }
+  .shop-collection-panel { padding-bottom: 18px; }
+  .shop-batch-list { position: static; max-height: none; overflow-y: visible; }
+  .shop-batch-stats { grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 12px 0; }
+  .shop-batch-stats span:nth-child(2) { border-right: 0; }
+  .shop-batch-stats span:nth-child(3) { padding-left: 0; }
 }

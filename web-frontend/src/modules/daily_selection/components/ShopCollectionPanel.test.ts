@@ -88,10 +88,10 @@ test("shop collection keeps two columns on desktop and stacks only on mobile", (
   assert.match(pluginMobileBlock.body, /\.plugin-capture-item-links\s*\{[^}]*align-items:\s*flex-end;[^}]*flex-direction:\s*column;/);
 });
 
-test("shop collection uses a spacious desktop layout without full-width metric blocks", () => {
-  assert.match(styles, /\.shop-collection-panel\s*\{[^}]*max-width:\s*1560px;[^}]*margin:\s*0\s+auto;[^}]*gap:\s*18px;/);
-  assert.match(styles, /\.shop-collection-create\s*\{[^}]*padding:\s*18px\s+20px;/);
-  assert.match(styles, /\.shop-batch-stats\s*\{[^}]*display:\s*flex;[^}]*flex-wrap:\s*wrap;/);
-  assert.match(styles, /\.shop-batch-stats\s+span\s*\{[^}]*flex:\s*0\s+1\s+142px;[^}]*border-radius:\s*10px;/);
-  assert.doesNotMatch(styles, /\.shop-batch-list\s*\{[^}]*overflow-y:\s*auto;/);
+test("shop collection uses a dashboard layout with a compact metric rail", () => {
+  assert.match(styles, /\.shop-collection-panel\s*\{[^}]*max-width:\s*none;[^}]*margin:\s*0;[^}]*gap:\s*16px;/);
+  assert.match(styles, /\.shop-collection-grid\s*\{[^}]*grid-template-columns:\s*minmax\(250px,\s*300px\)\s+minmax\(0,\s*1fr\);/);
+  assert.match(styles, /\.shop-batch-list\s*\{[^}]*position:\s*sticky;[^}]*overflow-y:\s*auto;/);
+  assert.match(styles, /\.shop-batch-stats\s*\{[^}]*display:\s*grid;[^}]*grid-template-columns:\s*repeat\(4,\s*minmax\(0,\s*1fr\)\);/);
+  assert.match(styles, /\.shop-batch-stats\s+span\s*\{[^}]*display:\s*flex;[^}]*background:\s*transparent;/);
 });
