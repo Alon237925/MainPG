@@ -8,8 +8,10 @@
 .daily-page-heading .preset-entry-button { display: inline-flex; align-items: center; gap: 6px; flex: none; border: 1px solid rgba(255,255,255,.45); border-radius: 11px; padding: 10px 16px; color: #fff; background: rgba(255,255,255,.14); font-size: .86rem; font-weight: 800; cursor: pointer; }
 .daily-page-heading .preset-entry-button:hover { background: rgba(255,255,255,.26); box-shadow: 0 8px 18px rgba(7,48,83,.2); }
 .daily-page-heading .preset-entry-button span { color: inherit; font-size: .92rem; letter-spacing: 0; }
-.daily-page-heading-actions { display: flex; align-items: flex-end; flex-direction: column; gap: 9px; }
-.daily-page-heading .shop-batch-manager-trigger { display: inline-flex; align-items: center; gap: 6px; flex: none; border: 1px solid rgba(255,255,255,.45); border-radius: 11px; padding: 8px 12px; color: #fff; background: rgba(255,255,255,.1); font-size: .76rem; font-weight: 800; cursor: pointer; }
+.daily-page-heading-actions { display: flex; align-items: stretch; flex-direction: column; gap: 9px; }
+.daily-page-heading .preset-entry-button,
+.daily-page-heading .shop-batch-manager-trigger { width: 168px; min-height: 42px; justify-content: center; padding: 10px 16px; font-size: .86rem; }
+.daily-page-heading .shop-batch-manager-trigger { display: inline-flex; align-items: center; gap: 6px; flex: none; border: 1px solid rgba(255,255,255,.45); border-radius: 11px; color: #fff; background: rgba(255,255,255,.1); font-weight: 800; cursor: pointer; }
 .daily-page-heading .shop-batch-manager-trigger:hover { background: rgba(255,255,255,.24); box-shadow: 0 8px 18px rgba(7,48,83,.2); }
 .daily-page-heading .shop-batch-manager-trigger b { display: grid; min-width: 19px; height: 19px; place-items: center; border-radius: 999px; color: #0a497f; background: #fff; font-size: .65rem; }
 .daily-message { position: fixed; top: 18px; right: 22px; z-index: 1000; display: flex; align-items: center; gap: 10px; max-width: 400px; padding: 12px 16px; border: 1px solid; border-radius: 12px; font-size: .87rem; box-shadow: 0 14px 34px rgba(26, 73, 108, .18); animation: daily-toast-in .28s ease-out; }
