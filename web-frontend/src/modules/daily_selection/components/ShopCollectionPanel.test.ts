@@ -80,6 +80,8 @@ test("shop collection uses a dashboard layout with a compact metric rail", () =>
   assert.match(styles, /\.shop-batch-stats\s+span\s*\{[^}]*display:\s*flex;[^}]*background:\s*transparent;/);
   assert.match(styles, /\.shop-collection-header\s*\{[^}]*border:\s*0;[^}]*background:\s*transparent;/);
   assert.match(styles, /\.shop-collection-create\s*\{[^}]*border:\s*0;[^}]*background:\s*transparent;/);
+  assert.match(styles, /\.shop-batch-detail\s*\{[^}]*border:\s*0\s*!important;[^}]*background:\s*transparent\s*!important;/);
+  assert.match(styles, /\.shop-batch-summary\s*\{[^}]*background:\s*linear-gradient\(135deg,\s*var\(--theme-module-surface-tint/);
 });
 
 test("shop collection moves batch management into a POD-style side drawer", () => {
