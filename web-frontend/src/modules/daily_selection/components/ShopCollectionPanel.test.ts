@@ -88,9 +88,10 @@ test("shop collection keeps two columns on desktop and stacks only on mobile", (
   assert.match(pluginMobileBlock.body, /\.plugin-capture-item-links\s*\{[^}]*align-items:\s*flex-end;[^}]*flex-direction:\s*column;/);
 });
 
-test("shop collection uses a compact desktop workbench layout", () => {
-  assert.match(styles, /\.shop-collection-panel\s*\{[^}]*gap:\s*10px;/);
-  assert.match(styles, /\.shop-collection-create\s*\{[^}]*padding:\s*10px\s+12px;/);
-  assert.match(styles, /\.shop-batch-list\s*\{[^}]*max-height:\s*clamp\(360px,\s*calc\(100vh\s*-\s*300px\),\s*620px\);[^}]*overflow-y:\s*auto;/);
-  assert.match(styles, /\.shop-items-list\s*\{[^}]*min-height:\s*0;[^}]*max-height:\s*min\(360px,\s*calc\(100vh\s*-\s*500px\)\);[^}]*overflow-y:\s*auto;/);
+test("shop collection uses a spacious desktop layout without full-width metric blocks", () => {
+  assert.match(styles, /\.shop-collection-panel\s*\{[^}]*max-width:\s*1560px;[^}]*margin:\s*0\s+auto;[^}]*gap:\s*18px;/);
+  assert.match(styles, /\.shop-collection-create\s*\{[^}]*padding:\s*18px\s+20px;/);
+  assert.match(styles, /\.shop-batch-stats\s*\{[^}]*display:\s*flex;[^}]*flex-wrap:\s*wrap;/);
+  assert.match(styles, /\.shop-batch-stats\s+span\s*\{[^}]*flex:\s*0\s+1\s+142px;[^}]*border-radius:\s*10px;/);
+  assert.doesNotMatch(styles, /\.shop-batch-list\s*\{[^}]*overflow-y:\s*auto;/);
 });
