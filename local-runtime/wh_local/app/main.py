@@ -76,6 +76,7 @@ from ..messages import (
 from ..modules.basic_settings.service import SystemConfigService
 from ..modules.profit_activity import create_profit_activity_router, create_profit_activity_service
 from ..modules.pod_customization import create_router as create_pod_customization_router
+from ..modules.pod_customization.router import PodRequestLimitMiddleware
 from ..modules.pod_customization.ai_runtime import PodCustomizationAiRuntime
 from ..modules.pod_customization.remote_billing import (
     RemotePodBillingCoordinator,
@@ -392,6 +393,7 @@ def create_app(database_path: Path | None = None) -> FastAPI:
         version=APP_VERSION,
         lifespan=app_lifespan,
     )
+    app.add_middleware(PodRequestLimitMiddleware)
     app.add_middleware(
         CORSMiddleware,
         allow_origins=["*"],
