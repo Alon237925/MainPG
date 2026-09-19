@@ -87,3 +87,10 @@ test("shop collection keeps two columns on desktop and stacks only on mobile", (
   assert.ok(pluginMobileBlock, "expected plugin capture mobile layout rules");
   assert.match(pluginMobileBlock.body, /\.plugin-capture-item-links\s*\{[^}]*align-items:\s*flex-end;[^}]*flex-direction:\s*column;/);
 });
+
+test("shop collection uses a compact desktop workbench layout", () => {
+  assert.match(styles, /\.shop-collection-panel\s*\{[^}]*gap:\s*10px;/);
+  assert.match(styles, /\.shop-collection-create\s*\{[^}]*padding:\s*10px\s+12px;/);
+  assert.match(styles, /\.shop-batch-list\s*\{[^}]*max-height:\s*clamp\(360px,\s*calc\(100vh\s*-\s*300px\),\s*620px\);[^}]*overflow-y:\s*auto;/);
+  assert.match(styles, /\.shop-items-list\s*\{[^}]*min-height:\s*0;[^}]*max-height:\s*min\(360px,\s*calc\(100vh\s*-\s*500px\)\);[^}]*overflow-y:\s*auto;/);
+});

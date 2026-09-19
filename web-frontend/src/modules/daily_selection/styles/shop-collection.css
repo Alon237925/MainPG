@@ -291,3 +291,75 @@
 .plugin-capture-item-links button {
   color: var(--theme-accent, #0aa6cc);
 }
+
+/* 整店采集是高频操作台：压缩低信息密度区域，让批次与商品列表保持可视。 */
+.shop-collection-panel { gap: 10px; }
+
+.shop-collection-header {
+  padding: 14px 16px;
+  box-shadow: 0 7px 18px var(--theme-module-shadow, rgba(26, 105, 149, .08));
+}
+
+.shop-collection-header .shop-collection-title { gap: 10px; }
+.shop-collection-header .shop-collection-title .iconfont { width: 34px; height: 34px; border-radius: 10px; font-size: 1.15rem; }
+.shop-collection-header strong { font-size: 1.03rem; }
+.shop-collection-header p { line-height: 1.4; }
+.shop-collection-header .shop-collection-persistent { padding: 5px 8px; }
+
+.shop-collection-create {
+  grid-template-columns: minmax(132px, 150px) minmax(0, 1fr) auto;
+  gap: 10px;
+  padding: 10px 12px;
+  box-shadow: 0 4px 12px var(--theme-module-shadow, rgba(26, 105, 149, .08));
+}
+
+.shop-collection-create label { gap: 4px; }
+.shop-collection-create label span { font-size: .69rem; }
+.shop-collection-create select,
+.shop-collection-create input,
+.shop-collection-create button { min-height: 36px; }
+.shop-collection-create select,
+.shop-collection-create input { padding: 7px 10px; }
+.shop-collection-create button { padding: 7px 13px; }
+
+.shop-collection-grid {
+  grid-template-columns: minmax(260px, 320px) minmax(0, 1fr);
+  align-items: start;
+  gap: 10px;
+}
+
+.shop-batch-list,
+.shop-batch-detail { border-radius: 10px; box-shadow: 0 4px 12px var(--theme-module-shadow, rgba(26, 105, 149, .08)); }
+
+.shop-batch-list {
+  max-height: clamp(360px, calc(100vh - 300px), 620px);
+  overflow-y: auto;
+}
+
+.shop-section-title,
+.shop-items-heading { padding: 10px 12px; }
+.shop-batch-list > button { padding: 9px 12px; }
+.shop-batch-list > button span { gap: 2px; }
+.shop-empty { padding: 14px; }
+
+.shop-batch-summary { padding: 12px; }
+.shop-progress { min-width: 140px; }
+.shop-batch-stats span { gap: 2px; padding: 8px 10px; }
+.shop-batch-actions { gap: 6px; padding: 9px 12px; }
+.shop-batch-actions button,
+.shop-pagination button { padding: 6px 9px; }
+.shop-batch-warning { margin: 0 12px 10px; padding: 7px 9px; }
+
+.shop-items-list {
+  min-height: 0;
+  max-height: min(360px, calc(100vh - 500px));
+  overflow-y: auto;
+}
+
+.shop-items-list article { padding: 8px 12px; }
+.shop-pagination { gap: 6px; padding: 9px 12px; }
+
+@media (max-width: 760px) {
+  .shop-batch-list,
+  .shop-items-list { max-height: none; overflow-y: visible; }
+}
