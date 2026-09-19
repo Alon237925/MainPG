@@ -439,9 +439,18 @@
 .shop-batch-drawer-list > button small { color: var(--theme-text-secondary, #527089); font-size: .68rem; }
 .shop-batch-drawer-list > button b { flex: none; color: var(--theme-accent, #0aa6cc); font-size: .75rem; }
 
+/* 插件采集沿用整店采集的主区层级：批次收进抽屉，当前批次专注审核。 */
+.plugin-capture-stats { grid-template-columns: repeat(5, minmax(0, 1fr)); }
+.plugin-capture-panel .plugin-section-tabs { margin: 4px 16px 0; border: 1px solid var(--theme-module-border, #d8e9f3); border-radius: 12px; background: var(--theme-module-surface-tint, #eaf8ff); }
+.plugin-capture-panel .plugin-candidate-review { margin: 8px 16px 0; overflow: visible; border: 0; border-radius: 0; background: transparent; }
+.plugin-capture-panel .plugin-candidate-list { gap: 7px; background: transparent; }
+.plugin-capture-panel .plugin-candidate-list article { border: 1px solid var(--theme-module-border, #d8e9f3); border-radius: 10px; background: var(--theme-module-surface-soft, #f7fafc); }
+.plugin-capture-panel .plugin-pagination { margin-top: 8px; border: 0; border-radius: 10px; background: var(--theme-module-surface-soft, #f7fafc); }
+
 @media (max-width: 760px) {
   .shop-collection-panel { padding-bottom: 18px; }
   .shop-batch-stats { grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 12px 0; }
   .shop-batch-stats span:nth-child(2) { border-right: 0; }
   .shop-batch-stats span:nth-child(3) { padding-left: 0; }
+  .plugin-capture-stats { grid-template-columns: repeat(2, minmax(0, 1fr)); }
 }

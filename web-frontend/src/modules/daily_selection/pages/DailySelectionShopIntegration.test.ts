@@ -14,7 +14,7 @@ test("daily selection keeps its existing collection flow and adds shop and plugi
   assert.match(source, /collectionWorkspaceMode === "shop"/);
   assert.match(source, /collectionWorkspaceMode === "plugin"/);
   assert.match(source, /<ShopCollectionPanel ref=\{shopCollectionPanelRef\} isActive=\{isActive\} onBatchCountChange=\{setShopBatchCount\}/);
-  assert.match(source, /<PluginOneboundCapturePanel isActive=\{isActive\} onOpenDraft=\{onOpenProductProcessingDraft\}/);
+  assert.match(source, /<PluginOneboundCapturePanel ref=\{pluginCapturePanelRef\} isActive=\{isActive\} onOpenDraft=\{onOpenProductProcessingDraft\} onBatchCountChange=\{setPluginBatchCount\}/);
   assert.match(source, /startCollectionTask/);
   assert.match(source, /startSkuRepull/);
   assert.match(source, /getCollectionRetryState/);

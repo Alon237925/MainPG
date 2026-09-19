@@ -17,7 +17,7 @@ import {
 import { getApiToken } from "../../../shared/api/apiClient";
 import { toUserMessage } from "../../../transport/http/client";
 import { ShopCollectionPanel, type ShopCollectionPanelHandle } from "../components/ShopCollectionPanel";
-import { PluginOneboundCapturePanel } from "../components/PluginOneboundCapturePanel";
+import { PluginOneboundCapturePanel, type PluginOneboundCapturePanelHandle } from "../components/PluginOneboundCapturePanel";
 import type {
   CollectionMode,
   CollectionPlatform,
@@ -375,6 +375,7 @@ export function DailySelectionPage({ view = "directions", initialDirectionId, on
   const [historyBusy, setHistoryBusy] = useState(true);
   const [historyDrawerOpen, setHistoryDrawerOpen] = useState(false);
   const [shopBatchCount, setShopBatchCount] = useState(0);
+  const [pluginBatchCount, setPluginBatchCount] = useState(0);
   const [skuRepull, setSkuRepull] = useState<SkuRepullState | null>(null);
   const [skuRepullBusy, setSkuRepullBusy] = useState(false);
   const [collectionRetry, setCollectionRetry] = useState<CollectionRetryState | null>(null);
@@ -404,6 +405,7 @@ export function DailySelectionPage({ view = "directions", initialDirectionId, on
   const historyDrawerLayerRef = useRef<HTMLDivElement | null>(null);
   const historyDrawerTriggerRef = useRef<HTMLButtonElement | null>(null);
   const shopCollectionPanelRef = useRef<ShopCollectionPanelHandle | null>(null);
+  const pluginCapturePanelRef = useRef<PluginOneboundCapturePanelHandle | null>(null);
 
   const moveFocusOutOf = (layer: HTMLDivElement | null, fallbackTrigger: HTMLElement | null) => {
     const active = document.activeElement;
@@ -1336,7 +1338,7 @@ export function DailySelectionPage({ view = "directions", initialDirectionId, on
               <h1>每日选品</h1>
               <p>关键词或参考图驱动商品采集，筛选后确认进入产品处理。</p>
             </div>
-            {(!onOpenCollection || collectionWorkspaceMode === "shop") && (
+            {(!onOpenCollection || collectionWorkspaceMode === "shop" || collectionWorkspaceMode === "plugin") && (
               <div className="daily-page-heading-actions">
                 {!onOpenCollection && (
                   <button type="button" className="preset-entry-button" onClick={() => setInternalView("directions")}>
@@ -1346,6 +1348,11 @@ export function DailySelectionPage({ view = "directions", initialDirectionId, on
                 {collectionWorkspaceMode === "shop" && (
                   <button type="button" className="shop-batch-manager-trigger" onClick={() => shopCollectionPanelRef.current?.openBatchManager()}>
                     <span className="iconfont icon-time-circle" aria-hidden="true"></span> 批次管理 <b>{shopBatchCount}</b>
+                  </button>
+                )}
+                {collectionWorkspaceMode === "plugin" && (
+                  <button type="button" className="shop-batch-manager-trigger" onClick={() => pluginCapturePanelRef.current?.openBatchManager()}>
+                    <span className="iconfont icon-time-circle" aria-hidden="true"></span> 批次管理 <b>{pluginBatchCount}</b>
                   </button>
                 )}
               </div>
@@ -1376,7 +1383,7 @@ export function DailySelectionPage({ view = "directions", initialDirectionId, on
               ><span className="iconfont icon-cloud" aria-hidden="true"></span>插件采集</button>
             </div>
             {collectionWorkspaceMode === "plugin" ? (
-              <PluginOneboundCapturePanel isActive={isActive} onOpenDraft={onOpenProductProcessingDraft} />
+              <PluginOneboundCapturePanel ref={pluginCapturePanelRef} isActive={isActive} onOpenDraft={onOpenProductProcessingDraft} onBatchCountChange={setPluginBatchCount} />
             ) : collectionWorkspaceMode === "shop" ? (
               <ShopCollectionPanel ref={shopCollectionPanelRef} isActive={isActive} onBatchCountChange={setShopBatchCount} />
             ) : (
