@@ -411,8 +411,8 @@
 .shop-pagination button { padding: 7px 11px; }
 .shop-batch-warning { margin: 0 0 14px; padding: 9px 11px; }
 
-.shop-items-heading { margin-top: 4px; padding: 14px 16px; border: 1px solid var(--theme-module-border, #d8e9f3); border-radius: 12px 12px 0 0; background: var(--theme-module-surface-tint, #eaf8ff); }
-.shop-items-list { display: grid; min-height: 0; gap: 7px; padding-top: 7px; }
+.shop-items-heading { margin: 4px 16px 0; padding: 14px 16px; border: 1px solid var(--theme-module-border, #d8e9f3); border-radius: 12px 12px 0 0; background: var(--theme-module-surface-tint, #eaf8ff); }
+.shop-items-list { display: grid; min-height: 0; gap: 7px; margin: 0 16px; padding-top: 7px; }
 .shop-items-list article { padding: 12px 16px; border: 1px solid var(--theme-module-border, #d8e9f3); border-radius: 10px; background: var(--theme-module-surface-soft, #f7fafc); }
 .shop-items-list article:hover { background: var(--theme-module-surface-tint, #eaf8ff); }
 .shop-pagination { gap: 8px; padding: 13px 0; }
