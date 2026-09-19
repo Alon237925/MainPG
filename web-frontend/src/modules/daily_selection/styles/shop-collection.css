@@ -443,6 +443,7 @@
 .plugin-capture-stats { grid-template-columns: repeat(5, minmax(0, 1fr)); }
 .plugin-capture-panel .plugin-section-tabs { margin: 4px 16px 0; border: 1px solid var(--theme-module-border, #d8e9f3); border-radius: 12px; background: var(--theme-module-surface-tint, #eaf8ff); }
 .plugin-capture-panel .plugin-candidate-review { margin: 8px 16px 0; overflow: visible; border: 0; border-radius: 0; background: transparent; }
+.plugin-capture-panel .plugin-candidate-review .shop-items-heading { margin: 0; }
 .plugin-capture-panel .plugin-candidate-list { gap: 7px; background: transparent; }
 .plugin-capture-panel .plugin-candidate-list article { border: 1px solid var(--theme-module-border, #d8e9f3); border-radius: 10px; background: var(--theme-module-surface-soft, #f7fafc); }
 .plugin-capture-panel .plugin-pagination { margin-top: 8px; border: 0; border-radius: 10px; background: var(--theme-module-surface-soft, #f7fafc); }

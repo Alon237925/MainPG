@@ -85,4 +85,5 @@ test("plugin batch management uses the shared side-drawer workflow", () => {
   assert.match(panel, /createPortal\(/);
   assert.doesNotMatch(panel, /<aside className="shop-batch-list"/);
   assert.match(styles, /\.plugin-capture-stats\s*\{[^}]*grid-template-columns:\s*repeat\(5,\s*minmax\(0,\s*1fr\)\);/);
+  assert.match(styles, /\.plugin-capture-panel\s+\.plugin-candidate-review\s+\.shop-items-heading\s*\{[^}]*margin:\s*0;/);
 });
