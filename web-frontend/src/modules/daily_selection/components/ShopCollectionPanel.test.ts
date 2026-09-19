@@ -94,4 +94,6 @@ test("shop collection uses a dashboard layout with a compact metric rail", () =>
   assert.match(styles, /\.shop-batch-list\s*\{[^}]*position:\s*sticky;[^}]*overflow-y:\s*auto;/);
   assert.match(styles, /\.shop-batch-stats\s*\{[^}]*display:\s*grid;[^}]*grid-template-columns:\s*repeat\(4,\s*minmax\(0,\s*1fr\)\);/);
   assert.match(styles, /\.shop-batch-stats\s+span\s*\{[^}]*display:\s*flex;[^}]*background:\s*transparent;/);
+  assert.match(styles, /\.shop-collection-header\s*\{[^}]*border:\s*0;[^}]*background:\s*transparent;/);
+  assert.match(styles, /\.shop-collection-create\s*\{[^}]*border:\s*0;[^}]*background:\s*transparent;/);
 });

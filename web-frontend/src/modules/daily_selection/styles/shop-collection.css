@@ -302,10 +302,10 @@
 
 .shop-collection-header {
   position: relative;
-  padding: 20px 24px;
-  border-color: var(--theme-module-border, #d8e9f3);
-  border-radius: 16px;
-  background: linear-gradient(115deg, var(--theme-module-surface-raised, #fff), var(--theme-module-surface-soft, #f7fafc));
+  padding: 16px 24px;
+  border: 0;
+  border-radius: 0;
+  background: transparent;
   box-shadow: none;
 }
 
@@ -340,10 +340,10 @@
   grid-template-columns: minmax(170px, 210px) minmax(320px, 1fr) auto;
   align-items: end;
   gap: 14px;
-  padding: 16px 20px;
-  border-color: var(--theme-module-border, #d8e9f3);
-  border-radius: 14px;
-  background: var(--theme-module-surface-raised, #fff);
+  padding: 8px 24px 16px;
+  border: 0;
+  border-radius: 0;
+  background: transparent;
   box-shadow: none;
 }
 
