@@ -380,6 +380,12 @@
 .shop-batch-summary strong { font-size: 1.05rem; }
 .shop-progress { min-width: 180px; }
 
+[data-theme="sunset"] .daily-selection-page .shop-batch-summary,
+[data-theme="sunset"] .daily-selection-page .shop-items-heading,
+[data-theme="sunset"] .daily-selection-page .plugin-capture-panel .plugin-section-tabs {
+  background: color-mix(in srgb, var(--theme-module-surface-tint) 24%, var(--theme-module-surface-soft));
+}
+
 .shop-batch-stats {
   display: grid;
   grid-template-columns: repeat(4, minmax(0, 1fr));

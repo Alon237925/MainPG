@@ -110,3 +110,9 @@ test("collection workspace surfaces inherit the active theme instead of a fixed 
   assert.match(dailyStyles, /\.daily-drawer-body\s*\{[^}]*background:\s*color-mix\(in srgb, var\(--theme-module-surface-soft/);
   assert.doesNotMatch(dailyStyles, /\.daily-collection-surface\s*\{[^}]*background:\s*#f4f9fc/);
 });
+
+test("sunset workspace reserves its warm tint for emphasis instead of full-panel fills", () => {
+  assert.match(dailyStyles, /\[data-theme="sunset"\] \.daily-selection-page \.daily-collection-surface\s*\{[^}]*surface-tint\) 16%, transparent/);
+  assert.match(dailyStyles, /\[data-theme="sunset"\] \.daily-selection-page \.daily-collection-surface \.daily-panel\s*\{[^}]*surface-tint\) 18%, var\(--theme-module-surface-raised\)/);
+  assert.match(styles, /\[data-theme="sunset"\] \.daily-selection-page \.shop-batch-summary,[\s\S]*surface-tint\) 24%, var\(--theme-module-surface-soft\)/);
+});

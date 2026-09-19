@@ -84,6 +84,9 @@
 .daily-drawer-header > div { display: grid; gap: 3px; }.daily-drawer-header span { color: #9de7f3; font-size: .63rem; font-weight: 850; letter-spacing: .13em; }.daily-drawer-header strong { color: #fff; font-size: 1.05rem; }
 .daily-drawer-header .collection-workspace-context { color: #d9f1fb; font-size: .72rem; font-weight: 650; letter-spacing: 0; }
 .daily-drawer-body { min-height: 0; display: grid; gap: 14px; overflow-y: auto; padding: 14px; background: color-mix(in srgb, var(--theme-module-surface-soft, #f7fafc) 38%, transparent); }
+[data-theme="sunset"] .daily-selection-page .daily-collection-surface { background: linear-gradient(135deg, color-mix(in srgb, var(--theme-module-surface-tint) 16%, transparent), color-mix(in srgb, var(--theme-module-surface-soft) 40%, transparent)); }
+[data-theme="sunset"] .daily-selection-page .daily-collection-surface .daily-panel { background: linear-gradient(135deg, color-mix(in srgb, var(--theme-module-surface-tint) 18%, var(--theme-module-surface-raised)), color-mix(in srgb, var(--theme-module-surface-soft) 78%, var(--theme-module-surface-raised))); }
+[data-theme="sunset"] .daily-selection-page .daily-drawer-body { background: color-mix(in srgb, var(--theme-module-surface-soft) 20%, transparent); }
 .daily-collection-surface .daily-work-grid { display: contents; }
 .daily-collection-surface .collection-panel { order: 1; }
 .daily-collection-surface .daily-results { order: 2; }
