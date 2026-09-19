@@ -22,7 +22,7 @@ const DRAG_THRESHOLD_PX = 6;
 /** 数字面朝外且 5 分钟无交互时，自动翻到图面；图面保持不动。 */
 const IDLE_FLIP_INTERVAL_MS = 5 * 60 * 1000;
 const POLL_INTERVAL_MS = 60_000;
-const BALL_SIZE = 88;
+const BALL_SIZE = 72;
 
 type BallPosition = { x: number; y: number };
 
