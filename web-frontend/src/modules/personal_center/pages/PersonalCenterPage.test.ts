@@ -14,3 +14,8 @@ test("consumption history distinguishes POD batches from product processing", ()
   assert.match(source, /pod_customization\.batch/);
   assert.match(source, /POD 定制/);
 });
+
+test("unpaid orders that cannot resume payment are shown as cancelled", () => {
+  assert.match(source, /pending:\s*"已取消"/);
+  assert.doesNotMatch(source, /pending:\s*"待支付"/);
+});

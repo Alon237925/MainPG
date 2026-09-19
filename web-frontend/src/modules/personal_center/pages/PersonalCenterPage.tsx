@@ -119,7 +119,7 @@ function formatUsageTime(iso: string): string {
 
 function statusLabel(status: string) {
   const labels: Record<string, string> = {
-    pending: "待支付",
+    pending: "已取消",
     paid: "已入账",
     closed: "已关闭",
     failed: "失败",
