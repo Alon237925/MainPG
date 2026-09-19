@@ -354,34 +354,19 @@
 .shop-collection-create button { padding: 9px 17px; }
 
 .shop-collection-grid {
-  grid-template-columns: minmax(250px, 300px) minmax(0, 1fr);
+  grid-template-columns: minmax(0, 1fr);
   align-items: start;
   gap: 16px;
 }
 
-.shop-batch-list,
 .shop-batch-detail {
   border-color: var(--theme-module-border, #d8e9f3);
   border-radius: 14px;
   box-shadow: none;
 }
 
-.shop-batch-list {
-  position: sticky;
-  top: 16px;
-  max-height: calc(100vh - 120px);
-  overflow-y: auto;
-}
-
 .shop-section-title,
 .shop-items-heading { padding: 14px 16px; }
-.shop-batch-list > button { padding: 13px 16px; }
-.shop-batch-list > button:hover { background: var(--theme-module-surface-soft, #f7fafc); }
-.shop-batch-list > button.is-selected {
-  background: var(--theme-module-surface-tint, #eaf8ff);
-  box-shadow: inset 3px 0 var(--theme-accent, #0aa6cc);
-}
-.shop-batch-list > button span { gap: 4px; }
 .shop-empty { padding: 24px; }
 
 .shop-batch-summary { padding: 20px 22px 16px; }
@@ -425,9 +410,29 @@
 .shop-items-list article:hover { background: var(--theme-module-surface-soft, #f7fafc); }
 .shop-pagination { gap: 8px; padding: 13px 16px; }
 
+/* 批次管理从主工作台收进右侧抽屉，样式与 POD 历史记录保持同一交互模型。 */
+.shop-batch-drawer-layer { position: fixed; z-index: 450; inset: 0; }
+.shop-batch-drawer-backdrop { position: absolute; inset: 0; width: 100%; border: 0; background: var(--theme-module-overlay, rgba(15, 36, 53, .36)); backdrop-filter: blur(3px); }
+.shop-batch-drawer { position: absolute; top: 0; right: 0; bottom: 0; display: flex; width: min(400px, 94vw); flex-direction: column; border-left: 1px solid var(--theme-module-border, #d8e9f3); color: var(--theme-text-primary, #13233a); background: var(--theme-module-surface-raised, #fff); box-shadow: -24px 0 60px rgba(11, 35, 55, .2); animation: shop-batch-drawer-in .2s ease-out; }
+@keyframes shop-batch-drawer-in { from { transform: translateX(100%); } to { transform: translateX(0); } }
+.shop-batch-drawer-header { display: flex; align-items: start; justify-content: space-between; gap: 16px; padding: 20px 22px 15px; border-bottom: 1px solid var(--theme-module-border, #d8e9f3); background: var(--theme-module-surface-soft, #f7fafc); }
+.shop-batch-drawer-header > div > span { color: var(--theme-accent, #0aa6cc); font-size: .58rem; font-weight: 900; letter-spacing: .1em; }
+.shop-batch-drawer-header h2 { margin: 3px 0; color: var(--theme-text-primary, #13233a); font-size: 1.1rem; }
+.shop-batch-drawer-header p { margin: 0; color: var(--theme-text-secondary, #527089); font-size: .7rem; line-height: 1.5; }
+.shop-batch-drawer-header > button { width: 34px; height: 34px; flex: 0 0 auto; border: 1px solid var(--theme-module-border, #d8e9f3); border-radius: 9px; color: var(--theme-text-secondary, #527089); background: var(--theme-module-surface-raised, #fff); font-size: 1.25rem; cursor: pointer; }
+.shop-batch-drawer-summary { display: flex; align-items: center; justify-content: space-between; margin: 14px 16px 8px; padding: 10px 12px; border-radius: 10px; color: var(--theme-text-secondary, #527089); background: var(--theme-module-surface-soft, #f7fafc); font-size: .72rem; }
+.shop-batch-drawer-summary b { color: var(--theme-text-primary, #13233a); }
+.shop-batch-drawer-list { flex: 1; padding: 0 16px 18px; overflow-y: auto; }
+.shop-batch-drawer-list > button { width: 100%; display: flex; align-items: center; justify-content: space-between; gap: 12px; margin-top: 8px; padding: 13px 12px; border: 1px solid var(--theme-module-border, #d8e9f3); border-radius: 11px; color: var(--theme-text-primary, #13233a); background: var(--theme-module-surface-raised, #fff); text-align: left; cursor: pointer; }
+.shop-batch-drawer-list > button:hover { border-color: var(--theme-accent, #0aa6cc); background: var(--theme-module-surface-soft, #f7fafc); }
+.shop-batch-drawer-list > button.is-selected { border-color: var(--theme-accent, #0aa6cc); background: var(--theme-module-surface-tint, #eaf8ff); }
+.shop-batch-drawer-list > button span { min-width: 0; display: grid; gap: 4px; }
+.shop-batch-drawer-list > button strong { overflow: hidden; font-size: .8rem; text-overflow: ellipsis; white-space: nowrap; }
+.shop-batch-drawer-list > button small { color: var(--theme-text-secondary, #527089); font-size: .68rem; }
+.shop-batch-drawer-list > button b { flex: none; color: var(--theme-accent, #0aa6cc); font-size: .75rem; }
+
 @media (max-width: 760px) {
   .shop-collection-panel { padding-bottom: 18px; }
-  .shop-batch-list { position: static; max-height: none; overflow-y: visible; }
   .shop-batch-stats { grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 12px 0; }
   .shop-batch-stats span:nth-child(2) { border-right: 0; }
   .shop-batch-stats span:nth-child(3) { padding-left: 0; }

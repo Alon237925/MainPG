@@ -6,9 +6,10 @@ const styles = readFileSync(
   new URL("../styles/shop-collection.css", import.meta.url),
   "utf8",
 );
+const panel = readFileSync(new URL("./ShopCollectionPanel.tsx", import.meta.url), "utf8");
+const page = readFileSync(new URL("../pages/DailySelectionPage.tsx", import.meta.url), "utf8");
 
 type MediaBlock = { query: string; body: string; start: number; end: number };
-const gridMobileRule = /\.shop-collection-grid\s*\{[^}]*grid-template-columns:\s*1fr\s*;/;
 const headerMobileRule = /\.shop-collection-header,\s*\.shop-batch-summary\s*\{[^}]*align-items:\s*stretch;[^}]*flex-direction:\s*column;/;
 const createMobileRule = /\.shop-collection-create\s*\{[^}]*grid-template-columns:\s*1fr\s*;/;
 
@@ -54,28 +55,12 @@ function assertOnlyInMobileMedia(mediaBlocks: MediaBlock[], rule: RegExp, descri
   );
 }
 
-test("shop collection keeps two columns on desktop and stacks only on mobile", () => {
+test("shop collection keeps its form fallback rules scoped to mobile", () => {
   const mediaBlocks = extractMediaBlocks(styles);
-  const topLevelStyles = mediaBlocks.reduceRight(
-    (css, block) => `${css.slice(0, block.start)}${css.slice(block.end)}`,
-    styles,
-  );
-  assert.match(
-    topLevelStyles,
-    /\.shop-collection-grid\s*\{[^}]*grid-template-columns:\s*minmax\(220px,\s*\.58fr\)\s+minmax\(0,\s*1\.42fr\);/,
-  );
-  assert.doesNotMatch(
-    topLevelStyles,
-    gridMobileRule,
-  );
-  assert.doesNotMatch(topLevelStyles, headerMobileRule);
-  assert.doesNotMatch(topLevelStyles, createMobileRule);
-
   const mobileBlocks = mediaBlocks.filter((block) => block.query === "(max-width: 760px)");
   assert.ok(mobileBlocks.length > 0, "expected a max-width 760px media block");
-  const shopMobileBlock = mobileBlocks.find((block) => gridMobileRule.test(block.body));
+  const shopMobileBlock = mobileBlocks.find((block) => createMobileRule.test(block.body));
   assert.ok(shopMobileBlock, "expected shop collection mobile layout rules");
-  assertOnlyInMobileMedia(mediaBlocks, gridMobileRule, "shop collection one-column rule");
   assertOnlyInMobileMedia(mediaBlocks, headerMobileRule, "shop header/summary stacking rule");
   assertOnlyInMobileMedia(mediaBlocks, createMobileRule, "shop create-form one-column rule");
   assert.match(shopMobileBlock.body, headerMobileRule);
@@ -90,10 +75,21 @@ test("shop collection keeps two columns on desktop and stacks only on mobile", (
 
 test("shop collection uses a dashboard layout with a compact metric rail", () => {
   assert.match(styles, /\.shop-collection-panel\s*\{[^}]*max-width:\s*none;[^}]*margin:\s*0;[^}]*gap:\s*16px;/);
-  assert.match(styles, /\.shop-collection-grid\s*\{[^}]*grid-template-columns:\s*minmax\(250px,\s*300px\)\s+minmax\(0,\s*1fr\);/);
-  assert.match(styles, /\.shop-batch-list\s*\{[^}]*position:\s*sticky;[^}]*overflow-y:\s*auto;/);
+  assert.match(styles, /\.shop-collection-grid\s*\{[^}]*grid-template-columns:\s*minmax\(0,\s*1fr\);/);
   assert.match(styles, /\.shop-batch-stats\s*\{[^}]*display:\s*grid;[^}]*grid-template-columns:\s*repeat\(4,\s*minmax\(0,\s*1fr\)\);/);
   assert.match(styles, /\.shop-batch-stats\s+span\s*\{[^}]*display:\s*flex;[^}]*background:\s*transparent;/);
   assert.match(styles, /\.shop-collection-header\s*\{[^}]*border:\s*0;[^}]*background:\s*transparent;/);
   assert.match(styles, /\.shop-collection-create\s*\{[^}]*border:\s*0;[^}]*background:\s*transparent;/);
+});
+
+test("shop collection moves batch management into a POD-style side drawer", () => {
+  assert.match(page, /shop-batch-manager-trigger/);
+  assert.match(page, /shopCollectionPanelRef\.current\?\.openBatchManager/);
+  assert.match(page, /onBatchCountChange=\{setShopBatchCount\}/);
+  assert.match(panel, /useImperativeHandle\(ref, \(\) => \(\{ openBatchManager/);
+  assert.match(panel, /shop-batch-drawer-layer/);
+  assert.match(panel, /createPortal\(/);
+  assert.doesNotMatch(panel, /<aside className="shop-batch-list"/);
+  assert.match(styles, /\.shop-batch-drawer-layer\s*\{[^}]*position:\s*fixed;[^}]*z-index:\s*450;/);
+  assert.match(styles, /\.shop-batch-drawer\s*\{[^}]*right:\s*0;[^}]*width:\s*min\(400px,\s*94vw\)/);
 });
