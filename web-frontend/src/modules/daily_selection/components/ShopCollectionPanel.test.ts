@@ -6,6 +6,10 @@ const styles = readFileSync(
   new URL("../styles/shop-collection.css", import.meta.url),
   "utf8",
 );
+const dailyStyles = readFileSync(
+  new URL("../styles/daily-selection.css", import.meta.url),
+  "utf8",
+);
 const panel = readFileSync(new URL("./ShopCollectionPanel.tsx", import.meta.url), "utf8");
 const page = readFileSync(new URL("../pages/DailySelectionPage.tsx", import.meta.url), "utf8");
 
@@ -97,4 +101,12 @@ test("shop collection moves batch management into a POD-style side drawer", () =
   assert.doesNotMatch(panel, /<aside className="shop-batch-list"/);
   assert.match(styles, /\.shop-batch-drawer-layer\s*\{[^}]*position:\s*fixed;[^}]*z-index:\s*450;/);
   assert.match(styles, /\.shop-batch-drawer\s*\{[^}]*right:\s*0;[^}]*width:\s*min\(400px,\s*94vw\)/);
+});
+
+test("collection workspace surfaces inherit the active theme instead of a fixed white board", () => {
+  assert.match(dailyStyles, /\.daily-collection-surface\s*\{[^}]*border:\s*1px solid var\(--theme-module-border/);
+  assert.match(dailyStyles, /\.daily-collection-surface\s*\{[^}]*background:\s*linear-gradient\(135deg,\s*color-mix\(in srgb, var\(--theme-module-surface-tint/);
+  assert.match(dailyStyles, /\.daily-panel\s*\{[^}]*background:\s*linear-gradient\(135deg,\s*color-mix\(in srgb, var\(--theme-module-surface-tint/);
+  assert.match(dailyStyles, /\.daily-drawer-body\s*\{[^}]*background:\s*color-mix\(in srgb, var\(--theme-module-surface-soft/);
+  assert.doesNotMatch(dailyStyles, /\.daily-collection-surface\s*\{[^}]*background:\s*#f4f9fc/);
 });
