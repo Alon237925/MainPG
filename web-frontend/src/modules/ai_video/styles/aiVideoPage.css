@@ -52,6 +52,17 @@
   font-weight: 800;
 }
 
+/* 三档健康度：已连接 / 桥接超时 / 服务就绪但页面未连上。 */
+.ai-video-service-badge.is-ready {
+  color: #34745d;
+  background: #eaf8ef;
+}
+
+.ai-video-service-badge.is-warning {
+  color: #96601a;
+  background: #fdf3e2;
+}
+
 .ai-video-module-nav {
   display: flex;
   gap: 8px;
@@ -135,6 +146,17 @@
 .ai-video-service-help {
   margin-top: 10px !important;
   font-size: .83rem;
+}
+
+/* 启动失败：红色描边提示，配合下方诊断编号定位后端日志。 */
+.ai-video-service-state.is-error {
+  border-color: #f3c2cd;
+}
+
+.ai-video-service-diagnostic {
+  margin-top: 8px !important;
+  color: var(--theme-text-secondary, #856b74);
+  font-size: .78rem;
 }
 
 @media (max-width: 800px) {

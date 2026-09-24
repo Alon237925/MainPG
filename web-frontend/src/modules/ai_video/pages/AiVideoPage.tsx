@@ -1,6 +1,8 @@
 import { useCallback, useEffect, useRef, useState } from "react";
 
-import { getClipForgeStatus, startClipForge, type ClipForgeStatus } from "../api/clipforgeApi";
+import { AiVideoServiceState } from "../components/AiVideoServiceState";
+import { useClipForgeService } from "../hooks/useClipForgeService";
+import { canEmbedClipForge, clipForgeInstanceKey } from "../state/clipforgeServiceState";
 
 const AI_VIDEO_NAV = [
   { label: "视频工作台", href: "/start", icon: "✦" },
@@ -41,6 +43,10 @@ export const AI_VIDEO_NAV_INITIAL_STATE: AiVideoNavState = {
 
 // iframe 的初始入口固定为「视频工作台」；外层导航只发消息，永远不改动 src。
 const AI_VIDEO_INITIAL_HREF: AiVideoNavHref = "/start";
+
+// 服务就绪只代表后端 sidecar 在跑；iframe 要自己回报第一条可信 location 消息才算桥接成功。
+// 超过该时限只标记「页面桥接超时」，绝不把后端服务判为失败。
+const AI_VIDEO_BRIDGE_TIMEOUT_MS = 10000;
 
 function embeddedClipForgeUrl(baseUrl: string, href: string) {
   const target = new URL(baseUrl);
@@ -91,6 +97,11 @@ export function applyAiVideoLocation(state: AiVideoNavState, pathname: string): 
   };
 }
 
+// 后端换了 sidecar 实例：旧 iframe 文档已作废，导航高亮与 bridge 就绪状态必须一并归零。
+export function resetAiVideoNavForInstance(_state: AiVideoNavState): AiVideoNavState {
+  return { ...AI_VIDEO_NAV_INITIAL_STATE };
+}
+
 // 向内嵌 iframe 发送跳转指令；拿不到 iframe 窗口或目标 origin 时不发送。
 function postAiVideoNavigate(frame: HTMLIFrameElement | null, targetOrigin: string | null, href: AiVideoNavHref) {
   const target = frame?.contentWindow;
@@ -99,32 +110,27 @@ function postAiVideoNavigate(frame: HTMLIFrameElement | null, targetOrigin: stri
 }
 
 export function AiVideoPage() {
-  const [status, setStatus] = useState<ClipForgeStatus | null>(null);
-  const [error, setError] = useState("");
-  const [starting, setStarting] = useState(false);
+  // 服务健康状态来自真实轮询：服务退出或换实例后状态会自己变，不靠挂载时那一次请求。
+  const { status, error, start } = useClipForgeService();
+  const [bridgeTimedOut, setBridgeTimedOut] = useState(false);
   const [navState, setNavState] = useState<AiVideoNavState>(AI_VIDEO_NAV_INITIAL_STATE);
   // iframe 常驻引用：外层导航只发消息，绝不销毁或重建 iframe。
   const frameRef = useRef<HTMLIFrameElement | null>(null);
   // message 监听需要读到最新导航状态，用 ref 与 state 同步提交，避免把副作用塞进 setState 更新函数。
   const navStateRef = useRef<AiVideoNavState>(AI_VIDEO_NAV_INITIAL_STATE);
   const iframeOrigin = clipForgeOrigin(status?.url);
+  // 服务健康与 bridge 健康是两件事：前者看后端状态，后者只看 iframe 是否回报过可信 location。
+  const instanceKey = clipForgeInstanceKey(status);
+  const serviceReady = canEmbedClipForge(status);
+  const bridgeReady = navState.ready;
 
-  const refresh = () => {
-    setError("");
-    void getClipForgeStatus().then(setStatus).catch((cause: unknown) => {
-      setError(cause instanceof Error ? cause.message : "无法读取 AI 视频服务状态");
-    });
-  };
-
-  useEffect(refresh, []);
-
-  const start = () => {
-    setStarting(true);
-    setError("");
-    void startClipForge().then(setStatus).catch((cause: unknown) => {
-      setError(cause instanceof Error ? cause.message : "AI 视频服务启动失败");
-    }).finally(() => setStarting(false));
-  };
+  // 实例变化（新 instanceId 或新端口）意味着换了 sidecar 进程：旧 iframe 文档与导航态全部作废。
+  useEffect(() => {
+    const reset = resetAiVideoNavForInstance(navStateRef.current);
+    navStateRef.current = reset;
+    setNavState(reset);
+    setBridgeTimedOut(false);
+  }, [instanceKey]);
 
   // 统一提交状态迁移：写入 ref 与 state，并在需要时把跳转指令发给 iframe。
   const commitNavTransition = useCallback((transition: AiVideoNavTransition) => {
@@ -154,52 +160,55 @@ export function AiVideoPage() {
     return () => window.removeEventListener("message", onMessage);
   }, [iframeOrigin, commitNavTransition]);
 
-  if (status?.state === "ready" && status.url) {
-    return (
-      <section className="ai-video-page" aria-label="AI 视频">
-        <header className="ai-video-module-header">
-          <div>
-            <p className="ai-video-eyebrow">AI 创作工具</p>
-            <h2>AI 视频制作</h2>
-            <p>从商品素材到分镜、生成与导出，全部在界野工作台内完成。</p>
-          </div>
-          <span className="ai-video-service-badge">● 视频服务已连接</span>
-        </header>
-        <nav className="ai-video-module-nav" aria-label="AI 视频功能导航">
-          {AI_VIDEO_NAV.map((item) => (
-            <button
-              key={item.href}
-              type="button"
-              className={item.href === navState.activeHref ? "is-active" : ""}
-              onClick={() => selectHref(item.href)}
-            >
-              <span aria-hidden="true">{item.icon}</span>
-              {item.label}
-            </button>
-          ))}
-        </nav>
-        <iframe
-          ref={frameRef}
-          className="ai-video-frame"
-          title="ClipForge AI 视频"
-          src={embeddedClipForgeUrl(status.url, AI_VIDEO_INITIAL_HREF)}
-        />
-      </section>
-    );
+  // 服务已就绪但 iframe 还没回报第一条可信 location 消息：10 秒后只标记桥接超时。
+  // bridge 就绪、实例变化或卸载时清理；超时不会把后端服务改写成 failed。
+  useEffect(() => {
+    if (!serviceReady || bridgeReady) return;
+    const timer = window.setTimeout(() => setBridgeTimedOut(true), AI_VIDEO_BRIDGE_TIMEOUT_MS);
+    return () => window.clearTimeout(timer);
+  }, [bridgeReady, instanceKey, serviceReady]);
+
+  if (!serviceReady || !status?.url) {
+    return <AiVideoServiceState status={status} requestError={error} onStart={start} />;
   }
 
+  const badgeClass = bridgeReady
+    ? "ai-video-service-badge is-ready"
+    : bridgeTimedOut
+      ? "ai-video-service-badge is-warning"
+      : "ai-video-service-badge";
+  const badgeText = bridgeReady ? "● AI 视频已连接" : bridgeTimedOut ? "● 页面桥接超时" : "● 视频服务已就绪";
+
   return (
-    <section className="ai-video-service-state" aria-live="polite">
-      <span className="ai-video-service-icon" aria-hidden="true">🎬</span>
-      <div>
-        <p className="ai-video-eyebrow">AI 创作工具</p>
-        <h2>正在连接 AI 视频服务</h2>
-        <p>{error || status?.message || "正在检查本地视频制作服务…"}</p>
-        <button type="button" onClick={start} disabled={starting || status?.state === "unavailable"}>
-          {starting ? "正在启动…" : "启动 AI 视频服务"}
-        </button>
-        {status?.state === "unavailable" && <p className="ai-video-service-help">请先构建 integrations/clipforge 的 standalone 服务。</p>}
-      </div>
+    <section className="ai-video-page" aria-label="AI 视频">
+      <header className="ai-video-module-header">
+        <div>
+          <p className="ai-video-eyebrow">AI 创作工具</p>
+          <h2>AI 视频制作</h2>
+          <p>从商品素材到分镜、生成与导出，全部在界野工作台内完成。</p>
+        </div>
+        <span className={badgeClass}>{badgeText}</span>
+      </header>
+      <nav className="ai-video-module-nav" aria-label="AI 视频功能导航">
+        {AI_VIDEO_NAV.map((item) => (
+          <button
+            key={item.href}
+            type="button"
+            className={item.href === navState.activeHref ? "is-active" : ""}
+            onClick={() => selectHref(item.href)}
+          >
+            <span aria-hidden="true">{item.icon}</span>
+            {item.label}
+          </button>
+        ))}
+      </nav>
+      <iframe
+        key={instanceKey ?? "clipforge-none"}
+        ref={frameRef}
+        className="ai-video-frame"
+        title="ClipForge AI 视频"
+        src={embeddedClipForgeUrl(status.url, AI_VIDEO_INITIAL_HREF)}
+      />
     </section>
   );
 }

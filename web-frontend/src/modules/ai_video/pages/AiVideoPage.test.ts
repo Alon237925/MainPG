@@ -6,6 +6,19 @@ import ts from "typescript";
 const page = readFileSync(new URL("./AiVideoPage.tsx", import.meta.url), "utf8");
 const api = readFileSync(new URL("../api/clipforgeApi.ts", import.meta.url), "utf8");
 
+// 组件/样式源码：接线证据。文件被删除或改名时应视为失败，而不是静默跳过断言。
+function readSource(relativePath: string) {
+  return readFileSync(new URL(relativePath, import.meta.url), "utf8");
+}
+
+let serviceState = "";
+try {
+  serviceState = readSource("../components/AiVideoServiceState.tsx");
+} catch {
+  // 组件尚未实现时保持空串，让下面的断言逐条失败并给出可读原因。
+  serviceState = "";
+}
+
 // AiVideoPage.tsx 是 .tsx（含 JSX），Node 无法直接导入运行。
 // 这里从真实源码里切出常量与纯函数片段，用 TypeScript 去掉类型标注后求值，
 // 保证单测跑的是页面里真正上线的那份实现，而不是测试里另抄一份。
@@ -25,6 +38,7 @@ function loadAiVideoLogic() {
       "aiVideoNavHrefForPath",
       "selectAiVideoNav",
       "applyAiVideoLocation",
+      "resetAiVideoNavForInstance",
       "clipForgeOrigin",
     ].map((name) => sliceSource(new RegExp(`^export function ${name}\\([\\s\\S]*?^\\}$`, "m"), `${name} 函数`)),
   ];
@@ -39,6 +53,7 @@ function loadAiVideoLogic() {
     "aiVideoNavHrefForPath",
     "selectAiVideoNav",
     "applyAiVideoLocation",
+    "resetAiVideoNavForInstance",
     "clipForgeOrigin",
   ];
   return new Function(`${compiled}\nreturn { ${exported.join(", ")} };`)();
@@ -49,12 +64,18 @@ const logic = loadAiVideoLogic();
 test("AI video workspace loads service state and embeds only a ready ClipForge URL", () => {
   assert.match(api, /"\/api\/clipforge\/status"/);
   assert.match(api, /"\/api\/clipforge\/start"/);
-  assert.match(page, /status\?\.state === "ready" && status\.url/);
+  // 后端异步生命周期：状态查询与启动都必须支持取消，避免旧响应覆盖新状态。
+  assert.match(api, /getClipForgeStatus\(signal\?: AbortSignal\)/);
+  assert.match(api, /\{ method: "POST", signal \}/);
+  // 只有真正可内嵌的实例（ready + url + instanceId）才渲染 iframe，
+  // 不再是「HTTP 200 / state === ready」即认为已连接。
+  assert.match(page, /const serviceReady = canEmbedClipForge\(status\)/);
   assert.match(page, /title="ClipForge AI 视频"/);
   // iframe 的 src 只由服务地址与固定的初始入口算一次，导航不改 src。
   assert.match(page, /src=\{embeddedClipForgeUrl\(status\.url, AI_VIDEO_INITIAL_HREF\)\}/);
   assert.match(page, /const AI_VIDEO_INITIAL_HREF: AiVideoNavHref = "\/start"/);
-  assert.match(page, /status\?\.state === "unavailable"/);
+  // 「未安装完整」这类不可内嵌状态的文案由状态组件负责。
+  assert.match(serviceState, /AI 视频服务未安装完整/);
 });
 
 test("AI video is hosted as a MainPG module and requests ClipForge embedded mode", () => {
@@ -70,7 +91,7 @@ test("AI video is hosted as a MainPG module and requests ClipForge embedded mode
 });
 
 test("AI video keeps a persistent iframe and speaks the frozen parent/iframe protocol", () => {
-  // 外层导航不得销毁或重建 iframe：没有按路由生成的 key，iframe 由 ref 持有。
+  // 外层导航不得按路由销毁或重建 iframe：没有按选中项生成的 key，iframe 由 ref 持有。
   assert.doesNotMatch(page, /key=\{selected/);
   assert.match(page, /ref=\{frameRef\}/);
 
@@ -95,6 +116,55 @@ test("AI video keeps a persistent iframe and speaks the frozen parent/iframe pro
   // 监听必须成对注册与清理。
   assert.match(page, /window\.addEventListener\("message", onMessage\)/);
   assert.match(page, /return \(\) => window\.removeEventListener\("message", onMessage\)/);
+});
+
+test("AI video polls the sidecar service instead of issuing one mount-only request", () => {
+  assert.match(page, /const \{ status, error, start \} = useClipForgeService\(\)/);
+  // 页面不再自己直接打旧 API：状态全部来自轮询 hook。
+  assert.doesNotMatch(page, /getClipForgeStatus/);
+  assert.doesNotMatch(page, /startClipForge/);
+  assert.match(page, /const instanceKey = clipForgeInstanceKey\(status\)/);
+  assert.match(page, /const bridgeReady = navState\.ready/);
+});
+
+test("a new sidecar instance destroys the old iframe and clears navigation state", () => {
+  // iframe 以实例身份键为 key：换实例（instanceId 或 url 变化）必然重建文档。
+  assert.match(page, /key=\{instanceKey \?\? "clipforge-none"\}/);
+  assert.match(page, /resetAiVideoNavForInstance\(navStateRef\.current\)/);
+  // 重置必须在实例变化时触发，且同时清掉桥接超时标记。
+  assert.match(page, /\}, \[instanceKey\]\)/);
+  assert.match(page, /setBridgeTimedOut\(false\)/);
+});
+
+test("separates service readiness from iframe bridge readiness", () => {
+  // 服务就绪 ≠ 页面已连接：bridge 就绪只认 iframe 回报的可信 location 消息。
+  assert.match(page, /视频服务已就绪/);
+  assert.match(page, /bridgeReady[\s\S]{0,80}AI 视频已连接/);
+  assert.match(page, /bridgeTimedOut[\s\S]{0,80}页面桥接超时/);
+  // 桥接超时只标记超时，绝不把后端服务改写成 failed。
+  assert.doesNotMatch(page, /bridgeTimedOut[\s\S]{0,120}state: "failed"/);
+});
+
+test("times out the iframe bridge after 10s and cleans the timer up", () => {
+  assert.match(page, /AI_VIDEO_BRIDGE_TIMEOUT_MS = 10000/);
+  assert.match(page, /setTimeout\(\(\) => setBridgeTimedOut\(true\), AI_VIDEO_BRIDGE_TIMEOUT_MS\)/);
+  // 只在「服务就绪但桥接未就绪」期间计时，bridge 就绪/实例变化/卸载都必须清掉。
+  assert.match(page, /if \(!serviceReady \|\| bridgeReady\) return;/);
+  assert.match(page, /return \(\) => window\.clearTimeout\(timer\)/);
+});
+
+test("renders the service state component for every non-embeddable state", () => {
+  assert.match(page, /<AiVideoServiceState status=\{status\} requestError=\{error\} onStart=\{start\} \/>/);
+  assert.match(serviceState, /正在检查 AI 视频服务/);
+  assert.match(serviceState, /AI 视频服务未启动/);
+  assert.match(serviceState, /正在启动 AI 视频服务/);
+  assert.match(serviceState, /AI 视频服务启动失败/);
+  assert.match(serviceState, /正在关闭 AI 视频服务/);
+  assert.match(serviceState, /启动 AI 视频服务/);
+  assert.match(serviceState, /重新启动/);
+  // 诊断编号可作为次要信息展示，但 exitCode 绝不能当成用户主文案。
+  assert.match(serviceState, /诊断编号/);
+  assert.doesNotMatch(serviceState, /exitCode/);
 });
 
 test("maps ClipForge paths onto the seven outer navigation entries", () => {
@@ -155,6 +225,13 @@ test("navigates immediately when ready and keeps the highlight for unknown paths
   const unknown = logic.applyAiVideoLocation(located.state, "/somewhere/else");
   assert.equal(unknown.state.activeHref, "/projects");
   assert.equal(unknown.sendHref, null);
+});
+
+test("a new sidecar instance resets iframe navigation readiness", () => {
+  const connected = { activeHref: "/batch", ready: true, pendingHref: null };
+  assert.deepEqual(logic.resetAiVideoNavForInstance(connected), logic.AI_VIDEO_NAV_INITIAL_STATE);
+  // 必须是新对象，不能把旧状态对象原地改坏。
+  assert.notEqual(logic.resetAiVideoNavForInstance(connected), connected);
 });
 
 test("only trusts messages coming from the ClipForge sidecar origin", () => {
