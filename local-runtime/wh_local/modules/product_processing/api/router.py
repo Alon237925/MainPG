@@ -998,6 +998,26 @@ def create_product_processing_router(
             export_format=body.export_format,
         )
 
+    @router.get("/tasks/{task_id}/preview/finalize-runs")
+    def list_preview_finalize_runs(
+        task_id: int,
+        workspace_id: str = Header(default="local", alias="X-Workspace-ID"),
+        limit: int = 10,
+    ) -> dict[str, Any]:
+        """该任务的历史导出记录。
+
+        导出的表格是服务端落盘的，记录一直在库里；前端原先只把 run id 存在页面会话里，
+        关掉页面就再也找不到之前生成的表格，只能反复点「完成预审并导出」并撞幂等冲突。
+        """
+        return {
+            "runs": _call(
+                service.list_preview_finalize_runs,
+                task_id,
+                workspace_id=_workspace(workspace_id),
+                limit=limit,
+            )
+        }
+
     @router.get("/tasks/{task_id}/preview/finalize/{run_id}")
     def preview_finalize_status(
         task_id: int,

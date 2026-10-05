@@ -230,6 +230,19 @@ export function retryPreviewFinalizeRun(
   );
 }
 
+/** 该任务的历史导出记录（按时间倒序）：表格文件弄丢后从这里找回并重新下载。 */
+export async function listPreviewFinalizeRuns(
+  ctx: ApiContext,
+  taskId: number,
+  limit = 10,
+): Promise<PreviewFinalizeRun[]> {
+  const payload = await ppRequest<{ runs?: PreviewFinalizeRun[] }>(
+    ctx,
+    `/api/product-processing/tasks/${taskId}/preview/finalize-runs?limit=${limit}`,
+  );
+  return Array.isArray(payload.runs) ? payload.runs : [];
+}
+
 /** 基于已完成预审的最终快照再次生成妙手导入模板（服饰类/非服饰类）。 */
 export function exportMiaoshouPreview(
   ctx: ApiContext,
