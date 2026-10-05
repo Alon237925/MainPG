@@ -53,7 +53,7 @@ function buildFlowSteps(isMultiview: boolean): ProductFlowStep[] {
     {
       id: '3',
       number: '03',
-      title: isMultiview ? '商品主图' : '融合主图',
+      title: isMultiview ? '商品主图生成&提示词设置' : '融合主图生成&提示词设置',
       description: isMultiview ? '解析各视角信息，直接生成单品商品主图' : '解析各商品主体，生成融合套装主图',
     },
     { id: '4', number: '04', title: 'AI 文本', description: '生成标题、描述与五点卖点' },
@@ -190,9 +190,14 @@ export function ComboKitPage({ isActive = true, initialSetId }: Props) {
   const pollSeqRef = useRef(0);
   // 选型默认辅助词来自 /roles；用 ref 读取可避免 openSet 因 roles 变化而重跑。
   const rolesRef = useRef<ComboRoles | null>(null);
+  // 步骤切换时把工作流滚进视口，保证「跳转」可见（内容在下方时不会像没反应）。
+  const flowRef = useRef<HTMLElement | null>(null);
+  const prevStepRef = useRef(step);
 
   const notify = useCallback((ok: string) => { setMessage(ok); setError(''); }, []);
   const fail = useCallback((e: unknown) => { setError(e instanceof Error ? e.message : String(e)); setMessage(''); }, []);
+  // 完成当前步骤的主操作后自动推进到下一步，省去每次手动点顶部步骤卡。
+  const advanceStep = useCallback(() => setStep((cur) => Math.min(cur + 1, 6)), []);
 
   const refreshSet = useCallback(async (sid: string) => {
     const seq = ++refreshSeqRef.current;
@@ -293,6 +298,13 @@ export function ComboKitPage({ isActive = true, initialSetId }: Props) {
     if (initialSetId) void openSet(initialSetId);
   }, [initialSetId, openSet]);
 
+  // 步骤变化（自动推进或手动点卡）后滚动到工作流顶部，让跳转结果始终可见。
+  useEffect(() => {
+    if (prevStepRef.current === step) return;
+    prevStepRef.current = step;
+    flowRef.current?.scrollIntoView({ behavior: 'smooth', block: 'start' });
+  }, [step]);
+
   const createNewSet = async (mode = createMode) => {
     if (!createName.trim()) { fail('请填写套装名称'); return; }
     setBusy('create');
@@ -339,6 +351,8 @@ export function ComboKitPage({ isActive = true, initialSetId }: Props) {
       }
       setSet(data);
       notify('套装信息已保存');
+      // 保存成功即进入「上传原图」。
+      advanceStep();
     } catch (e) { fail(e); } finally { setBusy(''); }
   };
 
@@ -353,6 +367,8 @@ export function ComboKitPage({ isActive = true, initialSetId }: Props) {
       }
       notify(`已上传 ${list.length} 张原图`);
       await refreshSet(set.set_id);
+      // 原图备齐（≥2 张）后自动进入「解析并生成主图」；不足则留在本步继续上传。
+      if (step === 2 && set.items.length + list.length >= 2) advanceStep();
     } catch (e) { fail(e); } finally { setBusy(''); }
   };
 
@@ -481,6 +497,8 @@ export function ComboKitPage({ isActive = true, initialSetId }: Props) {
       if (task.status === 'failed') { fail(task.error_message || '主体解析失败'); return; }
       notify(mode === 'multiview' ? '视角解析完成，已生成商品主图' : '主体解析完成，已生成融合主图');
       await refreshSet(set.set_id);
+      // 主图生成成功后进入「AI 文本生成」。
+      advanceStep();
     } catch (e) { fail(e); } finally { setBusy(''); setProgressText(''); }
   };
 
@@ -523,6 +541,8 @@ export function ComboKitPage({ isActive = true, initialSetId }: Props) {
       if (task.status === 'failed') { fail(task.error_message || '文本生成失败'); return; }
       notify('文本已生成（扣 20 积分）');
       await refreshSet(set.set_id);
+      // 文本生成成功后进入「生成成品图」。
+      advanceStep();
     } catch (e) { fail(e); } finally { setBusy(''); setProgressText(''); }
   };
 
@@ -557,6 +577,8 @@ export function ComboKitPage({ isActive = true, initialSetId }: Props) {
       if (task.status === 'failed') { fail(task.error_message || '成品图生成失败'); return; }
       notify(roles && roles.length ? `已重新生成 ${roles.length} 张图（扣 100 积分）` : '6 张成品图已生成（扣 100 积分）');
       await refreshSet(set.set_id);
+      // 整批生成完成后进入「独立预检」；单张「替换」不推进，方便继续逐张微调。
+      if (!roles) advanceStep();
     } catch (e) { fail(e); } finally { setBusy(''); setProgressText(''); }
   };
 
@@ -752,7 +774,7 @@ export function ComboKitPage({ isActive = true, initialSetId }: Props) {
               <input type="file" accept="image/*" multiple hidden onChange={(e) => { void onUpload(e.target.files); e.target.value = ''; }} />
               {isMultiview ? '上传视角图' : '上传原图'}
             </label>
-            <button className="primary" onClick={() => setDrawerOpen(true)} disabled={!set.items.length}>素材总览（选择图片）</button>
+            <button onClick={() => setDrawerOpen(true)} disabled={!set.items.length}>素材总览（选择图片）</button>
             <button onClick={() => onReorder(set.items.map((i) => i.item_id).slice().reverse())}>反转排序</button>
           </div>
           <div className="combo-paste-zone">
@@ -787,6 +809,24 @@ export function ComboKitPage({ isActive = true, initialSetId }: Props) {
                   <label>{isMultiview ? '视角说明' : '主体词'}<input value={currentItem.subject_keywords} onChange={(e) => onItemKeyword(currentItem.item_id, e.target.value)} placeholder={isMultiview ? '如：内部视角 / 包装展开图' : '如：手机壳'} /></label>
                   <label>规格<input value={currentItem.spec_text} onChange={(e) => onItemSpec(currentItem.item_id, e.target.value)} placeholder="如：暗黑版" /></label>
                   <button className="btn-mini primary" onClick={() => setDrawerOpen(true)}>切换其他图片</button>
+                  <div className="combo-edit-stage-thumbs">
+                    <span className="combo-edit-stage-thumbs-title">全部{isMultiview ? '视角图' : '原图'}（{itemCount}）· 点选切换</span>
+                    <div className="combo-edit-stage-thumb-grid">
+                      {set.items.map((it, idx) => (
+                        <button
+                          key={it.item_id}
+                          type="button"
+                          className={`combo-edit-stage-thumb${it.item_id === currentItem.item_id ? ' is-active' : ''}`}
+                          onClick={() => setSelectedItemId(it.item_id)}
+                          title={it.subject_keywords || `第 ${idx + 1} 张`}
+                        >
+                          <img src={comboKitOriginUrl(set.set_id, (it.original_url || '').split('/').pop() || '')} alt={it.subject_keywords || `第 ${idx + 1} 张`} referrerPolicy="no-referrer" />
+                          <span className="combo-edit-stage-thumb-idx">{idx + 1}</span>
+                          {it.is_primary && <span className="combo-edit-stage-thumb-primary">主</span>}
+                        </button>
+                      ))}
+                    </div>
+                  </div>
                 </div>
               </div>
             </div>
@@ -798,7 +838,7 @@ export function ComboKitPage({ isActive = true, initialSetId }: Props) {
     if (step === 3) {
       return (
         <section className="combo-section">
-          <h2>{isMultiview ? '③ 商品主图' : '③ 融合套装主图'}</h2>
+          <h2>{isMultiview ? '③ 商品主图生成 & 提示词设置' : '③ 融合主图生成 & 提示词设置'}</h2>
           <label>
             {isMultiview ? '商品主图补充要求（可选，英文更佳）' : '融合主图提示词（可选，英文更佳）'}
             <textarea
@@ -838,25 +878,28 @@ export function ComboKitPage({ isActive = true, initialSetId }: Props) {
             {!isMultiview && <button className="primary" onClick={() => void onApplyPreset()} disabled={busy === 'savedPrompt'}>应用当前预设</button>}
             <button className={isMultiview ? 'primary' : ''} onClick={() => void onSavePrompt()} disabled={busy === 'savedPrompt'}>保存模板到该套装</button>
           </div>
-          <div className="combo-hint">使用场景图 1/2 与白底尺寸图使用上方辅助词；细节图以系统固定模板为底座，只追加补充要求；详情图本地拼接不开放自定义。</div>
-          <h3 className="combo-subtitle">生成 6 张成品图</h3>
-          <div className="combo-actions"><button className="primary" onClick={() => void onGenerateImages()} disabled={busy === 'images'}>{busy === 'images' ? (progressText || '并行生成中…') : '生成 6 张图（并行，扣 100 积分）'}</button></div>
-          <div className="combo-hint">{isMultiview ? '主图复用商品主图；' : '主图复用融合主图；'}轮播 2/3、白底尺寸图、细节图并行生成；详情图本地拼接。</div>
+          <div className="combo-hint">使用场景图 1/2 与白底尺寸图使用上方辅助词；细节图以系统固定模板为底座，只追加补充要求；详情图本地拼接不开放自定义。成品图在步骤 ⑤ 统一并行生成。</div>
         </section>
       );
     }
 
     if (step === 4) {
+      const textTitle = String(textResult?.title ?? '');
+      const textDescription = String(textResult?.description ?? '');
+      const textBullets = (textResult?.bullets as string[]) || [];
+      const hasText = !!(textTitle || textDescription || textBullets.length);
       return (
         <section className="combo-section">
           <h2>④ AI 文本生成（扣 20 积分）</h2>
           <div className="combo-actions"><button onClick={() => void onGenerateText()} disabled={busy === 'text'}>{busy === 'text' ? (progressText || '生成中…') : '生成标题+描述+五点'}</button></div>
-          {textResult && (
+          {hasText ? (
             <div className="combo-text-result">
-              <h3>{String(textResult.title ?? '')}</h3>
-              <p>{String(textResult.description ?? '')}</p>
-              <ul>{(textResult.bullets as string[] || []).map((b, i) => <li key={i}>{b}</li>)}</ul>
+              {textTitle && <h3>{textTitle}</h3>}
+              {textDescription && <p>{textDescription}</p>}
+              {textBullets.length > 0 && <ul>{textBullets.map((b, i) => <li key={i}>{b}</li>)}</ul>}
             </div>
+          ) : (
+            <div className="empty">尚未生成 AI 文本，点击上方按钮生成标题、描述与五点卖点。</div>
           )}
         </section>
       );
@@ -914,12 +957,33 @@ export function ComboKitPage({ isActive = true, initialSetId }: Props) {
       );
     }
 
+    const requiredChecks = [
+      { k: 'declared_price', label: '申报价格', ok: !!(set.declared_price) },
+      { k: 'length_cm', label: '长(cm)', ok: Number(set.length_cm) > 0 },
+      { k: 'width_cm', label: '宽(cm)', ok: Number(set.width_cm) > 0 },
+      { k: 'height_cm', label: '高(cm)', ok: Number(set.height_cm) > 0 },
+      { k: 'weight_g', label: '重量(g)', ok: Number(set.weight_g) > 0 },
+      { k: 'category_name', label: '产品分类', ok: !!set.category_name },
+      { k: 'sku', label: 'SKU 货号', ok: !!(set.sku) },
+    ];
+    const passedChecks = requiredChecks.filter((f) => f.ok).length;
+    const previewTitle = String(textResult?.title ?? '');
+    const previewDescription = String(textResult?.description ?? '');
+    const previewBullets = (textResult?.bullets as string[]) || [];
+    const hasPreviewText = !!(previewTitle || previewDescription || previewBullets.length);
+
     return (
       <section className="combo-section">
         <h2>⑥ 独立预检</h2>
 
         {!set.preview ? (
-          <div className="combo-actions"><button className="primary" onClick={() => void onSubmitPreview()} disabled={busy === 'preview'}>{busy === 'preview' ? '进入预检…' : '进入预检'}</button></div>
+          <div className="combo-preview-action">
+            <div>
+              <b>尚未进入预检</b>
+              <small>进入预检后可查看必填项校验与图床直链状态，通过后过图床并导出店小秘。</small>
+            </div>
+            <button className="primary" onClick={() => void onSubmitPreview()} disabled={busy === 'preview'}>{busy === 'preview' ? '进入预检…' : '进入预检'}</button>
+          </div>
         ) : (
           <div className="combo-preview-review">
             <p className="combo-preview-status">预检状态：<strong>{String(set.preview.status)}</strong>{set.preview.reject_reason ? <em className="combo-preview-reason">驳回原因：{String(set.preview.reject_reason)}</em> : null}</p>
@@ -937,67 +1001,68 @@ export function ComboKitPage({ isActive = true, initialSetId }: Props) {
           </div>
         )}
 
-        <h3 className="combo-subtitle">套装信息</h3>
-        <div className="combo-grid">
-          <label>套装名称<b>{set.name || '—'}</b></label>
-          <label>SKU 货号<b>{set.sku || '—'}</b></label>
-          <label>SKU 全称<b>{set.sku_display || '—'}</b></label>
-          <label>类目路径<b>{set.category_path || '—'}</b></label>
-          <label>类目ID<b>{set.category_id || '—'}</b></label>
-          <label>各商品规格<b>{Array.isArray(set.sku_specs_json) && set.sku_specs_json.length ? set.sku_specs_json.join(';') : '—'}</b></label>
+        <div className="combo-preview-block">
+          <h3 className="combo-subtitle">套装信息</h3>
+          <div className="combo-preview-facts">
+            {[
+              { k: 'name', label: '套装名称', value: set.name },
+              { k: 'sku', label: 'SKU 货号', value: set.sku },
+              { k: 'sku_display', label: 'SKU 全称', value: set.sku_display },
+              { k: 'category_path', label: '类目路径', value: set.category_path },
+              { k: 'category_id', label: '类目ID', value: set.category_id },
+              { k: 'specs', label: '各商品规格', value: Array.isArray(set.sku_specs_json) && set.sku_specs_json.length ? set.sku_specs_json.join(';') : '' },
+            ].map((f) => (
+              <div key={f.k}><span>{f.label}</span><b title={f.value || ''}>{f.value || '—'}</b></div>
+            ))}
+          </div>
         </div>
 
-        <h3 className="combo-subtitle">店小秘必填项校验</h3>
-        <div className="combo-grid">
-          {[
-            { k: 'declared_price', label: '申报价格', ok: !!(set.declared_price) },
-            { k: 'length_cm', label: '长(cm)', ok: Number(set.length_cm) > 0 },
-            { k: 'width_cm', label: '宽(cm)', ok: Number(set.width_cm) > 0 },
-            { k: 'height_cm', label: '高(cm)', ok: Number(set.height_cm) > 0 },
-            { k: 'weight_g', label: '重量(g)', ok: Number(set.weight_g) > 0 },
-            { k: 'category_name', label: '产品分类', ok: !!set.category_name },
-            { k: 'sku', label: 'SKU 货号', ok: !!(set.sku) },
-          ].map((field) => (
-            <span key={field.k} className={`combo-field-check ${field.ok ? 'is-ok' : 'is-missing'}`}>{field.ok ? '✓ ' : '✕ '}{field.label}</span>
-          ))}
+        <div className="combo-preview-block">
+          <h3 className="combo-subtitle">店小秘必填项校验<em className="combo-preview-count">{passedChecks}/{requiredChecks.length} 已完成</em></h3>
+          <div className="combo-preview-checks">
+            {requiredChecks.map((field) => (
+              <span key={field.k} className={`combo-field-check ${field.ok ? 'is-ok' : 'is-missing'}`}>{field.ok ? '✓ ' : '✕ '}{field.label}</span>
+            ))}
+          </div>
         </div>
 
-        <h3 className="combo-subtitle">{isMultiview ? '视角原图' : '子商品原图'}</h3>
-        <div className="combo-items">
-          {set.items.length ? set.items.map((item, idx) => (
-            <div className="combo-item" key={item.item_id}>
-              <div className="combo-item-thumb">
+        <div className="combo-preview-block">
+          <h3 className="combo-subtitle">{isMultiview ? '视角原图' : '子商品原图'}</h3>
+          <div className="combo-preview-thumbs">
+            {set.items.length ? set.items.map((item, idx) => (
+              <figure className="combo-preview-thumb" key={item.item_id}>
                 <img src={comboKitOriginUrl(set.set_id, (item.original_url || '').split('/').pop() || '')} alt={item.subject_keywords || '原图'} referrerPolicy="no-referrer" />
-                <span className="idx">{idx + 1}</span>
-              </div>
-              <div className="combo-item-info"><b>主体：{item.subject_keywords || '未填'}</b><small>规格：{item.spec_text || '—'}</small></div>
-            </div>
-          )) : <div className="empty">未上传原图</div>}
+                <figcaption><b>{idx + 1}. {item.subject_keywords || '未填主体'}</b><small>规格：{item.spec_text || '—'}</small></figcaption>
+              </figure>
+            )) : <div className="empty">未上传原图</div>}
+          </div>
         </div>
 
-        <h3 className="combo-subtitle">成品图（图床直链校验）</h3>
-        <div className="combo-images">
-          {images.map((img) => (
-            <figure key={img.role}>
-              <div className="combo-image-card">
-                <img src={comboKitGeneratedUrl(set.set_id, img.role)} alt={img.label} referrerPolicy="no-referrer" />
-                <span className={`combo-cos-tag ${img.public_url ? 'is-ok' : 'is-missing'}`}>{img.public_url ? '已过图床' : '未过图床'}</span>
-              </div>
-              <figcaption>{img.label}</figcaption>
-            </figure>
-          ))}
-          {!images.length && <div className="empty">尚未生成成品图</div>}
+        <div className="combo-preview-block">
+          <h3 className="combo-subtitle">成品图（图床直链校验）</h3>
+          <div className="combo-images">
+            {images.map((img) => (
+              <figure key={img.role}>
+                <div className="combo-image-card">
+                  <img src={comboKitGeneratedUrl(set.set_id, img.role)} alt={img.label} referrerPolicy="no-referrer" />
+                  <span className={`combo-cos-tag ${img.public_url ? 'is-ok' : 'is-missing'}`}>{img.public_url ? '已过图床' : '未过图床'}</span>
+                </div>
+                <figcaption>{img.label}</figcaption>
+              </figure>
+            ))}
+            {!images.length && <div className="empty">尚未生成成品图</div>}
+          </div>
         </div>
 
-        {textResult && (
-          <>
+        {hasPreviewText && (
+          <div className="combo-preview-block">
             <h3 className="combo-subtitle">AI 文本结果</h3>
             <div className="combo-text-result">
-              <h3>{String(textResult.title ?? '')}</h3>
-              <p>{String(textResult.description ?? '')}</p>
-              <ul>{(textResult.bullets as string[] || []).map((b, i) => <li key={i}>{b}</li>)}</ul>
+              {previewTitle && <h3>{previewTitle}</h3>}
+              {previewDescription && <p>{previewDescription}</p>}
+              {previewBullets.length > 0 && <ul>{previewBullets.map((b, i) => <li key={i}>{b}</li>)}</ul>}
             </div>
-          </>
+          </div>
         )}
 
         {set.billing && set.billing.length > 0 && (
@@ -1061,7 +1126,7 @@ export function ComboKitPage({ isActive = true, initialSetId }: Props) {
           </section>
         )}
         {set && (
-          <section className="combo-flow-card">
+          <section className="combo-flow-card" ref={flowRef}>
             <div className="combo-flow-heading">
               <span aria-hidden="true"><i className="iconfont icon-skin" /></span>
               <strong>{isMultiview ? '单品多视角工作流' : '组合套装工作流'}</strong>
@@ -1078,7 +1143,17 @@ export function ComboKitPage({ isActive = true, initialSetId }: Props) {
             />
           </section>
         )}
-        {set && <div className="combo-kit-content">{renderStep()}</div>}
+        {set && (
+          <div className="combo-kit-content">
+            {renderStep()}
+            {step < 6 && (
+              <div className="combo-step-footer">
+                <span className="combo-step-footer-hint">第 {step} / 6 步 · 完成本步后可直接进入下一步</span>
+                <button className="primary" onClick={advanceStep}>下一步 →</button>
+              </div>
+            )}
+          </div>
+        )}
       </main>
 
       {/* 上传原图右侧抽屉：逐张填信息与蒙版（portal 到 body 脱离 tab 面板层叠上下文，防被顶栏盖住） */}
