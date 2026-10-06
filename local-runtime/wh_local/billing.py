@@ -38,7 +38,7 @@ TOPUP_TIER_BONUS_PERCENTS = {
     "points_49": 25,
     "points_99": 50,
     "points_499": 75,
-    "points_4999": 100,
+    "points_999": 100,
 }
 TOPUP_PROMOTION_ID = "fixed_package_tiered_bonus"
 TOPUP_PROMOTION_NAME = "固定套餐档位递增赠送（25%~100%）"
@@ -60,23 +60,71 @@ MULTIPLIER_DEFAULT_PERCENT = 100
 POD_BASE_POINTS_PER_STYLE = 45
 
 # ---------------------------------------------------------------------------
-# 套餐体验积分：每个注册用户默认「体验版」，每周一北京时间 00:00 刷新固定额度，
-# 体验积分先于充值积分消耗（先过期先消耗）。旗舰版（flagship）预留 plan_type 口子，
-# 后续只需在 PLAN_TYPES 加配置 + 提供升级接口即可接入。
-# 数据库存「0.1 积分」单位（与 point_unit_scale 一致：10 units = 1 积分），
-# 故 500 积分 = 5000 units。
+# 分站返利（总部权威口径）
+#
+# 每 1 元恒等式：1 = Y·c + B + π：
+#   Y = 该档倍率（积分/元）、c = 每积分成本（元/积分）、d = 返点率上限。
+# 返利 B = d − max(0, Y − Y0)·c·k：倍率每高出基准 Y0 一档，商家就按 k 的比例自己
+# 承担让利成本，B 随之递减、扣穿后转负，单笔单档封底 -5.00 元。
+# 这样商家抬高倍率（多送积分吸引用户）时会同比例少拿甚至倒付返利，而不是把成本
+# 全甩给总部。d / c / k / Y0 只留在总部服务端，既不下发分站也不下发客户端。
+# 具体合约值存 station_contracts（station_code='*' 为全局默认），下列常量为默认行。
+# ---------------------------------------------------------------------------
+STATION_REBATE_DEFAULT_PERCENT = 10.0
+STATION_REBATE_MIN_MARGIN_PERCENT = 5.0
+STATION_REBATE_PRICING_UNIT = "ai"
+# 返利递减口径：基准倍率 Y0（积分/元）、商家承担比例 k、单笔单档负值封底（分）。
+STATION_REBATE_BASE_RATE = 100.0
+STATION_REBATE_STATION_SHARE = 0.7
+STATION_REBATE_NEGATIVE_FLOOR_CENTS = -500
+# 结算周期：订单付款成功后 T+7 由「待到账」转为「可结算」。
+STATION_REBATE_SETTLE_DELAY_DAYS = 7
+# 单条成本口径（元 / 单位）：AI 与 POD 沿用 0.1 元；商品组合单独按 0.4 元计。
+LINK_COST_BY_UNIT_YUAN = {"ai": 0.1, "pod": 0.1, "combo": 0.4}
+LINK_USAGE_BY_UNIT = {"ai": 40, "pod": 45, "combo": 100}
+# 台账状态展示口径（只用于展示，不下发机密 d/m/c）。
+STATION_REBATE_STATUS_LABELS = {
+    "accrued": "待到账",
+    "settled": "可结算",
+    "reserved": "已冻结",
+    "paid": "已打款",
+    "void": "已作废",
+}
+# 打款渠道（四项全选）+ 后台登记凭证。
+STATION_PAYOUT_CHANNELS = ("bank", "alipay", "wechat", "offline")
+STATION_PAYOUT_CHANNEL_LABELS = {
+    "bank": "对公银行转账",
+    "alipay": "支付宝转账",
+    "wechat": "微信转账",
+    "offline": "线下打款",
+}
+STATION_PAYOUT_STATUS_LABELS = {
+    "pending": "审核中",
+    "paid": "已打款",
+    "rejected": "已驳回",
+}
+STATION_MIN_WITHDRAW_CENTS = 10_000
+STATION_MAX_WITHDRAW_CENTS = 50_000_000
+
+# ---------------------------------------------------------------------------
+# 套餐积分：每个注册用户默认「体验版」。每日签到按北京自然日 1 次（无每周上限）：
+#   * 首签（从未签到过的账号）：+500 积分进额外池（永久）；
+#   * 之后每天：+100 积分进体验池（plan_balance，限时，每周一 00:00 过期作废）。
+# 基础版（¥39.9）：除每日签到外，28 天内每周可直接领取 1000 积分进额外池（永久），
+# 最多 4 次；到期自动回落体验版。
+# 限时积分先于其他池消耗（先过期先消耗）。
+# 数据库存「0.1 积分」单位（与 point_unit_scale 一致：10 units = 1 积分）。
 # ---------------------------------------------------------------------------
 PLAN_TYPES = {
-    "experience": {"label": "体验版", "weekly_points": 500},
-    "basic": {"label": "基础版", "weekly_points": 500},
-    "flagship": {"label": "旗舰版", "weekly_points": 500},
+    "experience": {"label": "体验版"},
+    "basic": {"label": "基础版"},
+    "flagship": {"label": "旗舰版"},
 }
 PLAN_DEFAULT_TYPE = "experience"
 PLAN_UNIT_SCALE = 10
 PLAN_WEEKLY_POINTS = 500
-PLAN_WEEKLY_UNITS = PLAN_WEEKLY_POINTS * PLAN_UNIT_SCALE
 # 基础版（¥39.9 购买套餐）：立得 4000 充值积分（走普通充值入账）+ 4 周内每周可领
-# 1000 充值积分（每周 1 次、最多 4 次、领到即永久）。到期自动回落体验版。
+# 1000 额外积分（每周 1 次、最多 4 次、领到即永久）。到期自动回落体验版。
 # 续期从现有到期时间顺延 28 天，并重置领取资格（重新 4 周 × 1000）。
 PLAN_BASIC_PACKAGE_ID = "plan_basic"
 PLAN_BASIC_PRICE_CENTS = 3990
@@ -87,19 +135,19 @@ PLAN_BASIC_CLAIM_UNITS = PLAN_BASIC_CLAIM_POINTS * PLAN_UNIT_SCALE
 PLAN_BASIC_CLAIM_MAX = 4
 
 # ---------------------------------------------------------------------------
-# 每日免费领取：所有套餐（含体验版）每个北京自然日可领 100 积分进「额外积分池」。
-# 该池不设上限、不随周期重置，消费顺序在体验积分之后、充值积分之前。
+# 每日签到：新用户首签 +500（额外池，永久），之后每天 +100（体验池，限时）。
+# 所有套餐统一规则；基础版另有每周直接领取 1000（见 claim_basic_weekly）。
 # 幂等按「北京自然日」做 key，服务端取时间，客户端改本地时钟无法重复领取。
-# 如需收口免费额度，在此加一个上限常量并在 claim_daily_extra 里校验 extra_balance。
 # ---------------------------------------------------------------------------
 DAILY_EXTRA_POINTS = 100
 DAILY_EXTRA_UNITS = DAILY_EXTRA_POINTS * PLAN_UNIT_SCALE
+DAILY_FIRST_CLAIM_POINTS = 500
+DAILY_FIRST_CLAIM_UNITS = DAILY_FIRST_CLAIM_POINTS * PLAN_UNIT_SCALE
 
 
 def _plan_weekly_units(plan_type: str) -> int:
-    """按套餐类型返回每周体验额度（0.1 积分单位）；未知类型回落默认套餐。"""
-    weekly = PLAN_TYPES.get(plan_type, PLAN_TYPES[PLAN_DEFAULT_TYPE]).get("weekly_points")
-    return int(weekly or PLAN_WEEKLY_POINTS) * PLAN_UNIT_SCALE
+    """体验池每周参考额度（0.1 积分单位）；所有套餐统一 500，仅用于前端展示。"""
+    return PLAN_WEEKLY_POINTS * PLAN_UNIT_SCALE
 
 
 def _plan_period_key(now_dt: datetime | None = None) -> str:
@@ -436,8 +484,11 @@ def update_multipliers(
             return None, MULTIPLIER_DEFAULT_PERCENT
         if points_value is not None:
             points = _normalize_points_value(f"{category}_points_per_unit", points_value)
+            # 派生倍率如实记录（只防下限），不钳到 MULTIPLIER_MAX_PERCENT：
+            # 钳制会让审计记录的倍率与实扣金额脱节（设 500 积分/条时记录 500% 实扣 1111%）。
+            # 10%–500% 的输入约束只用于「按倍率调」入口（_normalize_percent_value）。
             percent = int(points * 100 / base_points + 0.5) if base_points else 100
-            return points, max(1, min(MULTIPLIER_MAX_PERCENT, percent))
+            return points, max(1, percent)
         if percent_value is not None:
             percent = _normalize_percent_value(f"{category}_multiplier_percent", percent_value)
             points = int(base_points * percent / 100 + 0.5)
@@ -750,6 +801,79 @@ def usage_history(
     }
 
 
+# ---------------------------------------------------------------------------
+# 入账明细的「充值积分 / 活动积分」二分口径：支付本金与档位赠送算充值积分，
+# 其余（每日/基础版每周领取、管理员划拨、测试划拨等）统一算活动积分。
+# 前端筛选与后端 category 过滤共用同一份清单，避免两边口径漂移。
+# ---------------------------------------------------------------------------
+LEDGER_TOPUP_SOURCE_TYPES = ("payment_alipay", "payment_wechat", "topup_promotion_bonus")
+
+
+def point_ledger_history(
+    database_path: Path,
+    *,
+    account_id: str,
+    category: str = "",
+    limit: int = 20,
+    offset: int = 0,
+) -> dict[str, Any]:
+    """Read an account-scoped credit ledger（只含入账，direction='credit'）。
+
+    体验池每周惰性重置不写台账，因此这里只覆盖真正落账的入账：充值本金、充值档位
+    赠送、每日领取、基础版每周领取、管理员/测试划拨。``balance_after`` 只跟踪充值池，
+    仅作为参考展示。category 支持 "topup"（充值积分）/"reward"（活动积分）/空（全部）。
+    """
+    page_size = max(1, min(int(limit), 100))
+    page_offset = max(0, int(offset))
+    clauses = ["account_id = ?", "direction = 'credit'"]
+    params: list[Any] = [account_id]
+    if category in {"topup", "reward"}:
+        placeholders = ", ".join("?" for _ in LEDGER_TOPUP_SOURCE_TYPES)
+        clauses.append(
+            f"source_type {'IN' if category == 'topup' else 'NOT IN'} ({placeholders})"
+        )
+        params.extend(LEDGER_TOPUP_SOURCE_TYPES)
+    where = " AND ".join(clauses)
+    with transaction(database_path) as conn:
+        rule = _active_pricing(conn)
+        total = int(
+            conn.execute(
+                f"SELECT COUNT(*) AS count FROM billing_point_ledger WHERE {where}",
+                tuple(params),
+            ).fetchone()["count"]
+        )
+        rows = conn.execute(
+            f"""
+            SELECT entry_id, points_delta, balance_after, source_type, source_id, created_at
+            FROM billing_point_ledger
+            WHERE {where}
+            ORDER BY created_at DESC, entry_id DESC
+            LIMIT ? OFFSET ?
+            """,
+            (*params, page_size, page_offset),
+        ).fetchall()
+    scale = int(rule["point_unit_scale"])
+    items = [
+        {
+            "entry_id": str(row["entry_id"]),
+            "points_delta": _display_points(int(row["points_delta"]), scale),
+            "balance_after": _display_points(int(row["balance_after"]), scale),
+            "source_type": str(row["source_type"]),
+            "source_id": str(row["source_id"]),
+            "created_at": str(row["created_at"]),
+        }
+        for row in rows
+    ]
+    return {
+        "ok": True,
+        "items": items,
+        "total": total,
+        "limit": page_size,
+        "offset": page_offset,
+        "has_more": page_offset + len(items) < total,
+        "point_unit_scale": scale,
+    }
+
 def _safe_usage_metadata(raw: str) -> dict[str, Any]:
     try:
         value = json.loads(raw)
@@ -911,6 +1035,9 @@ def settle_ai_usage_success(
             premium_units = RETRY_PREMIUM_UNITS
         charge_points = base_charge_points + premium_units
         refund_points = int(row["reserved_points"]) - base_charge_points
+        # 先惰性刷新（跨周清零体验池）再读余额：否则 clamp 基于过期余额，跨周一结算
+        # 会按旧额度放行，随后 _debit_wallet 内部刷新后余额不足触发 CHECK 500。
+        _ensure_wallet(conn, row["account_id"], "default")
         wallet = conn.execute(
             "SELECT plan_balance, points_balance FROM billing_wallets WHERE account_id = ?",
             (row["account_id"],),
@@ -1424,9 +1551,9 @@ def _ensure_billing_account_values(
 
 
 def _ensure_wallet(conn: Any, account_id: str, workspace_id: str) -> None:
-    """Create the wallet on first use and lazily refresh the weekly plan credit.
+    """Create the wallet on first use and lazily refresh the weekly sign-in quota.
 
-    体验积分不写 billing_point_ledger（该台账 balance_after 跟踪的是充值池），
+    周额度重置不写 billing_point_ledger（该台账 balance_after 跟踪的是充值池），
     只在钱包列上惰性重置，避免污染财务台账语义。旗舰版后续通过升级接口改 plan_type。
     """
     now = _utc_now()
@@ -1437,41 +1564,41 @@ def _ensure_wallet(conn: Any, account_id: str, workspace_id: str) -> None:
             account_id, workspace_id, points_balance, locked_points, version,
             plan_balance, plan_period_key, plan_type, created_at, updated_at
         )
-        VALUES (?, ?, 0, 0, 0, ?, ?, ?, ?, ?)
+        VALUES (?, ?, 0, 0, 0, 0, ?, ?, ?, ?)
         ON CONFLICT(account_id) DO NOTHING
         """,
-        (account_id, workspace_id or "default", PLAN_WEEKLY_UNITS, period, PLAN_DEFAULT_TYPE, now, now),
+        (account_id, workspace_id or "default", period, PLAN_DEFAULT_TYPE, now, now),
     )
-    # 基础版到期自动回落体验版：每次调用都检查（不依赖跨周刷新），到期即清套餐与额度。
+    # 标准版到期自动回落体验版：每次调用都检查（不依赖跨周刷新），到期即清套餐状态。
+    # 不清签到累计额度：同一自然周内到期不应让用户重复领取本周额度。
     conn.execute(
         """
         UPDATE billing_wallets
-        SET plan_type = ?, plan_expire_at = '', plan_balance = ?,
-            plan_period_key = ?, version = version + 1, updated_at = ?
+        SET plan_type = ?, plan_expire_at = '', version = version + 1, updated_at = ?
         WHERE account_id = ? AND plan_expire_at <> '' AND plan_expire_at <= ?
         """,
-        (PLAN_DEFAULT_TYPE, PLAN_WEEKLY_UNITS, period, now, account_id, now),
+        (PLAN_DEFAULT_TYPE, now, account_id, now),
     )
-    # 跨周期惰性重置：体验积分重置为满额（不累积），所有套餐统一 500/周。
+    # 跨周期惰性重置：限时积分（体验池）过期作废（不累积），周一清零。
     conn.execute(
         """
         UPDATE billing_wallets
-        SET plan_balance = ?, plan_period_key = ?, version = version + 1, updated_at = ?
+        SET plan_balance = 0, plan_period_key = ?,
+            version = version + 1, updated_at = ?
         WHERE account_id = ? AND plan_period_key <> ?
         """,
-        (PLAN_WEEKLY_UNITS, period, now, account_id, period),
+        (period, now, account_id, period),
     )
 
 
 def _activate_basic_plan(conn: Any, account_id: str, now: str) -> None:
-    """激活/续期基础版：体验池重置为 500/周，生效 4 周（续期从现有到期时间顺延）。
+    """激活/续期基础版：28 天内每周可直接领取 1000 额外积分（永久，最多 4 次）。
 
     立得 4000 积分由 settle_payment_order 的 base_points 普通充值入账处理，
-    这里只负责套餐状态与领取资格。续期（再次购买）会重置领取资格：
-    basic_claim_count 清零、basic_claim_period 清空，重新获得 4 周 × 1000 领取机会。
-    调用方必须先跑过 _ensure_wallet（含过期回落），保证 wallet 行存在且 plan_type 为干净状态。
+    这里只负责套餐状态。调用方必须先跑过 _ensure_wallet（含过期回落），
+    保证 wallet 行存在且 plan_type 为干净状态。
+    续期重置每周领取资格（basic_claim_period/basic_claim_count 清零，重新 4 周）。
     """
-    period = _plan_period_key()
     row = conn.execute(
         "SELECT plan_expire_at FROM billing_wallets WHERE account_id = ?",
         (account_id,),
@@ -1489,12 +1616,12 @@ def _activate_basic_plan(conn: Any, account_id: str, now: str) -> None:
     conn.execute(
         """
         UPDATE billing_wallets
-        SET plan_type = ?, plan_balance = ?, plan_period_key = ?,
-            plan_expire_at = ?, basic_claim_period = '', basic_claim_count = 0,
+        SET plan_type = ?, plan_expire_at = ?,
+            basic_claim_period = '', basic_claim_count = 0,
             version = version + 1, updated_at = ?
         WHERE account_id = ?
         """,
-        ("basic", PLAN_WEEKLY_UNITS, period, expire_at, now, account_id),
+        ("basic", expire_at, now, account_id),
     )
 
 
@@ -1503,7 +1630,7 @@ def claim_basic_weekly(
     account_id: str,
     workspace_id: str = "default",
 ) -> dict[str, Any]:
-    """基础版每周领取：+1000 额外积分（进 extra_balance 子池，永久有效），每周 1 次、最多 4 次。
+    """基础版每周直接领取：+1000 额外积分（进 extra_balance 子池，永久有效），每周 1 次、最多 4 次。
 
     领取资格校验：套餐为基础版、未到期、本周未领过、累计不足 4 次。
     领到的积分进额外积分子池（非充值池）并写台账（source_type=plan_basic_claim，按周幂等）。
@@ -1571,11 +1698,13 @@ def claim_daily_extra(
     account_id: str,
     workspace_id: str = "default",
 ) -> dict[str, Any]:
-    """每日免费领取：+100 额外积分（进 extra_balance 子池，永久有效、不设上限）。
+    """每日签到：新用户首签 +500 额外积分（永久），之后每天 +100 体验积分（限时）。
 
-    所有套餐（体验版/基础版/旗舰版）均可领取，每个北京自然日 1 次。
-    资格校验只有「今天是否已领」一条：套餐、到期时间、累计次数都不参与限制，
-    因此基础版到期回落体验版后仍可继续每日领取。
+    所有套餐统一规则，不设每周额度上限；基础版另有每周直接领取 1000（见 claim_basic_weekly）。
+    * 首签（daily_claim_count == 0，即从未签到过）：+500 进 extra_balance（永久）；
+    * 日常签到：+100 进 plan_balance（限时积分，每周一 00:00 过期作废）。
+    资格校验只有「今天是否已签」一条：套餐、到期时间都不参与限制，
+    因此基础版到期回落体验版后仍可继续签到。
 
     幂等键按账期（北京自然日）生成，重复请求/并发重试不会重复入账。
     """
@@ -1590,36 +1719,47 @@ def claim_daily_extra(
         if wallet is None:
             raise HTTPException(status_code=409, detail="wallet missing")
         if str(wallet["daily_claim_date"] or "") == period:
-            raise HTTPException(status_code=409, detail="今日已领取，明天再来")
+            raise HTTPException(status_code=409, detail="今日已签到，明天再来")
+        first = int(wallet["daily_claim_count"] or 0) == 0
+        units = DAILY_FIRST_CLAIM_UNITS if first else DAILY_EXTRA_UNITS
+        points = DAILY_FIRST_CLAIM_POINTS if first else DAILY_EXTRA_POINTS
+        # 首签 500 进永久池（extra_balance），日常 100 进限时池（plan_balance）。
+        pool_column = "extra_balance" if first else "plan_balance"
         conn.execute(
-            """
+            f"""
             UPDATE billing_wallets
-            SET extra_balance = extra_balance + ?,
+            SET {pool_column} = {pool_column} + ?,
                 daily_claim_date = ?, daily_claim_count = daily_claim_count + 1,
                 version = version + 1, updated_at = ?
             WHERE account_id = ?
             """,
-            (DAILY_EXTRA_UNITS, period, now, account_id),
+            (units, period, now, account_id),
         )
         _append_ledger(
             conn,
             account_id=account_id,
             workspace_id=workspace_id or "default",
             direction="credit",
-            points_delta=DAILY_EXTRA_UNITS,
+            points_delta=units,
             source_type="daily_extra_claim",
             source_id=f"daily:{period}",
             idempotency_key=f"daily_extra_claim:{account_id}:{period}",
-            metadata={"claim_points": DAILY_EXTRA_POINTS, "period": period, "pool": "extra"},
+            metadata={
+                "claim_points": points,
+                "period": period,
+                "pool": "extra" if first else "plan",
+                "first_claim_bonus": first,
+            },
         )
         total_days = int(wallet["daily_claim_count"] or 0) + 1
     cache.invalidate_wallet(account_id)
     return {
         "ok": True,
-        "claimed_points": DAILY_EXTRA_POINTS,
+        "claimed_points": points,
         "claim_count": total_days,
         "period": period,
         "next_claim_at": _daily_next_refresh(period),
+        "first_claim_bonus": first,
     }
 
 
@@ -1675,6 +1815,11 @@ def _debit_wallet(
     """
     _ensure_wallet(conn, account_id, "default")
     plan_balance, points_balance, locked_points, _ = _wallet_balances(conn, account_id)
+    # 最终防线：三池可用总额不足时截断，避免任何路径漏洞把 points_balance 扣成负数
+    # 触发 CHECK(points_balance >= 0) 抛 500（如跨周清零后调用方仍按旧余额放行）。
+    available = plan_balance + _wallet_extra_balance(conn, account_id) + points_balance
+    if charge_units > available:
+        charge_units = available
     # 兜底：解锁量不超过实际锁定量。正常路径由状态机保证解锁 ≤ 锁定，
     # 这里是最后防线，避免任何路径漏洞（如过期释放与结算竞态）把 locked 击穿成负数。
     if unlock_units > locked_points:
@@ -1772,6 +1917,321 @@ def _append_ledger(
         "UPDATE billing_wallets SET ledger_head_hash = ? WHERE account_id = ?",
         (row_hash, account_id),
     )
+
+
+def _station_contract(conn: Any, station_code: str) -> dict[str, Any]:
+    """取该中转编号的返利合约；无专属行时回落到全局默认行（缺行则先补种默认行）。"""
+    conn.execute(
+        """
+        INSERT OR IGNORE INTO station_contracts (
+            station_code, rebate_percent, min_margin_percent, pricing_unit
+        ) VALUES ('*', ?, ?, ?)
+        """,
+        (
+            STATION_REBATE_DEFAULT_PERCENT,
+            STATION_REBATE_MIN_MARGIN_PERCENT,
+            STATION_REBATE_PRICING_UNIT,
+        ),
+    )
+    row = conn.execute(
+        "SELECT * FROM station_contracts WHERE station_code = ?", (str(station_code or ""),)
+    ).fetchone()
+    if row is None:
+        row = conn.execute("SELECT * FROM station_contracts WHERE station_code = '*'").fetchone()
+    return dict(row) if row is not None else {}
+
+
+def station_cost_per_point_yuan(contract: dict[str, Any]) -> float:
+    """每积分成本（元 / 积分）= 单条成本 ÷ 单条消耗。总部口径，只在服务端内部使用。"""
+    unit_key = str(contract.get("pricing_unit") or STATION_REBATE_PRICING_UNIT)
+    if unit_key not in LINK_COST_BY_UNIT_YUAN:
+        unit_key = STATION_REBATE_PRICING_UNIT
+    return LINK_COST_BY_UNIT_YUAN[unit_key] / LINK_USAGE_BY_UNIT[unit_key]
+
+
+def station_rebate_cents(
+    conn: Any, *, station_code: str, amount_cents: int, tier_rate: float
+) -> int:
+    """该档成交后应给分站的返利金额（分）。下单时算出并写入订单快照。
+
+    倍率每高出基准 Y0 一档，返利率就扣掉 c × k；扣穿后转负，单笔单档封底 -5.00 元。
+    倍率不高于基准时仍按满额 d 计提。d / c / k / Y0 均不出总部服务端。
+    """
+    contract = _station_contract(conn, station_code)
+    try:
+        rebate_percent = float(contract.get("rebate_percent") or 0)
+    except (TypeError, ValueError):
+        return 0
+    if rebate_percent <= 0:
+        return 0
+    extra_rate = max(0.0, float(tier_rate) - STATION_REBATE_BASE_RATE)
+    share = (
+        rebate_percent / 100.0
+        - extra_rate * station_cost_per_point_yuan(contract) * STATION_REBATE_STATION_SHARE
+    )
+    cents = int(round(int(amount_cents) * share))
+    return max(STATION_REBATE_NEGATIVE_FLOOR_CENTS, cents)
+
+
+def _accrue_station_rebate(conn: Any, order: Any, *, now: str) -> None:
+    """订单付款成功后按快照计提分站返利。幂等键为订单号，重复回调不会重复计提。"""
+    station_code = str(order["station_code"] or "")
+    if not station_code:
+        return
+    try:
+        settle_due_at = (
+            datetime.fromisoformat(str(now)) + timedelta(days=STATION_REBATE_SETTLE_DELAY_DAYS)
+        ).isoformat(timespec="seconds")
+    except ValueError:
+        settle_due_at = ""
+    conn.execute(
+        """
+        INSERT OR IGNORE INTO station_rebate_ledger (
+            station_code, order_id, out_trade_no, account_id, package_id,
+            amount_cents, tier_rate, rebate_cents, status, accrued_at, settle_due_at
+        ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, 'accrued', ?, ?)
+        """,
+        (
+            station_code,
+            str(order["order_id"]),
+            str(order["out_trade_no"]),
+            str(order["account_id"]),
+            str(order["package_id"]),
+            int(order["amount_cents"]),
+            float(order["tier_rate"] or 0),
+            int(order["rebate_cents"] or 0),
+            str(now),
+            settle_due_at,
+        ),
+    )
+
+
+def settle_due_station_rebates(conn: Any, *, now: str | None = None) -> int:
+    """把到期（settle_due_at <= now）的 accrued 台账行转为 settled，幂等。
+
+    金额粒度不动、只改状态；now 缺省用 UTC，与计提时写入的 settle_due_at 口径一致。
+    """
+    if now is None:
+        now = _utc_now()
+    cursor = conn.execute(
+        "UPDATE station_rebate_ledger SET status='settled', settled_at=?"
+        " WHERE status='accrued' AND settle_due_at <> '' AND settle_due_at <= ?",
+        (now, now),
+    )
+    return cursor.rowcount if cursor.rowcount is not None else 0
+
+
+def station_rebate_summary(conn: Any, *, station_code: str) -> dict[str, int]:
+    """总部权威台账 + 打款单汇总（分站只读镜像口径）。不暴露 d/m/c。"""
+    code = str(station_code or "")
+    row = conn.execute(
+        "SELECT"
+        " COALESCE(SUM(CASE WHEN status='accrued' THEN rebate_cents END),0) AS accrued_cents,"
+        " COALESCE(SUM(CASE WHEN status='settled' THEN rebate_cents END),0) AS settled_cents,"
+        " COALESCE(SUM(CASE WHEN status='reserved' THEN rebate_cents END),0) AS reserved_cents,"
+        " COALESCE(SUM(CASE WHEN status='paid' THEN rebate_cents END),0) AS paid_cents,"
+        " COALESCE(SUM(CASE WHEN status='void' THEN rebate_cents END),0) AS void_cents,"
+        " COUNT(*) AS rows_total"
+        " FROM station_rebate_ledger WHERE station_code=?",
+        (code,),
+    ).fetchone()
+    pay = conn.execute(
+        "SELECT"
+        " COALESCE(SUM(CASE WHEN status='pending' THEN amount_cents END),0) AS pending_cents,"
+        " COALESCE(SUM(CASE WHEN status='paid' THEN amount_cents END),0) AS paid_payout_cents,"
+        " COALESCE(SUM(CASE WHEN status='rejected' THEN amount_cents END),0) AS rejected_cents,"
+        " COUNT(*) AS payout_count"
+        " FROM station_payouts WHERE station_code=?",
+        (code,),
+    ).fetchone()
+    settled = int(row["settled_cents"])
+    pending = int(pay["pending_cents"])
+    paid_payout = int(pay["paid_payout_cents"])
+    return {
+        "accrued_cents": int(row["accrued_cents"]),
+        "settled_cents": settled,
+        "reserved_cents": int(row["reserved_cents"]),
+        "paid_cents": int(row["paid_cents"]),
+        "void_cents": int(row["void_cents"]),
+        "total_cents": int(row["accrued_cents"]) + settled + int(row["reserved_cents"]) + int(row["paid_cents"]),
+        "rows_total": int(row["rows_total"]),
+        "pending_payout_cents": pending,
+        "paid_payout_cents": paid_payout,
+        "rejected_payout_cents": int(pay["rejected_cents"]),
+        "payout_count": int(pay["payout_count"]),
+        # 可提现 = 可结算 − 审核中占用 − 已打款，防止已打款的额度被重复提现。
+        "available_cents": settled - pending - paid_payout,
+    }
+
+
+def station_rebate_ledger(
+    conn: Any,
+    *,
+    station_code: str = "",
+    status: str = "",
+    page: int = 1,
+    page_size: int = 20,
+) -> dict[str, Any]:
+    """分页读总部返利台账；station_code 为空时不过滤（wh-admin 全量视角）。"""
+    page = max(1, page)
+    page_size = min(200, max(5, page_size))
+    where = ["1=1"]
+    args: list[Any] = []
+    if station_code:
+        where.append("station_code=?")
+        args.append(str(station_code))
+    if status in STATION_REBATE_STATUS_LABELS:
+        where.append("status=?")
+        args.append(status)
+    clause = " AND ".join(where)
+    total = conn.execute(
+        "SELECT COUNT(*) AS n FROM station_rebate_ledger WHERE " + clause, args
+    ).fetchone()["n"]
+    offset = (page - 1) * page_size
+    rows = conn.execute(
+        "SELECT * FROM station_rebate_ledger WHERE " + clause + " ORDER BY id DESC LIMIT ? OFFSET ?",
+        args + [page_size, offset],
+    ).fetchall()
+    return {
+        "total": total,
+        "page": page,
+        "page_size": page_size,
+        "pages": max(1, (total + page_size - 1) // page_size),
+        "rows": [dict(row) for row in rows],
+    }
+
+
+def station_payouts_list(
+    conn: Any,
+    *,
+    station_code: str = "",
+    status: str = "",
+    page: int = 1,
+    page_size: int = 20,
+) -> dict[str, Any]:
+    """分页读打款单；station_code 为空时不过滤（wh-admin 全量视角）。"""
+    page = max(1, page)
+    page_size = min(200, max(5, page_size))
+    where = ["1=1"]
+    args: list[Any] = []
+    if station_code:
+        where.append("station_code=?")
+        args.append(str(station_code))
+    if status in STATION_PAYOUT_STATUS_LABELS:
+        where.append("status=?")
+        args.append(status)
+    clause = " AND ".join(where)
+    total = conn.execute(
+        "SELECT COUNT(*) AS n FROM station_payouts WHERE " + clause, args
+    ).fetchone()["n"]
+    offset = (page - 1) * page_size
+    rows = conn.execute(
+        "SELECT * FROM station_payouts WHERE " + clause + " ORDER BY id DESC LIMIT ? OFFSET ?",
+        args + [page_size, offset],
+    ).fetchall()
+    return {
+        "total": total,
+        "page": page,
+        "page_size": page_size,
+        "pages": max(1, (total + page_size - 1) // page_size),
+        "rows": [dict(row) for row in rows],
+    }
+
+
+def create_station_payout(
+    conn: Any,
+    *,
+    station_code: str,
+    amount_cents: int,
+    channel: str,
+    account: str = "",
+    note: str = "",
+    created_by: str = "",
+    now: str | None = None,
+) -> dict[str, Any]:
+    """分站提交提现申请：新建 pending 打款单。占用可结算余额，不立即扣台账。"""
+    if now is None:
+        now = _utc_now()
+    channel = str(channel or "bank")
+    if channel not in STATION_PAYOUT_CHANNELS:
+        raise HTTPException(status_code=400, detail="不支持的打款渠道")
+    amount = int(amount_cents)
+    if amount % 100:
+        raise HTTPException(status_code=400, detail="提现金额需为整数元")
+    if amount < STATION_MIN_WITHDRAW_CENTS:
+        raise HTTPException(
+            status_code=400, detail="单笔提现最低 ¥%.0f" % (STATION_MIN_WITHDRAW_CENTS / 100)
+        )
+    if amount > STATION_MAX_WITHDRAW_CENTS:
+        raise HTTPException(
+            status_code=400, detail="单笔提现上限 ¥%.0f" % (STATION_MAX_WITHDRAW_CENTS / 100)
+        )
+    available = station_rebate_summary(conn, station_code=station_code)["available_cents"]
+    if amount > available:
+        raise HTTPException(
+            status_code=400, detail="可结算余额不足，当前可提现 ¥%.2f" % (available / 100)
+        )
+    cursor = conn.execute(
+        "INSERT INTO station_payouts(station_code, amount_cents, channel, account, note,"
+        " status, applied_at, created_by) VALUES(?,?,?,?,?,'pending',?,?)",
+        (str(station_code), amount, channel, str(account or ""), str(note or ""), now, str(created_by or "")),
+    )
+    return {"payout_id": cursor.lastrowid, "amount_cents": amount, "status": "pending"}
+
+
+def approve_station_payout(
+    conn: Any,
+    *,
+    payout_id: int,
+    channel: str | None = None,
+    voucher: str = "",
+    decided_by: str = "",
+    now: str | None = None,
+) -> dict[str, Any]:
+    """wh-admin 审批通过：登记打款渠道与凭证，打款单 pending -> paid。"""
+    if now is None:
+        now = _utc_now()
+    row = conn.execute("SELECT * FROM station_payouts WHERE id=?", (int(payout_id),)).fetchone()
+    if row is None:
+        raise HTTPException(status_code=404, detail="打款单不存在")
+    if row["status"] != "pending":
+        raise HTTPException(status_code=400, detail="该打款单已处理")
+    final_channel = str(channel or row["channel"])
+    if final_channel not in STATION_PAYOUT_CHANNELS:
+        raise HTTPException(status_code=400, detail="不支持的打款渠道")
+    settled = station_rebate_summary(conn, station_code=row["station_code"])["settled_cents"]
+    if int(row["amount_cents"]) > settled:
+        raise HTTPException(status_code=400, detail="可结算余额不足，无法打款")
+    conn.execute(
+        "UPDATE station_payouts SET status='paid', channel=?, voucher=?, decided_at=?, decided_by=?"
+        " WHERE id=?",
+        (final_channel, str(voucher or ""), now, str(decided_by or ""), int(payout_id)),
+    )
+    return {"payout_id": int(payout_id), "status": "paid"}
+
+
+def reject_station_payout(
+    conn: Any,
+    *,
+    payout_id: int,
+    reason: str = "",
+    decided_by: str = "",
+    now: str | None = None,
+) -> dict[str, Any]:
+    """wh-admin 驳回：打款单 pending -> rejected，释放占用的可结算余额。"""
+    if now is None:
+        now = _utc_now()
+    row = conn.execute("SELECT * FROM station_payouts WHERE id=?", (int(payout_id),)).fetchone()
+    if row is None:
+        raise HTTPException(status_code=404, detail="打款单不存在")
+    if row["status"] != "pending":
+        raise HTTPException(status_code=400, detail="该打款单已处理")
+    conn.execute(
+        "UPDATE station_payouts SET status='rejected', reject_reason=?, decided_at=?, decided_by=?"
+        " WHERE id=?",
+        (str(reason or ""), now, str(decided_by or ""), int(payout_id)),
+    )
+    return {"payout_id": int(payout_id), "status": "rejected"}
 
 
 def settle_payment_order(
@@ -1904,9 +2364,13 @@ def settle_payment_order(
             )
         package_id = str(order["package_id"] or "")
         if package_id == PLAN_BASIC_PACKAGE_ID:
-            # 基础版套餐：充值积分已按 base_points 入账，此处激活 4 周套餐与每周 500 体验额度
-            # （另有每周 1000 额外积分领取资格，见 claim_basic_weekly）。
+            # 基础版套餐：充值积分已按 base_points 入账，此处激活 4 周套餐
+            # （签到权益在 claim_daily_extra 按 plan_type 生效）。
             _activate_basic_plan(conn, account_id, now)
+        # 分站档位订单在此计提返利（非分站订单无 station_code，函数内直接返回）。
+        _accrue_station_rebate(conn, order, now=now)
+        # 惰性 T+7 结算：借每次付款回调把已到期的 accrued 台账转为 settled（幂等）。
+        settle_due_station_rebates(conn, now=now)
         settled = conn.execute(
             "SELECT * FROM billing_payment_orders WHERE order_id = ?",
             (str(order["order_id"]),),
@@ -1985,9 +2449,9 @@ SUBITEM_FEATURE_KEYS = (
 )
 # 冻结按最大范围预扣：默认每子项 charge 之和封顶 45 积分。
 DEFAULT_BATCH_FREEZE_PER_LINK = 400  # 固定 40 积分/链接（400 单位）；与子项定价总和联动见 pricing_items
-# TTL 兜底：客户端正常结算失败后，超过该天数仍未结算的冻结批次由服务端自动全额释放。
-# 主路径已改为客户端任务终态即时结算，此值仅兜底客户端崩溃/永久失联场景（2 天兼顾成本与体验）。
-BATCH_FREEZE_TTL_DAYS = 2
+# TTL 兜底：客户端正常结算失败后，超过该时长仍未结算的冻结批次由服务端自动全额释放。
+# 主路径已改为客户端任务终态即时结算，此值仅兜底客户端崩溃/永久失联场景（6 小时）。
+BATCH_FREEZE_TTL_HOURS = 6
 # 超时未结算冻结积分的释放比例（百分比）：退还该比例的积分，其余由服务端留存。
 # 仅在服务端 TTL 清扫时生效，不向客户端提示。
 BATCH_EXPIRY_RELEASE_PERCENT = 85
@@ -2056,7 +2520,7 @@ def pricing_items(
         "max_charge_units_per_link": total_units,
         "freeze_per_link": _display_points(total_units),
         "freeze_units_per_link": total_units,
-        "ttl_days": BATCH_FREEZE_TTL_DAYS,
+        "ttl_hours": BATCH_FREEZE_TTL_HOURS,
         "items": items,
         "effective_at": str(rule["effective_at"] or "") if rule_version is None else "",
     }
@@ -2152,6 +2616,8 @@ def update_pricing_items(
                     now,
                 ),
             )
+        # 价格倍率存在 billing_multiplier_rules 单表（非按 rule_version 快照），
+        # 改基准定价不影响已保存的倍率设置，无需在此进位。
         after = {
             "rule_version": next_version,
             "point_unit_scale": PIC_UNIT_SCALE,
@@ -2228,6 +2694,25 @@ def _loads_json(raw: Any) -> Any:
         return json.loads(str(raw or "{}"))
     except (TypeError, ValueError):
         return {}
+
+
+# ---------------------------------------------------------------------------
+# 价格倍率：运营后台可对两类计费口径调价（ai=AI 处理单条商品链接，
+# pod=POD 定制单款式）。倍率随 pricing rule_version 一起快照：冻结时按当时的
+# 版本定价预扣，结算读同一版本，保证调价不影响已冻结任务。
+# points_per_unit 为固定单条价值（绝对积分），优先级高于 multiplier_percent。
+# ---------------------------------------------------------------------------
+MULTIPLIER_CATEGORY_AI = "ai"
+MULTIPLIER_CATEGORY_POD = "pod"
+MULTIPLIER_CATEGORIES = (MULTIPLIER_CATEGORY_AI, MULTIPLIER_CATEGORY_POD)
+DEFAULT_MULTIPLIER_PERCENT = 100
+# 单条价值（积分）区间，与后台输入框 1..500 保持一致。
+MULTIPLIER_POINTS_MIN = 1
+MULTIPLIER_POINTS_MAX = 500
+MULTIPLIER_PERCENT_MIN = 1
+MULTIPLIER_PERCENT_MAX = 1000
+MULTIPLIER_REASON_MIN = 3
+MULTIPLIER_REASON_MAX = 240
 
 
 def compute_batch_charge(
@@ -2384,7 +2869,7 @@ def freeze_batch_points(
             ):
                 raise HTTPException(status_code=400, detail="invalid POD batch billing scope")
             # 纯标题调用（标题重生/补标题）不按款式价计费：图片才是计费锚点，
-            # 图片已生成后再补/重生标题不再扣积分。
+            # 图片已生成后再补/重生标题不再扣积分。半定制是纯图案、无标题链路，不会走这里。
             if set(normalized_scope) == {"title"}:
                 link_price_units = [0 for _ in range(link_count)]
             elif target_units_per_link is not None:
@@ -2426,7 +2911,7 @@ def freeze_batch_points(
         scope_json = json.dumps(normalized_scope, ensure_ascii=False)
         link_prices_json = json.dumps(link_price_units, ensure_ascii=False)
         expires_at = (
-            datetime.now(timezone.utc) + timedelta(days=BATCH_FREEZE_TTL_DAYS)
+            datetime.now(timezone.utc) + timedelta(hours=BATCH_FREEZE_TTL_HOURS)
         ).isoformat(timespec="seconds")
         conn.execute(
             """
@@ -2623,7 +3108,7 @@ def freeze_planned_points(
             )
         now = _utc_now()
         expires_at = (
-            datetime.now(timezone.utc) + timedelta(days=BATCH_FREEZE_TTL_DAYS)
+            datetime.now(timezone.utc) + timedelta(hours=BATCH_FREEZE_TTL_HOURS)
         ).isoformat(timespec="seconds")
         conn.execute(
             """
@@ -2793,7 +3278,8 @@ def _compute_link_charge_fixed(
         str(result.get("retried") or "").lower() in {"true", "1", "yes"}
         for result in item_results
     )
-    premium_units = _scaled_units(RETRY_PREMIUM_UNITS, multiplier_percent)
+    # 重试溢价只在确实发生重试时收取；未重试批次不应被加收。
+    premium_units = _scaled_units(RETRY_PREMIUM_UNITS if retried else 0, multiplier_percent)
     charge_units = 0
     refund_units = 0
     details: list[dict[str, Any]] = []
@@ -3016,6 +3502,8 @@ def settle_batch_points(
                 detail="settle totals exceed the frozen points",
             )
         total_charged_units = total_charge_units + total_premium_units
+        # 先惰性刷新（跨周清零体验池）再读余额，clamp 才会基于本周真实可用额度。
+        _ensure_wallet(conn, expected_account_id, "default")
         wallet = conn.execute(
             "SELECT plan_balance, points_balance FROM billing_wallets WHERE account_id = ?",
             (expected_account_id,),
@@ -3177,6 +3665,19 @@ def release_expired_batch_freezes(database_path: Path, *, now_iso: str = "") -> 
             frozen_units = int(freeze["frozen_points"])
             release_units = frozen_units * BATCH_EXPIRY_RELEASE_PERCENT // 100
             retained_units = frozen_units - release_units
+            # 防御：若该账户钱包锁定额/余额不足以覆盖本次释放（历史倒挂或并发扣减
+            # 所致），跳过本条而非让 CHECK(points_balance >= 0 / locked_points >= 0)
+            # 约束使整个清扫事务回滚——避免单条坏账拖垮所有用户的过期积分释放。
+            wallet = conn.execute(
+                "SELECT points_balance, locked_points FROM billing_wallets WHERE account_id = ?",
+                (str(freeze["account_id"]),),
+            ).fetchone()
+            if (
+                wallet is None
+                or int(wallet["locked_points"]) < frozen_units
+                or int(wallet["points_balance"]) < retained_units
+            ):
+                continue
             # 竞态防护：状态仍为 frozen 才允许转为 released。若结算等路径已抢先
             # 提交（status 已变），rowcount 为 0 → 跳过，避免同一笔冻结被解锁两次。
             cursor = conn.execute(

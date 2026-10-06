@@ -16,6 +16,8 @@ import { PeachGarden } from "../../shared/components/PeachGarden";
 import { InkTap } from "../../shared/components/InkTap";
 import { useTheme } from "../../shared/hooks/useTheme";
 import { useUiMode } from "../../shared/hooks/useUiMode";
+import { useEffectPreferences } from "../../shared/hooks/useEffectPreferences";
+import { useSidebarPreferences } from "../../shared/hooks/useSidebarState";
 import { WorkspaceHomePage } from "../../modules/dashboard/pages/WorkspaceHomePage";
 import {
   importPreviewItem,
@@ -65,6 +67,14 @@ import {
   setActiveGuideConfig,
   type GuideConfig,
 } from "../../shared/components/guide/guideConfig";
+import {
+  AnnouncementModal,
+  REPLAY_ANNOUNCEMENT_EVENT,
+  hasSeenAnnouncement,
+  isAnnouncementPopupEligible,
+  markAnnouncementSeen,
+} from "../../shared/components/AnnouncementModal";
+import { fetchMessages, markMessageRead, type InboxMessage } from "../../shared/api/messagesApi";
 import { showToast } from "../../shared/components/toastStore";
 import { HelpAgentWidget } from "../../modules/help_agent/components/HelpAgentWidget";
 import { WorkspaceTabScrollStore } from "./workspaceTabState";
@@ -122,8 +132,15 @@ function ModuleFallback() {
 export function WorkspaceShell({ currentRole = "operator", onSignOut, playEntryAnimation = false, onEntryAnimationComplete = () => undefined }: WorkspaceShellProps) {
   const { theme } = useTheme();
   const { uiMode } = useUiMode();
+  // 特效偏好（个人中心 → 偏好设置）：点击特效 / 全屏特效，localStorage 持久化。
+  const { tap: tapEffects, ambient: ambientEffects } = useEffectPreferences();
 
-  const [sidebarCollapsed, setSidebarCollapsed] = useState(false);
+  // 侧边栏偏好持久化在 localStorage：折叠状态（首次默认展开）+ 收起后是否触碰展开。
+  const {
+    collapsed: sidebarCollapsed,
+    hoverExpand: sidebarHoverExpand,
+    toggleCollapsed: toggleSidebarCollapsed,
+  } = useSidebarPreferences();
   const [sidebarHovered, setSidebarHovered] = useState(false);
   const [isNarrowDesktop, setIsNarrowDesktop] = useState(() => window.matchMedia(NARROW_DESKTOP_QUERY).matches);
   const [expandedGroupId, setExpandedGroupId] = useState<WorkspaceNavigationGroupId | null>(null);
@@ -325,10 +342,16 @@ export function WorkspaceShell({ currentRole = "operator", onSignOut, playEntryA
   const guideTourRef = useRef<ReturnType<typeof startGuideTour> | null>(null);
   const guideAutoStartedRef = useRef(false);
   const [guideBoardPanelOpen, setGuideBoardPanelOpen] = useState(false);
+  /** 引导教程是否正在走：教程期间公告弹窗让位，避免两层遮罩同时盖在屏幕上。 */
+  const [guideTourActive, setGuideTourActive] = useState(false);
   /** 服务端引导配置是否已加载完（成功或失败都算，失败时用内置默认引导）。 */
   const [guideConfigReady, setGuideConfigReady] = useState(false);
   /** 编辑器打开时使用的配置快照；非空即代表编辑器开着。 */
   const [guideEditorSeed, setGuideEditorSeed] = useState<GuideConfig | null>(null);
+  /** 登录后待弹出的公告队列（多条时在同一个弹窗里逐条看）。 */
+  const [announcementQueue, setAnnouncementQueue] = useState<InboxMessage[]>([]);
+  /** 公告只在进入工作台后自动检查一次，避免轮询式反复弹窗。 */
+  const announcementCheckedRef = useRef(false);
 
   /**
    * 引导请求切页：只认工作台真实存在的模块。
@@ -353,6 +376,7 @@ export function WorkspaceShell({ currentRole = "operator", onSignOut, playEntryA
       onRequestPage: requestGuidePage,
       onFinish: (completed) => {
         guideTourRef.current = null;
+        setGuideTourActive(false);
         if (!completed) return;
         markGuideSubTaskDone(boardId, subTaskId);
         // 回到面板，让用户看到更新后的进度并接着看下一个子任务。
@@ -361,6 +385,7 @@ export function WorkspaceShell({ currentRole = "operator", onSignOut, playEntryA
     });
     if (!tour) return;
     guideTourRef.current = tour;
+    setGuideTourActive(true);
   };
 
   // 引导内容存在本地服务端：启动时拉一次写入运行时配置，换浏览器/重装都还在；
@@ -397,8 +422,17 @@ export function WorkspaceShell({ currentRole = "operator", onSignOut, playEntryA
     }
   };
 
-  /** 预览：临时把草稿当生效配置播一遍，播完还原，不写库也不记完成标记。 */
-  const previewGuideDraft = async (config: GuideConfig, boardId: GuideBoardId, subTaskId: string) => {
+  /**
+   * 预览：临时把草稿当生效配置播一遍，播完还原，不写库也不记完成标记。
+   * startIndex 指定从第几步开播，编辑器「演示这一步」用它停到正在编辑的那一步，
+   * 之后可以照常点「下一步」把后面的步骤演示完。
+   */
+  const previewGuideDraft = async (
+    config: GuideConfig,
+    boardId: GuideBoardId,
+    subTaskId: string,
+    startIndex = 0,
+  ) => {
     const previous = getActiveGuideConfig();
     setGuideBoardPanelOpen(false);
     setActiveGuideConfig(cloneGuideConfig(config));
@@ -407,6 +441,7 @@ export function WorkspaceShell({ currentRole = "operator", onSignOut, playEntryA
         const tour = startGuideTour(boardId, subTaskId, {
           onRequestPage: requestGuidePage,
           onFinish: () => resolve(),
+          startIndex,
         });
         if (!tour) {
           resolve();
@@ -434,6 +469,64 @@ export function WorkspaceShell({ currentRole = "operator", onSignOut, playEntryA
     }, 800);
     return () => window.clearTimeout(timer);
   }, [playEntryAnimation, guideConfigReady]);
+
+  /** 拉取公告（带图片），滤掉本机已弹过的，组成待展示队列。 */
+  const loadAnnouncementQueue = async () => {
+    try {
+      const items = await fetchMessages({ withImages: true });
+      // 「只弹一次」由本机 localStorage 标记负责；服务端 read 只用于铃铛红点。
+      // 不能拿 read 当过滤条件：用户可能在铃铛里点开过公告（那时就被标了已读），
+      // 结果登录弹窗反而永远不出现。
+      const pending = items.filter(
+        (item) =>
+          item.kind === "announcement" &&
+          !hasSeenAnnouncement(item.id) &&
+          isAnnouncementPopupEligible(item.publishedAt),
+      );
+      if (pending.length) setAnnouncementQueue(pending);
+    } catch {
+      // 离线等场景静默：公告不是关键路径，留到下次登录。
+    }
+  };
+
+  // 登录后的公告大弹窗：等入场动画播完、且新手引导不占屏时再弹（首次会被引导先拦住，
+  // 引导关掉后本效果因依赖变化会重新跑一次）。比引导的 800ms 稍晚，避免和它抢秒。
+  useEffect(() => {
+    if (announcementCheckedRef.current) return;
+    if (playEntryAnimation || !guideConfigReady) return;
+    if (guideBoardPanelOpen || guideEditorSeed || guideTourActive) return;
+    const timer = window.setTimeout(() => {
+      announcementCheckedRef.current = true;
+      void loadAnnouncementQueue();
+    }, 900);
+    return () => window.clearTimeout(timer);
+  }, [playEntryAnimation, guideConfigReady, guideBoardPanelOpen, guideEditorSeed, guideTourActive]);
+
+  /** 单条公告算看过：本机写标记（服务端没有「已弹出」概念），同时上报已读并刷新铃铛红点。 */
+  const handleAnnouncementSeen = (messageId: number) => {
+    markAnnouncementSeen(messageId);
+    void markMessageRead(messageId).catch(() => undefined);
+    window.dispatchEvent(new Event("mainpg:messages-change"));
+  };
+
+  /** 消息中心里点公告 → 重开大弹窗回看（重新拉带图片的版本，排版与登录弹窗完全一致）。 */
+  useEffect(() => {
+    const handleReplay = (event: Event) => {
+      const messageId = (event as CustomEvent<{ messageId?: number }>).detail?.messageId;
+      if (!messageId) return;
+      void (async () => {
+        try {
+          const items = await fetchMessages({ withImages: true });
+          const target = items.find((item) => item.id === messageId);
+          if (target) setAnnouncementQueue([target]);
+        } catch {
+          // 离线等场景静默
+        }
+      })();
+    };
+    window.addEventListener(REPLAY_ANNOUNCEMENT_EVENT, handleReplay);
+    return () => window.removeEventListener(REPLAY_ANNOUNCEMENT_EVENT, handleReplay);
+  }, []);
 
   const openComboGenerate = (setId: string) => {
     setExpandedGroupId("combo_workflow");
@@ -684,12 +777,13 @@ export function WorkspaceShell({ currentRole = "operator", onSignOut, playEntryA
   };
 
   const sidebarIsCollapsed = sidebarCollapsed || isNarrowDesktop;
-  const sidebarTemporarilyExpanded = sidebarIsCollapsed && sidebarHovered;
+  // 收起后鼠标触碰是否临时浮出，由偏好设置控制（关掉后只能点顶栏按钮展开）。
+  const sidebarTemporarilyExpanded = sidebarIsCollapsed && sidebarHovered && sidebarHoverExpand;
 
   return (
     <main className={`workspace-shell${playEntryAnimation ? " is-brand-entering" : ""}`}>
-      <PeachGarden theme={theme} uiMode={uiMode} />
-      <InkTap theme={theme} uiMode={uiMode} />
+      <PeachGarden theme={theme} uiMode={uiMode} tapEffects={tapEffects} ambientEffects={ambientEffects} />
+      <InkTap theme={theme} uiMode={uiMode} enabled={tapEffects} />
       <Sidebar
         collapsed={sidebarIsCollapsed && !sidebarTemporarilyExpanded}
         activeId={activeModuleId}
@@ -701,7 +795,7 @@ export function WorkspaceShell({ currentRole = "operator", onSignOut, playEntryA
         badges={{ dimension_canvas: dimensionNotifications.length }}
       />
       <section className="workspace-main">
-        <TopNavigation sidebarPinned={!sidebarIsCollapsed} activeKey={activeTabKey} tabs={tabs} onToggleSidebar={() => setSidebarCollapsed((value) => !value)} onSelectTab={selectTab} onCloseTab={closeTab} onOpenPersonalCenter={() => openModule("personal_center")} onOpenGuide={openGuideBoardPanel} onSignOut={onSignOut} />
+        <TopNavigation sidebarPinned={!sidebarIsCollapsed} activeKey={activeTabKey} tabs={tabs} onToggleSidebar={toggleSidebarCollapsed} onSelectTab={selectTab} onCloseTab={closeTab} onOpenPersonalCenter={() => openModule("personal_center")} onOpenGuide={openGuideBoardPanel} onSignOut={onSignOut} />
         <div className="content-card" ref={contentRef}>
           {workspaceNotice && (
             <div className="workspace-notice" role="status">
@@ -742,12 +836,11 @@ export function WorkspaceShell({ currentRole = "operator", onSignOut, playEntryA
       >
         <span aria-hidden="true">↑</span>
       </button>
-      <HelpAgentWidget />
+      <HelpAgentWidget showBalance />
       {guideBoardPanelOpen && (
         <GuideBoardPanel
           onClose={() => setGuideBoardPanelOpen(false)}
           onStartSubTask={startGuideSubTask}
-          onEdit={isAdmin ? openGuideEditor : undefined}
         />
       )}
       {guideEditorSeed && (
@@ -758,6 +851,13 @@ export function WorkspaceShell({ currentRole = "operator", onSignOut, playEntryA
           onSave={saveGuideEditor}
           onClose={() => setGuideEditorSeed(null)}
           onPreview={previewGuideDraft}
+        />
+      )}
+      {announcementQueue.length > 0 && (
+        <AnnouncementModal
+          announcements={announcementQueue}
+          onSeen={handleAnnouncementSeen}
+          onClose={() => setAnnouncementQueue([])}
         />
       )}
       <BrandEntryAnimation active={playEntryAnimation} onComplete={onEntryAnimationComplete} />

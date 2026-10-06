@@ -57,6 +57,7 @@ from .schemas import (
     ListingAdviceRequest,
     MiaoshouExportRequest,
     PreviewAssetImportRequest,
+    PreviewExcludeRequest,
     PreviewFinalizeRequest,
     PreviewSaveRequest,
     PromptTemplateRequest,
@@ -74,8 +75,14 @@ def create_product_processing_router(
     assets_root: Path | None = None,
     customer_sessions: LocalSessionService | None = None,
     remote_customer_auth: CustomerAuthClient | None = None,
+    with_lifespan: bool = True,
 ) -> APIRouter:
-    """Create the complete local API used by the Product Processing screen."""
+    """Create the complete local API used by the Product Processing screen.
+
+    ``with_lifespan``: 同一 service 以多个前缀挂载时，只让其中一个注册带
+    lifespan（recover_background_work 启动恢复）。FastAPI 会把每个子
+    lifespan 合并进应用，多次注册会并发执行多次恢复，把排队任务重复拉起。
+    """
     owned_database = None
     if service is None:
         owned_database = create_database(database_url)
@@ -123,7 +130,7 @@ def create_product_processing_router(
             if owned_database is not None:
                 owned_database.dispose()
 
-    router = APIRouter(prefix="/product-processing", tags=["product_processing"], lifespan=lifespan)
+    router = APIRouter(prefix="/product-processing", tags=["product_processing"], lifespan=lifespan if with_lifespan else None)
     router.include_router(create_dimension_canvas_router(dimension_service))
 
     @router.get("/engine/status")
@@ -168,6 +175,10 @@ def create_product_processing_router(
     @router.post("/engine/prompt-templates/{template_id}/activate")
     def activate_prompt_template(template_id: int) -> dict[str, Any]:
         return _call(service.activate_prompt_template, template_id)
+
+    @router.post("/engine/prompt-templates/deactivate")
+    def deactivate_prompt_template() -> dict[str, Any]:
+        return _call(service.deactivate_prompt_template)
 
     @router.post("/engine/prompt-templates/{template_id}/delete")
     def delete_prompt_template(template_id: int) -> dict[str, Any]:
@@ -707,6 +718,14 @@ def create_product_processing_router(
             raise HTTPException(status.HTTP_404_NOT_FOUND, "preview product not found")
 
         context = prepare_listing_context(body.title, body.description, body.category_path)
+        if context.get("matched") is False:
+            # 表里没有任何依据时不调 AI：既不必要地花一次积分，也避免让模型
+            # 从三个不相关的候选里硬挑一条当结论。
+            return deterministic_listing_advice(
+                context,
+                notice="未匹配到 996 表格中的任何规则，请人工确认类目；本次未消耗 AI 积分。",
+            )
+
         token = _remote_token(request, customer_sessions)
         if remote_customer_auth is None or not token:
             return deterministic_listing_advice(
@@ -832,6 +851,21 @@ def create_product_processing_router(
             task_id,
             int(draft_id),
             excluded=False,
+            workspace_id=_workspace(workspace_id),
+        )
+
+    @router.post("/tasks/{task_id}/preview/items/exclude")
+    def exclude_preview_items(
+        task_id: int,
+        body: PreviewExcludeRequest,
+        workspace_id: str = Header(default="local", alias="X-Workspace-ID"),
+    ) -> dict[str, Any]:
+        # 批量排除/恢复：一次写入任务设置并返回轻量结果，避免逐条重建整份预检导致的请求超时。
+        return _call(
+            service.set_preview_items_excluded,
+            task_id,
+            body.draft_ids,
+            excluded=body.excluded,
             workspace_id=_workspace(workspace_id),
         )
 

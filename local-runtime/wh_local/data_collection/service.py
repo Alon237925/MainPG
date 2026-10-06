@@ -7,7 +7,6 @@ import socket
 import threading
 import uuid
 from collections.abc import Callable, Mapping, Sequence
-from dataclasses import dataclass
 from pathlib import Path
 from typing import Any, Protocol
 from urllib.parse import unquote, urlsplit, urlunsplit
@@ -23,6 +22,12 @@ from .empty_collection import (
     empty_collection_retry_state,
 )
 from .filtering import filter_and_score_candidates
+from .image_cache import (
+    CachedDailySelectionImage,
+    DailySelectionImageAccessDenied,
+    DailySelectionImageCache,
+    DailySelectionImageNotFound,
+)
 from .repository import (
     DailySelectionFeedback,
     DailySelectionRepository,
@@ -48,38 +53,9 @@ class DailySelectionActor(BaseModel):
         return value.strip() if isinstance(value, str) else value
 
 
-@dataclass(frozen=True)
-class CachedDailySelectionImage:
-    """Bytes returned by an injected safe image cache/fetch adapter."""
-
-    content: bytes
-    media_type: str
-    final_url: str
-    resolved_address: str | None = None
-
-
-class DailySelectionImageAccessDenied(PermissionError):
-    """Raised for unrecorded or unsafe image targets."""
-
-
-class DailySelectionImageNotFound(LookupError):
-    """Raised when a requested URL is not part of an owned run snapshot."""
-
-
-class DailySelectionImageCache(Protocol):
-    """Host adapter that validates every network target before connecting.
-
-    Implementations must invoke ``validate_target`` for the initial resolved
-    address and again for every redirect target before opening that connection.
-    """
-
-    def get_or_fetch(
-        self,
-        *,
-        workspace_id: str,
-        url: str,
-        validate_target: Callable[[str, str | None], None],
-    ) -> CachedDailySelectionImage: ...
+# 图片缓存的数据结构（CachedDailySelectionImage）与适配器接口（DailySelectionImageCache）、
+# 以及两个图片访问异常，定义已移到 image_cache.py（谁实现谁定义）。此处通过顶部 import
+# re-export，既有引用路径（本模块内部、routes.py、__init__.py）保持不变。
 
 
 class ProviderConfigResolver(Protocol):
@@ -570,8 +546,10 @@ def _validate_global_address(value: str, *, allow_hostname: bool) -> None:
         address = ipaddress.ip_address(value)
     except ValueError:
         try:
-            address = ipaddress.ip_address(socket.inet_aton(value))
-        except OSError:
+            # inet_aton 支持整数/十六进制等非标准写法，返回 bytes；
+            # 必须经 inet_ntoa 归一为点分十进制，ip_address(bytes) 会抛 ValueError。
+            address = ipaddress.ip_address(socket.inet_ntoa(socket.inet_aton(value)))
+        except (OSError, ValueError):
             if allow_hostname:
                 return
             raise DailySelectionImageAccessDenied("image address is invalid") from None

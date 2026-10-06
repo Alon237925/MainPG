@@ -927,6 +927,10 @@ class ProductProcessingService:
             raise ProductProcessingNotFound("prompt template not found")
         return {**self.prompt_templates(), "template": saved, "message": f"已启用模板「{saved['name']}」"}
 
+    def deactivate_prompt_template(self) -> dict[str, Any]:
+        self.repository.deactivate_prompt_templates()
+        return {**self.prompt_templates(), "message": "已停用模板，后续任务使用系统默认提示词"}
+
     def delete_prompt_template(self, template_id: int) -> dict[str, Any]:
         if not self.repository.delete_prompt_template(template_id):
             raise ProductProcessingNotFound("prompt template not found")
@@ -3568,6 +3572,48 @@ USER-REQUESTED PANEL PLANNING ADDITIONS (user extra requirements only; they MUST
         )
         return self.task_preview(task_id, workspace_id=workspace_id)
 
+    def set_preview_items_excluded(
+        self,
+        task_id: int,
+        draft_ids: list[int],
+        *,
+        excluded: bool = True,
+        workspace_id: str = "local",
+    ) -> dict[str, Any]:
+        """批量从预检中排除/恢复商品链接，一次写入任务设置并返回轻量结果。
+
+        与 ``set_preview_item_excluded`` 的差别：不再重建整份预检快照。
+        逐条重建（以及批量删除时的 N 次全量重建）在几十条商品的任务上会超过前端 30s 超时；
+        前端改为按返回的 ``excluded_draft_ids`` 本地增量更新列表即可。
+        """
+        task = self._require_task(task_id, workspace_id)
+        if task["status"] in {"queued", "running", "paused"}:
+            raise ProductProcessingConflict("任务尚未结束，不能排除商品")
+        owned_draft_ids = {
+            int(item.get("product_draft_id") or 0)
+            for item in task["items"]
+            if item.get("product_draft_id")
+        }
+        # 忽略不属于本任务或已失效的 ID，避免批量操作因个别过期项整体失败。
+        applied = {int(value) for value in draft_ids if int(value) in owned_draft_ids}
+        excluded_ids = {
+            int(value)
+            for value in task["settings"].get("excluded_preview_draft_ids", [])
+            if str(value).isdigit()
+        }
+        next_ids = (excluded_ids | applied) if excluded else (excluded_ids - applied)
+        if next_ids != excluded_ids:
+            self.repository.merge_task_settings(
+                task_id,
+                workspace_id,
+                excluded_preview_draft_ids=sorted(next_ids),
+            )
+        return {
+            "task_id": int(task_id),
+            "excluded_draft_ids": sorted(next_ids),
+            "applied_draft_ids": sorted(applied),
+        }
+
     def save_task_preview(
         self,
         task_id: int,
@@ -3992,9 +4038,15 @@ USER-REQUESTED PANEL PLANNING ADDITIONS (user extra requirements only; they MUST
           除非 ``force=True``（前台「强制检测」入口）；
         - 严格口径：所有规格图都不含中文才算可用；任一张检出中文、或 OCR 推理失败
           （返回 ``None``）都判为不可用，不显示标签；
+        - 尺寸口径：店小秘「变种预览图」列（即导出的规格原图列）强制 1:1，任一张规格
+          原图非 1:1（按宽高比，容差见 ``domain.sku_availability.SQUARE_TOLERANCE_RATIO``）
+          即落 ``not_square_image`` 判不可用，导出回退商品主图（我们生成的方图），
+          并跳过该链接的 OCR；
         - 所有图片一次性提交线程池并行 OCR，实际并发受 ocr_gate 推理上限约束；
         - 返回 ``chinese_variant_keys``（检出中文的变种导出键）与 ``all_sku_chinese``
           （全部有图 SKU 都含中文），供前端「优化链接 SKU」决定剔除哪些变种；
+        - 另返回 ``not_square_variant_keys``（规格原图非 1:1 的变种导出键），供前端提示
+          用户这批链接为何不能直接用规格原图；
         - ``persist=True``（默认）时把结论落库到 ``drafts.sku_availability_json``，
           并写入 ``fingerprint``（参与检测图片的 content_hash 集合）供导出侧校验有效性。
         """
@@ -4044,6 +4096,22 @@ USER-REQUESTED PANEL PLANNING ADDITIONS (user extra requirements only; they MUST
                 continue
             if not sku_targets:
                 plan.update(status="unavailable", reason="no_sku_image")
+                continue
+            # 店小秘要求「变种预览图必须为 1:1 尺寸」，而导出的该列正是 SKU 规格原图：
+            # 任一规格原图非 1:1 都会被店小秘整单拒收。命中即判不可用（导出回退商品主图，
+            # 主图由我们按 2048x2048 方图生成，天然满足 1:1），并跳过 OCR——反正不用原图了。
+            not_square_views = [
+                view for view in ready_views if not sku_availability_domain.is_square_view(view)
+            ]
+            if not_square_views:
+                plan["not_square_variant_keys"] = sorted(
+                    {
+                        str(self._sku_view_variant_key(view, raw) or "")
+                        for view in not_square_views
+                    }
+                    - {""}
+                )
+                plan.update(status="unavailable", reason="not_square_image")
                 continue
             plan["status"] = "pending"
             plan["_sku_keys"] = {key for _asset_id, key in sku_targets if key}
@@ -4231,9 +4299,13 @@ USER-REQUESTED PANEL PLANNING ADDITIONS (user extra requirements only; they MUST
                     if not label:
                         attributes = record.get("attributes")
                         if isinstance(attributes, Mapping):
-                            label = "/".join(
-                                str(value) for value in attributes.values() if value
-                            )
+                            # 与媒体绑定（variant_label）保持一致的分隔符与过滤口径，
+                            # 否则纯属性型 SKU 反查不到标签，可用性剔除键被漏报。
+                            label = " ".join(
+                                str(value)
+                                for value in attributes.values()
+                                if value is not None and str(value).strip()
+                            ).strip()
                     if label and label == view_label:
                         return variant_export_key(record)
         return view_sku_id
@@ -4253,6 +4325,8 @@ USER-REQUESTED PANEL PLANNING ADDITIONS (user extra requirements only; they MUST
             # （此时不做 SKU 级剔除，回退商品主图，避免整条商品在导出表格里消失）。
             "chinese_variant_keys": [],
             "all_sku_chinese": False,
+            # 规格原图不是 1:1（店小秘「变种预览图」列强制方图）的 SKU 变种导出键。
+            "not_square_variant_keys": [],
             "_sku_keys": set(),
             "_chinese_keys": set(),
             "fingerprint": "",
@@ -5474,19 +5548,34 @@ USER-REQUESTED PANEL PLANNING ADDITIONS (user extra requirements only; they MUST
                     pass
                 if str(processed.get("status") or "") == "completed":
                     if not _direct_ai_enabled():
-                        self._settle_product_processing_item_success(
-                            task_id,
-                            int(item_id),
-                            settings,
-                            processed.get("result") or {},
-                        )
+                        # 计费结算失败不阻断任务：进度落库与任务完成优先，结算异常只记日志。
+                        # 此前结算异常会穿透 _persist_progress：串行模式任务永久卡 running，
+                        # 并行模式整批被作废（已完成项全部丢弃）。
+                        try:
+                            self._settle_product_processing_item_success(
+                                task_id,
+                                int(item_id),
+                                settings,
+                                processed.get("result") or {},
+                            )
+                        except Exception:  # noqa: BLE001
+                            _level.exception(
+                                "AI 计费结算失败（不影响任务进度）| task_id=%s | item_id=%s",
+                                task_id, item_id,
+                            )
                 else:
                     if not _direct_ai_enabled():
-                        self._settle_product_processing_item_failure_for_item(
-                            task_id,
-                            int(item_id),
-                            processed,
-                        )
+                        try:
+                            self._settle_product_processing_item_failure_for_item(
+                                task_id,
+                                int(item_id),
+                                processed,
+                            )
+                        except Exception:  # noqa: BLE001
+                            _level.exception(
+                                "AI 计费失败结算失败（不影响任务进度）| task_id=%s | item_id=%s",
+                                task_id, item_id,
+                            )
             except LookupError:
                 # 任务已被清理时忽略进度写入，不阻塞整体流程
                 pass

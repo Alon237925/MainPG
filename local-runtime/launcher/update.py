@@ -33,7 +33,7 @@ from cryptography.exceptions import InvalidSignature
 from cryptography.hazmat.primitives.asymmetric.ed25519 import Ed25519PublicKey
 
 # ---- 与 wh_local/config.py 保持同步 --------------------------------------- #
-APP_VERSION = "1.4.4"
+APP_VERSION = "1.4.5"
 UPDATE_RELEASE_HOST = "workbench.haocoming.top"
 UPDATE_MANIFEST_URL = f"https://{UPDATE_RELEASE_HOST}/mainpg/windows/manifest.json"
 UPDATE_MANIFEST_ALLOWED_HOSTS = frozenset({UPDATE_RELEASE_HOST})
@@ -306,7 +306,14 @@ def check_for_update(timeout: float = 10.0) -> UpdateRelease | None:
         return None
     manifest = _fetch_manifest(UPDATE_MANIFEST_URL, timeout)
     release = _Verifier().validate_manifest(manifest)
-    if SemanticVersion.parse(release.version) <= SemanticVersion.parse(current_version()):
+    try:
+        current = SemanticVersion.parse(current_version())
+        latest = SemanticVersion.parse(release.version)
+    except ValueError as error:
+        # 本地 version.json 或服务器清单的版本号格式损坏时给出可读错误，
+        # 而不是把裸 ValueError 抛给 CLI 变成 traceback。
+        raise UpdateCheckError(f"版本号格式无效: {error}") from error
+    if latest <= current:
         return None
     if is_snoozed(release.version):
         return None

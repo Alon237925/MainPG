@@ -162,13 +162,16 @@ export function TopNavigation({ sidebarPinned, activeKey, tabs, onToggleSidebar,
 
   const closeTabWithEffect = (key: string) => {
     if (closingKeys.includes(key)) return;
+    // 记录关闭发起时该标签是否已激活：发起时激活的标签属于正常关闭，
+    // 只有「发起时未激活、动画期间被重新激活」才是用户反悔重开。
+    const wasActiveAtClose = activeKeyRef.current === key;
     setClosingKeys((current) => [...current, key]);
     const timer = window.setTimeout(() => {
       closingTimers.current.delete(timer);
       setClosingKeys((current) => current.filter((item) => item !== key));
       // 180ms 动画期间该标签若被重新打开并激活（activeKey 又指向它），说明用户
       // 想保留，跳过删除——否则会误删刚重开的标签。
-      if (activeKeyRef.current === key) return;
+      if (!wasActiveAtClose && activeKeyRef.current === key) return;
       onCloseTab(key);
     }, 180);
     closingTimers.current.add(timer);
@@ -262,14 +265,14 @@ export function TopNavigation({ sidebarPinned, activeKey, tabs, onToggleSidebar,
                                 className={`theme-store-action ${downloaded ? "is-use" : "is-download"}`}
                                 onClick={async () => {
                                   if (disabled) return;
-                                  if (!downloaded) {
-                                    try {
-                                      await downloadTheme(id);
-                                      setStoreActionError(null);
-                                    } catch (err) {
-                                      setStoreActionError(err instanceof Error ? err.message : "下载失败，请重试");
-                                      return;
-                                    }
+                                  // 无条件走 downloadTheme：内部对"未下载/版本落后/已是最新"分别处理，
+                                  // 主题包改版后点「使用」即自动更新到新版本。
+                                  try {
+                                    await downloadTheme(id);
+                                    setStoreActionError(null);
+                                  } catch (err) {
+                                    setStoreActionError(err instanceof Error ? err.message : "下载失败，请重试");
+                                    return;
                                   }
                                   setTheme(id);
                                   setThemeStoreOpen(false);

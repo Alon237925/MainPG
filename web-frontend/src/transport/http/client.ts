@@ -6,6 +6,8 @@ type RequestOptions = {
   token?: string;
   /** 覆盖默认超时（毫秒）。用于外部慢接口（如 1688 图搜），默认 30s 不够时单独放宽。 */
   timeoutMs?: number;
+  /** 中止信号：切换会话/组件卸载时主动取消在飞请求。 */
+  signal?: AbortSignal;
 };
 
 const TOKEN_KEY = "wh_demo_token";
@@ -41,6 +43,26 @@ export function clearAuthSession() {
   window.localStorage.removeItem(ACCOUNT_KEY);
 }
 
+/**
+ * Release the remote single-device session before forgetting the local bearer
+ * token. This avoids leaving an account locked after a real session expiry.
+ */
+export async function releaseAuthSession(): Promise<void> {
+  const token = getAuthToken();
+  try {
+    if (token) {
+      await fetch(`${apiBaseUrl()}/api/customer/logout`, {
+        method: "POST",
+        headers: { Authorization: `Bearer ${token}` },
+      });
+    }
+  } catch {
+    // A failed remote release must not block the local sign-out.
+  } finally {
+    clearAuthSession();
+  }
+}
+
 const SESSION_EXPIRED_EVENT = "auth:session-expired";
 
 /** 通知应用层登录状态已失效（登录超时 / 远程会话缺失 / 被顶替），用于自动返回登录页。 */
@@ -54,8 +76,12 @@ export function isSessionExpired(response: Response, detail: string): boolean {
   if (/invalid (username\/email or password)|invalid or expired (reset token|email code)|a valid 6-digit email code is required|user is not registered on the server|customer account is not active/i.test(detail)) {
     return false;
   }
-  if (response.status === 401) return true;
-  return /login session expired|remote customer session is missing|invalid bearer token|missing bearer token|session revoked/i.test(detail);
+  // 部分模块（如 profit_activity）会带多个候选令牌重试，遇到 401 会换令牌继续；
+  // 裸 401 不足以判定登录失效，必须同时命中明确的会话失效关键词。
+  return (
+    response.status === 401 &&
+    /login session expired|remote customer session is missing|invalid bearer token|missing bearer token|session revoked/i.test(detail)
+  );
 }
 
 /**
@@ -78,7 +104,18 @@ if (!interceptorWindow[FETCH_INTERCEPTOR_KEY]) {
     const response = await originalFetch(input, init);
     if (response.status === 401) {
       const url = typeof input === "string" ? input : input instanceof URL ? input.pathname : input.url;
-      if (!AUTH_ENTRY_PATH.test(url)) notifySessionExpired();
+      if (!AUTH_ENTRY_PATH.test(url)) {
+        // 与 httpJson/httpBlob 共用同一套判定：裸 401 不足以判定登录失效，
+        // 需按响应体确认是真实会话失效，否则带候选令牌重试的模块会在换令牌时被误踢出。
+        let detail = "";
+        try {
+          const body = (await response.clone().json()) as { detail?: unknown } | null;
+          if (body && typeof body.detail === "string") detail = body.detail;
+        } catch {
+          // 非 JSON 响应无法判定会话是否失效，交由调用方处理
+        }
+        if (isSessionExpired(response, detail)) notifySessionExpired(detail);
+      }
     }
     return response;
   };
@@ -190,8 +227,47 @@ export function toUserMessage(raw: string): string {
   if (/download returned non-binary data/i.test(message)) return "更新包下载异常，请稍后重试";
   if (/Cross-origin update actions are not allowed/i.test(message)) return "更新请求来源不被允许，请从工作台里点更新";
 
+  // ---- 预检与导出（finalize）----
+  // 后端这批 detail 是英文抛出的，原先一条都不匹配：用户做完预检点「完成预审并
+  // 导出」时，无论遇到哪种失败都只看到「操作失败，请稍后重试」，既分不清是数据
+  // 没处理完、版本过期还是并发冲突，也不知道该做什么。这里逐条给出原因 + 下一步。
+  if (/preview finalization exceeded the time budget/i.test(message)) {
+    return "图片发布超时了，可以点「仅重试失败图片」再试一次";
+  }
+  if (/处理前图片尚未同步完成|source (proxy|media) is not ready/i.test(message)) {
+    return "这批商品的处理前图片还在同步，所以整单导不出来：请等它们同步完成后再点「完成预审并导出」，或先勾选「只看成功链接」只导出已成功的商品";
+  }
+  if (/请先将处理前图片加入素材库/i.test(message)) {
+    return "有商品的处理前图片还没加入素材库：请先在预检里把来源图加入素材库，或勾选「只看成功链接」只导出已成功的商品";
+  }
+  if (
+    /preview finalization contains drafts that are not exportable|no exportable drafts|task has no exportable rows/i.test(message)
+  ) {
+    return "这批商品里还有没处理成功的，整单导不出来：请先处理完，或勾选「只看成功链接」只导出已完成商品";
+  }
+  if (
+    /preview revision conflict|preview revision changed during save|expected preview revision is required/i.test(message)
+  ) {
+    return "预检数据已经被改动过（可能刚保存过，或在另一个窗口改过）：请点「重新加载」核对后再导出";
+  }
+  if (/task item result version changed before finalization/i.test(message)) {
+    return "这批商品的处理结果刚更新过：请点「重新加载」后再导出";
+  }
+  if (/idempotency key was reused|request conflicts with the stored run/i.test(message)) {
+    return "这次导出和上一次重复提交了：请点「重新加载」后重新导出";
+  }
+  if (
+    /finalization run (could not be loaded|not found)|finalization claim changed|publication row is missing|publication claim changed|asset registration could not be loaded/i.test(message)
+  ) {
+    return "导出任务状态被其他操作改动了：请点「重新加载」后再试一次";
+  }
+  if (
+    /finalization snapshot contains a missing image asset|finalization image has no content hash|manifest references an asset outside|preview image target does not belong|preview image draft not found|preview image task not found|preview save must contain each positive draft id once|main image must be retained in carousel/i.test(message)
+  ) {
+    return "提交的图片或商品数据和当前任务对不上：请点「重新加载」后再导出；一直失败请把提示截图发给我们";
+  }
+
   // ---- 其它 ----
-  if (/preview finalization exceeded the time budget/i.test(message)) return "图片发布超时了，可以点「仅重试失败图片」再试一次";
   if (/unsupported miaoshou template kind/i.test(message)) return "妙手导出的模板类型不对，请选择「服饰类」或「非服饰类」";
   if (/\bis not configured\b/i.test(message)) return "相关服务还没配置好，请联系对接人处理";
   if (/provider is unavailable/i.test(message)) return "上游服务暂时不可用，请稍后重试";
@@ -246,13 +322,19 @@ async function fetchWithTimeout(
   url: string,
   init: RequestInit,
   timeoutMs: number = REQUEST_TIMEOUT_MS,
+  externalSignal?: AbortSignal,
 ): Promise<Response> {
   const controller = new AbortController();
   const timeoutId = window.setTimeout(() => controller.abort(), timeoutMs);
+  const signal = externalSignal
+    ? AbortSignal.any([controller.signal, externalSignal])
+    : controller.signal;
   try {
-    return await fetch(url, { ...init, signal: controller.signal });
+    return await fetch(url, { ...init, signal });
   } catch (error) {
     if (error instanceof DOMException && error.name === "AbortError") {
+      // 外部主动中止（切换会话等）原样抛出，由调用方识别；超时中止转成超时文案。
+      if (externalSignal?.aborted) throw error;
       throw new Error("请求超时，请稍后重试");
     }
     throw error;
@@ -274,6 +356,7 @@ export async function httpJson<T>(path: string, options: RequestOptions = {}): P
       body: options.body === undefined ? undefined : JSON.stringify(options.body),
     },
     options.timeoutMs,
+    options.signal,
   );
 
   const contentType = response.headers.get("content-type") ?? "";
@@ -308,6 +391,7 @@ export async function httpBlob(path: string, options: RequestOptions = {}): Prom
       body: options.body === undefined ? undefined : JSON.stringify(options.body),
     },
     options.timeoutMs,
+    options.signal,
   );
 
   if (!response.ok) {

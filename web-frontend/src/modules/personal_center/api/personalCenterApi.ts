@@ -61,13 +61,16 @@ export type BillingSummary = {
     plan: {
       plan_type: "experience" | "flagship" | string;
       plan_label: string;
+      /** 限时积分余额（体验池，每周一 00:00 作废）。 */
       plan_balance: number;
+      /** 体验池每周参考额度（统一 500）。 */
       plan_limit: number;
+      /** 已使用的体验额度。 */
       plan_used: number;
       next_refresh_at: string;
       /** 基础版套餐到期时刻（ISO 8601）；空串=无到期限制（体验版/旗舰版）。 */
       plan_expire_at: string;
-      /** 基础版每周领取：每次可领积分（非基础版为 0）。 */
+      /** 基础版每周直接领取：每次可领积分（非基础版为 0）。 */
       basic_claim_points: number;
       /** 已领取次数。 */
       basic_claim_count: number;
@@ -75,15 +78,21 @@ export type BillingSummary = {
       basic_claim_max: number;
       /** 当前是否可领取（服务端已算好：套餐有效 + 未领满 + 本周未领）。 */
       basic_claimable: boolean;
-      /** 每日免费领取：每次可领积分（所有套餐统一 100）。 */
+      /** 每日签到：本次可领积分（首签 500，之后每天 100）。 */
       daily_claim_points: number;
-      /** 今天是否还没领（服务端按北京自然日判定，所有套餐通用）。 */
+      /** 今天是否还没签（服务端按北京自然日判定，所有套餐通用）。 */
       daily_claimable: boolean;
-      /** 上次领取的北京自然日（YYYY-MM-DD）；空串=从未领过。 */
+      /** 上次签到的北京自然日（YYYY-MM-DD）；空串=从未签到过。 */
       daily_claim_date: string;
-      /** 今日已领时，下一次可领时刻（次日 00:00，ISO 8601）；未领时为空串。 */
+      /** 未签过时=首签奖励积分（500）；已签过=0。 */
+      daily_first_claim_bonus: number;
+      /** 本周已签到天数（进度条用）。 */
+      daily_week_count: number;
+      /** 每周最多可签到天数（7）。 */
+      daily_week_max: number;
+      /** 今日已签时，下一次可签时刻（次日 00:00，ISO 8601）；未签时为空串。 */
       daily_next_claim_at: string;
-      /** 额外积分独立子池实时余额（每日 + 基础版每周领取都进这里，消费时在体验之后、充值之前扣）。 */
+      /** 额外积分独立子池实时余额（首签 500 + 基础版每周领取进这里，永久；消费时在体验之后、充值之前扣）。 */
       extra_balance: number;
     };
   };
@@ -197,6 +206,41 @@ export function loadBillingUsageHistory(query: BillingUsageQuery = {}) {
   return httpJson<BillingUsageHistory>(`/api/customer/billing/usage?${params.toString()}`);
 }
 
+/** 入账明细条目：只含 credit（积分入账）记录。 */
+export type BillingLedgerItem = {
+  entry_id: string;
+  points_delta: number;
+  balance_after: number;
+  source_type: string;
+  source_id: string;
+  created_at: string;
+};
+
+/**
+ * 入账分类：空串=全部；topup=充值积分（支付本金 + 档位赠送）；
+ * reward=活动积分（每日/每周领取、管理员划拨、测试划拨等）。
+ */
+export type BillingLedgerCategory = "" | "topup" | "reward";
+
+export function loadBillingLedgerHistory(
+  query: { category?: BillingLedgerCategory; limit?: number; offset?: number } = {},
+) {
+  const params = new URLSearchParams({
+    limit: String(query.limit ?? 10),
+    offset: String(query.offset ?? 0),
+  });
+  if (query.category) params.set("category", query.category);
+  return httpJson<{
+    ok: boolean;
+    items: BillingLedgerItem[];
+    total: number;
+    limit: number;
+    offset: number;
+    has_more: boolean;
+    point_unit_scale: number;
+  }>(`/api/customer/billing/ledger?${params.toString()}`);
+}
+
 export function createTopupOrder(input: {
   // The desktop client currently exposes only Alipay. Keep other provider
   // support on the server isolated until its payment flow is implemented.
@@ -213,7 +257,7 @@ export function createTopupOrder(input: {
   });
 }
 
-/** 基础版每周领取 1000 积分（额外积分池，永久有效）。 */
+/** 基础版每周直接领取 1000 积分（额外积分池，永久有效）。 */
 export function claimBasicWeeklyPoints() {
   return httpJson<{
     ok: boolean;
@@ -224,17 +268,19 @@ export function claimBasicWeeklyPoints() {
   }>("/api/customer/billing/plan-basic/claim", { method: "POST" });
 }
 
-/** 每日免费领取 100 积分（额外积分池，永久有效，所有套餐可用；按北京自然日幂等）。 */
+/** 每日签到（首签 +500 永久，之后每天 +100 限时；按北京自然日幂等）。 */
 export function claimDailyExtraPoints() {
   return httpJson<{
     ok: boolean;
     claimed_points: number;
-    /** 累计领取天数。 */
+    /** 累计签到天数。 */
     claim_count: number;
     /** 本次账期（北京自然日 YYYY-MM-DD）。 */
     period: string;
-    /** 下次可领时刻（次日 00:00，ISO 8601）。 */
+    /** 下次可签时刻（次日 00:00，ISO 8601）。 */
     next_claim_at: string;
+    /** true=本次是首签（+500 进永久池）；false=日常签到（+100 进限时池）。 */
+    first_claim_bonus: boolean;
   }>("/api/customer/billing/daily-extra/claim", { method: "POST" });
 }
 
@@ -366,4 +412,61 @@ export function loadMyFeedback(limit = 50, offset = 0) {
     limit: number;
     offset: number;
   }>(`/api/customer/feedback/mine?limit=${limit}&offset=${offset}`);
+}
+
+// ---- 分站申请（推广计划 · 申请加入） ----
+export type StationApplicationStatus = "pending" | "approved" | "rejected" | "revoked";
+
+/** 分站申请状态视图；不含分站密码（密码由后台以定向公告下发）。 */
+export type StationApplicationState = {
+  status: StationApplicationStatus;
+  applied_at: string;
+  decided_at: string;
+  reject_reason: string;
+  station_username: string;
+  login_url: string;
+};
+
+export type StationApplicationResult = {
+  ok: boolean;
+  duplicated: boolean;
+  message: string;
+  application: StationApplicationState | null;
+};
+
+/** 提交分站申请；账号信息由本地后端从登录会话注入，前端只补充联系方式与说明。 */
+export function submitStationApplication(input: { email?: string; contact?: string; note?: string }) {
+  return httpJson<StationApplicationResult>("/api/customer/station-application", {
+    method: "POST",
+    body: input,
+  });
+}
+
+/** 查询本账号最近一条分站申请状态。 */
+export function loadMyStationApplication() {
+  return httpJson<StationApplicationResult>("/api/customer/station-application");
+}
+
+// ---- 合作中转站（充值页「中转编号」由用户手动输入，故不提供可选清单） ----
+/** 中转站在其自己的网站上配置的充值档位（最多 6 档）。 */
+export type StationTier = {
+  amount_cents: number;
+  /** 该档位的积分倍率：到账积分 = 金额(元) × 倍率。 */
+  rate: number;
+};
+
+export type StationPartnerDetail = {
+  ok: boolean;
+  station_code: string;
+  station_name: string;
+  /** 中转站的终端价 Y，仅用于展示。 */
+  terminal_rate: number;
+  tiers: StationTier[];
+};
+
+/** 按中转编号取该站的充值档位；档位与官方固定套餐是两套体系。 */
+export function loadStationPartnerDetail(stationCode: string) {
+  return httpJson<StationPartnerDetail>(
+    `/api/customer/station-partners/${encodeURIComponent(stationCode)}`,
+  );
 }

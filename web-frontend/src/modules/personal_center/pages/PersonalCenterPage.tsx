@@ -10,22 +10,29 @@ import {
   claimBasicWeeklyPoints,
   claimDailyExtraPoints,
   createTopupOrder,
+  loadBillingLedgerHistory,
   loadBillingSummary,
   loadBillingUsageHistory,
   loadImageModel,
   loadPodImageModel,
+  loadStationPartnerDetail,
   quoteCustomTopup,
   saveImageModel,
   savePodImageModel,
   sendUsernameChangeCode,
+  type BillingLedgerCategory,
+  type BillingLedgerItem,
   type BillingPackage,
   type BillingSummary,
   type BillingUsageEntry,
   type ImageModelChoice,
+  type StationPartnerDetail,
   type TopupOrderResponse,
 } from "../api/personalCenterApi";
 import { SystemVersionPanel } from "../components/SystemVersionPanel";
+import { PreferencesPanel } from "../components/PreferencesPanel";
 import { FeedbackPanel } from "../components/FeedbackPanel";
+import { PromotionPlanPanel } from "../components/PromotionPlanPanel";
 import "../styles/personalCenter.css";
 
 type AccountSnapshot = {
@@ -42,7 +49,7 @@ const providerMeta = {
   alipay: { label: "支付宝", icon: "iconfont icon-alipay-circle-fill", className: "is-alipay" },
 } as const;
 
-/** 「升级体验」弹窗里的基础版套餐（¥39.9）：立得 4000 充值积分 + 四周每周可领 1000。 */
+/** 「升级体验」弹窗里的基础版套餐（¥39.9）：立得 4000 充值积分 + 28 天内每周可领 1000 永久积分。 */
 const PLAN_BASIC_PRODUCT: BillingPackage = {
   package_id: "plan_basic",
   label: "基础版",
@@ -53,18 +60,30 @@ function money(amountCents: number) {
   return `¥${(amountCents / 100).toFixed(2)}`;
 }
 
+/** 中转档位订单的 package_id，与主站约定一致：station:<中转编号>:<金额分>。 */
+function stationPackageId(stationCode: string, amountCents: number) {
+  return `station:${stationCode}:${amountCents}`;
+}
+
+/** 只有有限数字才当作有效数据；undefined/NaN 一律按「无数据」处理，
+ *  否则旧缓存缺字段时 `数字 + undefined` 会算出 NaN 并被原样渲染到界面上。 */
+function asFiniteNumber(value: unknown): number | null {
+  return typeof value === "number" && Number.isFinite(value) ? value : null;
+}
+
 /** 数字滚动动画：目标值变化时从旧值 ease-out 滚到新值；首次直接展示（缓存值不闪）。 */
 function useAnimatedNumber(value: number | null | undefined, duration = 720): number | null {
-  const [display, setDisplay] = useState<number | null>(() => (typeof value === "number" ? value : null));
-  const fromRef = useRef<number>(typeof value === "number" ? value : 0);
+  const target = asFiniteNumber(value);
+  const [display, setDisplay] = useState<number | null>(() => target);
+  const fromRef = useRef<number>(target ?? 0);
   const rafRef = useRef(0);
   useEffect(() => {
-    if (typeof value !== "number") {
+    if (target === null) {
       setDisplay(null);
       return;
     }
     const from = fromRef.current;
-    const to = value;
+    const to = target;
     if (from === to) {
       setDisplay(to);
       return;
@@ -84,7 +103,7 @@ function useAnimatedNumber(value: number | null | undefined, duration = 720): nu
     cancelAnimationFrame(rafRef.current);
     rafRef.current = requestAnimationFrame(step);
     return () => cancelAnimationFrame(rafRef.current);
-  }, [value, duration]);
+  }, [target, duration]);
   return display;
 }
 
@@ -117,15 +136,27 @@ function formatUsageTime(iso: string): string {
   );
 }
 
-function statusLabel(status: string) {
-  const labels: Record<string, string> = {
-    pending: "已取消",
-    paid: "已入账",
-    closed: "已关闭",
-    failed: "失败",
-    refunded: "已退款",
-  };
-  return labels[status] ?? status;
+/** 积分入账明细的来源名（与服务端 billing_point_ledger.source_type 对齐）。 */
+const LEDGER_SOURCE_LABELS: Record<string, string> = {
+  payment_alipay: "支付宝充值",
+  payment_wechat: "微信充值",
+  topup_promotion_bonus: "充值档位赠送",
+  daily_extra_claim: "每日签到",
+  plan_basic_claim: "基础版每周领取",
+  plan_experience_claim: "体验版每周领取",
+  admin_adjustment: "管理员划拨",
+  test_grant: "测试划拨",
+};
+
+function ledgerSourceLabel(sourceType: string) {
+  return LEDGER_SOURCE_LABELS[sourceType] ?? sourceType;
+}
+
+/** 充值积分 = 支付本金 + 档位赠送；其余一律算活动积分（与后端口径一致）。 */
+const LEDGER_TOPUP_SOURCES = new Set(["payment_alipay", "payment_wechat", "topup_promotion_bonus"]);
+
+function ledgerSourceIcon(sourceType: string) {
+  return LEDGER_TOPUP_SOURCES.has(sourceType) ? "iconfont icon-moneycollect" : "iconfont icon-gift";
 }
 
 const pricingFeatures: Array<{ key: string; label: string; note: string }> = [
@@ -191,6 +222,8 @@ function readBalanceCache(key: string): BalanceCachePayload | null {
   try {
     const parsed = JSON.parse(window.localStorage.getItem(key) ?? "null") as BalanceCachePayload | null;
     if (!parsed || typeof parsed.fetchedAt !== "number" || !parsed.summary) return null;
+    // 早期版本写入的缓存没有「永久积分子池」字段，回显时会被算成 NaN，直接判为失效重新拉取。
+    if (typeof parsed.summary.wallet?.plan?.extra_balance !== "number") return null;
     return parsed;
   } catch {
     return null;
@@ -300,27 +333,18 @@ export function PersonalCenterPage({ feedbackPrefill = null }: PersonalCenterPag
   const defaultUsageFilterKey = buildUsageFilterKey("", "", "", "");
 
   const [summary, setSummary] = useState<BillingSummary | null>(cachedBalance?.summary ?? null);
-  const [activePanel, setActivePanel] = useState<"wallet" | "usage" | "pricing" | "model" | "version" | "feedback">("wallet");
+  const [activePanel, setActivePanel] = useState<"wallet" | "usage" | "pricing" | "model" | "preferences" | "version" | "promo" | "feedback">("wallet");
 
-  // 体验版卡高度对齐上面的深色 profile 卡：测量 profile 高度并同步给体验版卡。
-  const profileCardRef = useRef<HTMLDivElement | null>(null);
-  const [profileCardHeight, setProfileCardHeight] = useState<number | null>(null);
-  useEffect(() => {
-    const el = profileCardRef.current;
-    if (!el) return;
-    const update = () => setProfileCardHeight(el.offsetHeight);
-    update();
-    const observer = new ResizeObserver(update);
-    observer.observe(el);
-    window.addEventListener("resize", update);
-    return () => {
-      observer.disconnect();
-      window.removeEventListener("resize", update);
-    };
-  }, []);
-  // 可用积分与总积分的数字滚动动画（首次直接用缓存值，不闪）。
+  // 可用积分与积分构成的数字滚动动画（首次直接用缓存值，不闪）。
   const animatedAvailablePoints = useAnimatedNumber(summary?.wallet.available_points);
-  const animatedTotalPoints = useAnimatedNumber(summary?.wallet.points_balance);
+  // 积分构成：永久积分=充值池+额外池（充值积分、基础版每周领取、首签新人礼），
+  // 限时积分=体验池（每日签到所得，每周一 00:00 过期作废）。
+  const permanentPoints = summary
+    ? (summary.wallet.points_balance ?? 0) + (summary.wallet.plan.extra_balance ?? 0)
+    : null;
+  const limitedPoints = summary ? summary.wallet.plan.plan_balance ?? 0 : null;
+  const animatedPermanentPoints = useAnimatedNumber(permanentPoints);
+  const animatedLimitedPoints = useAnimatedNumber(limitedPoints);
   // 生图模型切换：下拉选项由服务端白名单给出，切换后所有生图任务立即跟随。
   const [imageModel, setImageModel] = useState("");
   const [imageModelChoices, setImageModelChoices] = useState<ImageModelChoice[]>([]);
@@ -344,6 +368,14 @@ export function PersonalCenterPage({ feedbackPrefill = null }: PersonalCenterPag
   const [customQuote, setCustomQuote] = useState<BillingPackage | null>(null);
   const [customQuoteLoading, setCustomQuoteLoading] = useState(false);
   const [customQuoteError, setCustomQuoteError] = useState("");
+  // 中转编号：不提供可选清单，由用户从上游中转商处拿到编号后手动填写（信息差），
+  // 填写并确认后档位表整体切换为该中转站在其自己网站上配置的档位（≤6 档），
+  // 与官方固定套餐是两套并行体系；留空表示使用官方档位。
+  const [stationCodeInput, setStationCodeInput] = useState("");
+  const [selectedStation, setSelectedStation] = useState("");
+  const [stationDetail, setStationDetail] = useState<StationPartnerDetail | null>(null);
+  const [stationLoading, setStationLoading] = useState(false);
+  const [stationError, setStationError] = useState("");
   const [creating, setCreating] = useState(false);
   const [createdOrder, setCreatedOrder] = useState<TopupOrderResponse | null>(null);
   const [paymentNotice, setPaymentNotice] = useState("");
@@ -489,6 +521,43 @@ export function PersonalCenterPage({ feedbackPrefill = null }: PersonalCenterPag
     [filteredUsageEntries, safeUsagePage],
   );
 
+  // 积分入账明细：服务端分页（充值积分 / 活动积分筛选在服务端完成，保证总数与页码准确）。
+  const LEDGER_PAGE_SIZE = 6;
+  const [ledgerCategory, setLedgerCategory] = useState<BillingLedgerCategory>("");
+  const [ledgerPage, setLedgerPage] = useState(1);
+  const [ledgerItems, setLedgerItems] = useState<BillingLedgerItem[]>([]);
+  const [ledgerTotal, setLedgerTotal] = useState(0);
+  const [ledgerLoading, setLedgerLoading] = useState(false);
+  const [ledgerError, setLedgerError] = useState("");
+
+  const loadLedger = useCallback((category: BillingLedgerCategory, page: number) => {
+    setLedgerLoading(true);
+    setLedgerError("");
+    loadBillingLedgerHistory({ category, limit: LEDGER_PAGE_SIZE, offset: (page - 1) * LEDGER_PAGE_SIZE })
+      .then((payload) => {
+        // 数据量变化可能让当前页越界，服务端返回空页时回退到第一页。
+        if (!payload.items.length && page > 1) {
+          setLedgerPage(1);
+          return;
+        }
+        setLedgerItems(payload.items);
+        setLedgerTotal(payload.total);
+      })
+      .catch((exc) => setLedgerError(exc instanceof Error ? exc.message : "读取积分入账明细失败"))
+      .finally(() => setLedgerLoading(false));
+  }, []);
+
+  // 进入钱包面板、切换筛选或翻页时拉取；离开面板不请求。
+  useEffect(() => {
+    if (activePanel !== "wallet") return;
+    loadLedger(ledgerCategory, ledgerPage);
+  }, [activePanel, ledgerCategory, ledgerPage, loadLedger]);
+
+  const ledgerPageCount = Math.max(1, Math.ceil(ledgerTotal / LEDGER_PAGE_SIZE));
+  const safeLedgerPage = Math.min(ledgerPage, ledgerPageCount);
+  const ledgerRangeStart = ledgerTotal ? (safeLedgerPage - 1) * LEDGER_PAGE_SIZE + 1 : 0;
+  const ledgerRangeEnd = Math.min(safeLedgerPage * LEDGER_PAGE_SIZE, ledgerTotal);
+
   // 按日期统计总消费积分：统计当前筛选范围内「已结算」记录的实际扣费总和。
   const usageStats = useMemo(() => {
     let totalCharged = 0;
@@ -506,16 +575,78 @@ export function PersonalCenterPage({ feedbackPrefill = null }: PersonalCenterPag
     return { totalCharged, totalReserved, totalRefunded, settledCount, count: filteredUsageEntries.length };
   }, [filteredUsageEntries]);
 
+  // 确认中转编号：失焦或回车时才提交，避免每敲一个字就请求一次档位。
+  const commitStationCode = () => {
+    const code = stationCodeInput.trim();
+    if (code !== stationCodeInput) setStationCodeInput(code);
+    if (code === selectedStation) return;
+    setSelectedPackage("");
+    setCreatedOrder(null);
+    setPaymentNotice("");
+    setSelectedStation(code);
+  };
+
+  // 切换中转编号：读取该站在其自己网站上配置的档位，并默认选中第一档。
+  useEffect(() => {
+    setStationError("");
+    if (!selectedStation) {
+      setStationDetail(null);
+      return;
+    }
+    let disposed = false;
+    setStationLoading(true);
+    loadStationPartnerDetail(selectedStation)
+      .then((payload) => {
+        if (disposed) return;
+        setStationDetail(payload);
+        const first = payload.tiers[0];
+        setSelectedPackage(first ? stationPackageId(payload.station_code, first.amount_cents) : "");
+      })
+      .catch((exc) => {
+        if (disposed) return;
+        setStationDetail(null);
+        setSelectedPackage("");
+        setStationError(exc instanceof Error ? exc.message : "读取中转站档位失败");
+      })
+      .finally(() => {
+        if (!disposed) setStationLoading(false);
+      });
+    return () => {
+      disposed = true;
+    };
+  }, [selectedStation]);
+
   const customAmountCents = useMemo(() => {
     if (!/^\d+$/.test(customAmount)) return 0;
     const yuan = Number(customAmount);
     return Number.isSafeInteger(yuan) && yuan >= 1 && yuan <= 3000 ? yuan * 100 : 0;
   }, [customAmount]);
 
+  // 当前展示的档位表：选中中转编号时整体切换为该中转商自己的档位（到账积分 =
+  // 金额(元) × 倍率，不叠加官方固定套餐赠送），否则是官方套餐。
+  const topupProducts = useMemo<BillingPackage[]>(() => {
+    if (!selectedStation || !stationDetail) return summary?.topup_products ?? [];
+    // 与服务端 _display_billing_points 同一口径：先按 point_unit_scale 取整，再折回展示值。
+    const scale = Number(summary?.pricing?.point_unit_scale) || 10;
+    return stationDetail.tiers.map((tier) => {
+      const units = Math.round((tier.amount_cents / 100) * Number(tier.rate) * scale);
+      const points = units / scale;
+      return {
+        package_id: stationPackageId(stationDetail.station_code, tier.amount_cents),
+        label: `中转站充值 ${tier.amount_cents / 100} 元`,
+        amount_cents: tier.amount_cents,
+        base_points: points,
+        promotion_bonus_points: 0,
+        promotion_bonus_percent: 0,
+        total_points: points,
+      };
+    });
+  }, [selectedStation, stationDetail, summary]);
+
   const activePackage = useMemo(() => {
     if (selectedPackage === "custom") return customQuote;
-    return summary?.topup_products.find((item) => item.package_id === selectedPackage) ?? summary?.topup_products[0];
-  }, [customQuote, selectedPackage, summary]);
+    return topupProducts.find((item) => item.package_id === selectedPackage) ?? topupProducts[0];
+  }, [customQuote, selectedPackage, topupProducts]);
 
   useEffect(() => {
     setCustomQuote(null);
@@ -879,6 +1010,7 @@ export function PersonalCenterPage({ feedbackPrefill = null }: PersonalCenterPag
     // 领取已成功：先给即时反馈；后面 summary 刷新失败也不误报"领取失败"。
     setClaimNotice(`已领取 ${result.claimed_points} 积分（第 ${result.claim_count}/${result.claim_max} 周）`);
     notifyBalanceChanged();
+    loadLedger(ledgerCategory, ledgerPage);
     try {
       const payload = await loadBillingSummary();
       setSummary(payload);
@@ -892,11 +1024,13 @@ export function PersonalCenterPage({ feedbackPrefill = null }: PersonalCenterPag
               ...current,
               wallet: {
                 ...current.wallet,
+                available_points:
+                  (current.wallet.available_points ?? 0) + result.claimed_points,
                 plan: {
                   ...current.wallet.plan,
                   extra_balance: (current.wallet.plan.extra_balance ?? 0) + result.claimed_points,
                   basic_claim_count: result.claim_count,
-                  basic_claimable: result.claim_count < result.claim_max,
+                  basic_claimable: false,
                 },
               },
             }
@@ -907,7 +1041,7 @@ export function PersonalCenterPage({ feedbackPrefill = null }: PersonalCenterPag
     }
   };
 
-  /** 每日免费领取 100 积分（所有套餐通用，按北京自然日幂等）。 */
+  /** 每日签到：首签 +500 永久，之后每天 +100 限时（按北京自然日幂等）。 */
   const claimDailyPoints = async () => {
     if (dailyClaimBusy) return;
     setDailyClaimBusy(true);
@@ -917,31 +1051,46 @@ export function PersonalCenterPage({ feedbackPrefill = null }: PersonalCenterPag
     try {
       result = await claimDailyExtraPoints();
     } catch (exc) {
-      setError(exc instanceof Error ? exc.message : "领取失败，请稍后重试");
+      setError(exc instanceof Error ? exc.message : "签到失败，请稍后重试");
       setDailyClaimBusy(false);
       return;
     }
-    // 领取已成功：先给即时反馈；后面 summary 刷新失败也不误报"领取失败"。
-    setDailyClaimNotice(`已领取 ${result.claimed_points} 积分，明日 00:00 后可再领`);
+    // 签到已成功：先给即时反馈；后面 summary 刷新失败也不误报"签到失败"。
+    setDailyClaimNotice(
+      result.first_claim_bonus
+        ? `首签礼包 +${result.claimed_points} 积分（永久有效），明日 00:00 后可再签到`
+        : `已签到 +${result.claimed_points} 积分（限时，周一 00:00 过期），明日 00:00 后可再签到`,
+    );
     notifyBalanceChanged();
+    loadLedger(ledgerCategory, ledgerPage);
     try {
       const payload = await loadBillingSummary();
       setSummary(payload);
       writeBalanceCache(balanceCacheKeyValue, payload);
       lastBalanceRefreshAt.current = Date.now();
     } catch {
-      // 概要刷新失败：用领取结果乐观更新当前展示，避免"已入账却显示没变"。
+      // 概要刷新失败：用签到结果乐观更新当前展示，避免"已入账却显示没变"。
       setSummary((current) =>
         current
           ? {
               ...current,
               wallet: {
                 ...current.wallet,
+                available_points:
+                  (current.wallet.available_points ?? 0) + result.claimed_points,
                 plan: {
                   ...current.wallet.plan,
-                  extra_balance: (current.wallet.plan.extra_balance ?? 0) + result.claimed_points,
+                  plan_balance: result.first_claim_bonus
+                    ? current.wallet.plan.plan_balance
+                    : (current.wallet.plan.plan_balance ?? 0) + result.claimed_points,
+                  extra_balance: result.first_claim_bonus
+                    ? (current.wallet.plan.extra_balance ?? 0) + result.claimed_points
+                    : current.wallet.plan.extra_balance,
                   daily_claimable: false,
                   daily_claim_date: result.period,
+                  daily_claim_points: 100,
+                  daily_first_claim_bonus: 0,
+                  daily_week_count: (current.wallet.plan.daily_week_count ?? 0) + 1,
                   daily_next_claim_at: result.next_claim_at,
                 },
               },
@@ -1110,7 +1259,7 @@ export function PersonalCenterPage({ feedbackPrefill = null }: PersonalCenterPag
               <div>
                 <span>PLAN UPGRADE</span>
                 <h2 id="personal-upgrade-title">升级体验</h2>
-                <p>购买基础版，立得 4000 积分，四周内每周可领 1000 积分，领到即永久。</p>
+                <p>购买基础版，立得 4000 积分，28 天内每周可直接领取 1000 积分，领到即永久。</p>
               </div>
               <button type="button" onClick={() => setUpgradeOpen(false)} aria-label="关闭">×</button>
             </header>
@@ -1122,8 +1271,8 @@ export function PersonalCenterPage({ feedbackPrefill = null }: PersonalCenterPag
                 </div>
                 <ul className="personal-upgrade-plan-benefits">
                   <li><b>购买立得 4000 积分</b>（充值积分，永久有效）</li>
-                  <li>四周内<b>每周可领 1000 积分</b>（领到即永久）</li>
-                  <li>四周后到期，当周没领不补</li>
+                  <li>28 天内<b>每周可直接领取 1000 积分</b>（领到即永久）</li>
+                  <li>28 天后到期，自动回落体验版（每日签到 +100 限时积分）</li>
                 </ul>
                 <button
                   type="button"
@@ -1160,9 +1309,17 @@ export function PersonalCenterPage({ feedbackPrefill = null }: PersonalCenterPag
           <span className="iconfont icon-robot-fill" aria-hidden="true" />
           <span>模型选择</span>
         </button>
+        <button type="button" className={activePanel === "preferences" ? "is-active" : ""} onClick={() => setActivePanel("preferences")}>
+          <span className="iconfont icon-skin" aria-hidden="true" />
+          <span>偏好设置</span>
+        </button>
         <button type="button" className={activePanel === "version" ? "is-active" : ""} onClick={() => setActivePanel("version")}>
           <span className="iconfont icon-setting" aria-hidden="true" />
           <span>系统版本</span>
+        </button>
+        <button type="button" className={activePanel === "promo" ? "is-active" : ""} onClick={() => setActivePanel("promo")}>
+          <span className="iconfont icon-gift" aria-hidden="true" />
+          <span>推广计划</span>
         </button>
         <button type="button" className={activePanel === "feedback" ? "is-active" : ""} onClick={() => setActivePanel("feedback")}>
           <span className="iconfont icon-message" aria-hidden="true" />
@@ -1172,9 +1329,7 @@ export function PersonalCenterPage({ feedbackPrefill = null }: PersonalCenterPag
 
       <div className="personal-content-layout">
         <aside className="personal-sidebar" aria-label="个人中心侧栏">
-          <div className="personal-profile" ref={profileCardRef}>
-            <span className="personal-hero-glow" aria-hidden="true" />
-            <span className="personal-hero-glow is-two" aria-hidden="true" />
+          <div className="personal-profile">
             <div className="personal-profile-head">
               <div className="personal-avatar" onClick={() => avatarSrc && setAvatarPreviewOpen(true)} title={avatarSrc ? "查看大图" : undefined}>
                 {avatarSrc ? (
@@ -1198,49 +1353,8 @@ export function PersonalCenterPage({ feedbackPrefill = null }: PersonalCenterPag
                 </button>
               </div>
             </div>
-
-            <div className="personal-profile-balance">
-              <div className="personal-balance-head">
-                <span className="personal-stat-title"><i className="iconfont icon-gold" aria-hidden="true" />可用积分</span>
-                <button
-                  type="button"
-                  className="personal-stats-refresh is-on-dark"
-                  onClick={() => refreshBalance()}
-                  disabled={balanceCooldownActive || loading}
-                  aria-label="刷新可用积分"
-                >
-                  {balanceCooldownActive
-                    ? `${balanceCooldownSeconds} 秒`
-                    : loading
-                      ? <><span className="personal-spinner" aria-hidden="true" />刷新中</>
-                      : <><span className="iconfont icon-refresh" aria-hidden="true" />刷新</>}
-                </button>
-              </div>
-              <div className="personal-stat-value">
-                <b>{animatedAvailablePoints === null ? "--" : animatedAvailablePoints.toLocaleString()}</b>
-                <span className="personal-stat-unit">积分</span>
-                {loading && <span className="personal-stat-spinner" aria-label="积分刷新中" />}
-              </div>
-              <div className="personal-stat-meta">
-                <div className="personal-stat-item">
-                  <span>总积分</span>
-                  <b>{animatedTotalPoints === null ? "--" : animatedTotalPoints.toLocaleString()}</b>
-                </div>
-                <div className="personal-stat-item">
-                  <span>冻结积分</span>
-                  <b>{summary?.wallet.frozen_points.toLocaleString() ?? "--"}</b>
-                </div>
-                <div className="personal-stat-item is-ratio">
-                  <span>换算比例</span>
-                  <b>{summary?.pricing.ratio_label ?? "1 元 = 100 积分"}</b>
-                </div>
-              </div>
-            </div>
           </div>
-          <div
-            className="personal-plan-card"
-            style={profileCardHeight === null ? undefined : { height: `${profileCardHeight}px` }}
-          >
+          <div className="personal-plan-card">
             <div className="personal-plan-card-head">
               <span className="personal-plan-card-label">
                 <span className="iconfont icon-gold" aria-hidden="true" />
@@ -1256,31 +1370,49 @@ export function PersonalCenterPage({ feedbackPrefill = null }: PersonalCenterPag
               </div>
             )}
             <div className="personal-plan-block-head">
-              <span>体验积分</span>
-              <span>每周一刷新</span>
+              <span>限时积分</span>
+              <span>每周一 00:00 过期</span>
             </div>
             <div className="personal-plan-card-value">
               <b>{summary?.wallet.plan?.plan_balance ?? "--"}</b>
-              <em>/ {summary?.wallet.plan?.plan_limit ?? 500} 积分</em>
+              <em>积分</em>
             </div>
-            <div
-              className="personal-plan-card-meter"
-              role="progressbar"
-              aria-label="体验积分剩余额度"
-              aria-valuemin={0}
-              aria-valuemax={summary?.wallet.plan?.plan_limit ?? 500}
-              aria-valuenow={summary?.wallet.plan?.plan_balance ?? 0}
-            >
-              <span
-                style={{
-                  width: `${Math.min(100, Math.max(0, ((summary?.wallet.plan?.plan_balance ?? 0) / (summary?.wallet.plan?.plan_limit || 1)) * 100))}%`,
-                }}
-              />
+            <div className="personal-plan-block-head">
+              <span>额外积分</span>
+              <span>永久有效</span>
+            </div>
+            <div className="personal-plan-card-value">
+              <b>{summary?.wallet.plan?.extra_balance ?? "--"}</b>
+              <em>积分</em>
             </div>
             <div className="personal-plan-claim">
               <div className="personal-plan-claim-head">
-                <span>额外积分</span>
-                <b>{summary?.wallet.plan?.extra_balance ?? 0} 积分</b>
+                <span>
+                  每日签到
+                  <i
+                    className="personal-plan-claim-hint"
+                    title="首签送 500 积分进额外积分（永久）；之后每天 +100 进限时积分（周一 00:00 过期）。"
+                  >
+                    ?
+                  </i>
+                </span>
+                <span className="personal-plan-claim-week">
+                  本周已签 {summary?.wallet.plan?.daily_week_count ?? 0}/{summary?.wallet.plan?.daily_week_max ?? 7} 天
+                </span>
+              </div>
+              <div
+                className="personal-plan-claim-meter"
+                role="progressbar"
+                aria-label="本周签到进度"
+                aria-valuemin={0}
+                aria-valuemax={summary?.wallet.plan?.daily_week_max ?? 7}
+                aria-valuenow={summary?.wallet.plan?.daily_week_count ?? 0}
+              >
+                <span
+                  style={{
+                    width: `${Math.min(100, Math.max(0, ((summary?.wallet.plan?.daily_week_count ?? 0) / (summary?.wallet.plan?.daily_week_max || 7)) * 100))}%`,
+                  }}
+                />
               </div>
               <div className="personal-plan-claim-meta">
                 {summary?.wallet.plan?.daily_claimable ?? true ? (
@@ -1290,14 +1422,18 @@ export function PersonalCenterPage({ feedbackPrefill = null }: PersonalCenterPag
                     disabled={dailyClaimBusy || !summary}
                     onClick={claimDailyPoints}
                   >
-                    {dailyClaimBusy ? "领取中…" : `每日领取 ${summary?.wallet.plan?.daily_claim_points ?? 100} 积分`}
+                    {dailyClaimBusy
+                      ? "签到中…"
+                      : (summary?.wallet.plan?.daily_first_claim_bonus ?? 0) > 0
+                        ? `签到领 ${summary?.wallet.plan?.daily_first_claim_bonus} 新人礼`
+                        : `每日签到 +${summary?.wallet.plan?.daily_claim_points ?? 100} 积分`}
                   </button>
                 ) : (
-                  <span>今日已领，明天 00:00 再来</span>
+                  <span>今日已签到，明天 00:00 再来</span>
                 )}
               </div>
               {dailyClaimNotice && <p className="personal-plan-claim-notice">{dailyClaimNotice}</p>}
-              {/* 基础版专属：四周内每周另可领 1000，与每日领取叠加 */}
+              {/* 基础版专属：28 天内每周另可领 1000（永久），与每日签到叠加 */}
               {summary?.wallet.plan?.plan_type === "basic" && (
                 <div className="personal-plan-claim-basic">
                   <div
@@ -1322,10 +1458,10 @@ export function PersonalCenterPage({ feedbackPrefill = null }: PersonalCenterPag
                         disabled={claimBusy}
                         onClick={claimBasicPoints}
                       >
-                        {claimBusy ? "领取中…" : "领取基础版 1000 积分"}
+                        {claimBusy ? "领取中…" : "领取基础版 1000 积分（永久）"}
                       </button>
                     ) : summary.wallet.plan.basic_claim_count >= summary.wallet.plan.basic_claim_max ? (
-                      <span>基础版本周额度已领满</span>
+                      <span>基础版四周领取已用完</span>
                     ) : (
                       <span>基础版本周已领，下周一再来</span>
                     )}
@@ -1333,20 +1469,6 @@ export function PersonalCenterPage({ feedbackPrefill = null }: PersonalCenterPag
                   {claimNotice && <p className="personal-plan-claim-notice">{claimNotice}</p>}
                 </div>
               )}
-            </div>
-            <div className="personal-plan-stats">
-              <div className="personal-plan-stat">
-                <span>剩余额度</span>
-                <b>{summary?.wallet.plan?.plan_balance ?? "--"}</b>
-              </div>
-              <div className="personal-plan-stat">
-                <span>已使用</span>
-                <b>{summary?.wallet.plan?.plan_used ?? 0}</b>
-              </div>
-              <div className="personal-plan-stat">
-                <span>刷新周期</span>
-                <b>每周一</b>
-              </div>
             </div>
             {summary?.wallet.plan?.plan_expire_at && (
               <div className="personal-plan-expire">
@@ -1357,6 +1479,58 @@ export function PersonalCenterPage({ feedbackPrefill = null }: PersonalCenterPag
         </aside>
 
         <div className="personal-panel-content">
+        {/* 积分总览横卡片：核心数据一行铺开，换算规则全站只在这里出现一次；仅积分钱包页展示。 */}
+        {activePanel === "wallet" && (
+        <section className="personal-overview" aria-label="积分总览">
+          <div className="personal-overview-primary">
+            <span className="personal-overview-label">可用积分</span>
+            <div className="personal-overview-value">
+              <b>{animatedAvailablePoints === null ? "--" : animatedAvailablePoints.toLocaleString()}</b>
+              <span>积分</span>
+              {loading && <span className="personal-spinner" aria-label="积分刷新中" />}
+            </div>
+          </div>
+          <div className="personal-overview-metrics">
+            <div className="personal-overview-metric">
+              <span>
+                长期积分
+                <i className="personal-overview-hint" title="充值积分与首签新人礼、基础版每周领取等永久有效的积分，不会过期。">?</i>
+              </span>
+              <b>{animatedPermanentPoints === null ? "--" : animatedPermanentPoints.toLocaleString()}</b>
+            </div>
+            <div className="personal-overview-metric">
+              <span>
+                限时积分
+                <i className="personal-overview-hint" title="每日签到所得，每周一 00:00 统一清空作废。">?</i>
+              </span>
+              <b>{animatedLimitedPoints === null ? "--" : animatedLimitedPoints.toLocaleString()}</b>
+            </div>
+            <div className="personal-overview-metric">
+              <span>
+                冻结积分
+                <i className="personal-overview-hint" title="任务进行中暂时占用的积分，任务结束后按实际用量结算。">?</i>
+              </span>
+              <b>{summary ? (summary.wallet.frozen_points ?? 0).toLocaleString() : "--"}</b>
+            </div>
+          </div>
+          <div className="personal-overview-aside">
+            <span className="personal-overview-ratio">{summary?.pricing.ratio_label ?? "1 元 = 100 积分"}</span>
+            <button
+              type="button"
+              className="personal-stats-refresh"
+              onClick={() => refreshBalance()}
+              disabled={balanceCooldownActive || loading}
+              aria-label="刷新积分数据"
+            >
+              {balanceCooldownActive
+                ? `${balanceCooldownSeconds} 秒`
+                : loading
+                  ? <><span className="personal-spinner" aria-hidden="true" />刷新中</>
+                  : <><span className="iconfont icon-refresh" aria-hidden="true" />刷新</>}
+            </button>
+          </div>
+        </section>
+        )}
         <div className="personal-panel-anim" key={activePanel}>
         {activePanel === "wallet" ? <div className="personal-grid">
         <article className="personal-card topup-card">
@@ -1377,12 +1551,57 @@ export function PersonalCenterPage({ feedbackPrefill = null }: PersonalCenterPag
               </button>
             </div>
           </div>
+          <div className="topup-hero">
+            <span className="topup-hero-coin" aria-hidden="true">
+              <span className="iconfont icon-gold" />
+            </span>
+            <div className="topup-hero-copy">
+              <span className="topup-hero-kicker">充值积分 · 长期有效</span>
+              <b>{(summary?.wallet.points_balance ?? 0).toLocaleString()}<i>积分</i></b>
+            </div>
+          </div>
+          <div className="topup-station">
+            <label>
+              <span>中转编号</span>
+              <input
+                type="text"
+                value={stationCodeInput}
+                placeholder="输入中转商提供的中转编号"
+                aria-label="输入合作中转站编号"
+                autoComplete="off"
+                spellCheck={false}
+                onChange={(event) => setStationCodeInput(event.target.value)}
+                onBlur={commitStationCode}
+                onKeyDown={(event) => {
+                  if (event.key === "Enter") {
+                    event.preventDefault();
+                    commitStationCode();
+                  }
+                }}
+              />
+            </label>
+            <small>
+              {!selectedStation
+                ? "留空即按官方档位充值；填写中转编号后，档位与倍率按该中转站网站上的设置到账"
+                : stationLoading
+                  ? "正在读取该中转站的档位..."
+                  : stationError
+                    ? stationError
+                    : stationDetail
+                      ? stationDetail.tiers.length
+                        ? `中转商：${stationDetail.station_name} · 档位与倍率以该中转站网站设置为准`
+                        : "该中转站暂未配置充值档位"
+                      : ""}
+            </small>
+          </div>
           <p className="topup-promotion-banner">
-            <span className="iconfont icon-gift" aria-hidden="true" />
-            {summary?.topup_promotion?.name || "固定套餐档位递增赠送"}：仅固定套餐享赠送，自定义金额按原价到账。
+            <span className={`iconfont ${selectedStation ? "icon-gold" : "icon-gift"}`} aria-hidden="true" />
+            {selectedStation
+              ? "当前为中转站档位：到账积分按该中转站网站上设置的倍率计算，不叠加官方套餐赠送。"
+              : `${summary?.topup_promotion?.name || "固定套餐档位递增赠送"}：仅固定套餐享赠送，自定义金额按原价到账。`}
           </p>
           <div className="topup-products">
-            {summary?.topup_products.map((item) => (
+            {topupProducts.map((item) => (
               <button
                 key={item.package_id}
                 type="button"
@@ -1392,51 +1611,52 @@ export function PersonalCenterPage({ feedbackPrefill = null }: PersonalCenterPag
                 <span className="topup-product-points">{totalPoints(item).toLocaleString()}<i>积分</i></span>
                 <span className="topup-product-price">{money(item.amount_cents)}</span>
                 <span className="topup-product-bonus">
+                  {promotionBonusPoints(item) ? `含赠送 ${promotionBonusPoints(item).toLocaleString()} · ` : ""}
                   基础 {basePoints(item).toLocaleString()}
-                  {promotionBonusPoints(item)
-                    ? ` · 赠送 ${promotionBonusPoints(item).toLocaleString()}`
-                    : ""}
                 </span>
               </button>
             ))}
           </div>
-          <div className={`custom-topup ${selectedPackage === "custom" ? "is-active" : ""}`}>
-            <label>
-              <span>自定义金额</span>
-              <div>
-                <b>¥</b>
-                <input
-                  type="number"
-                  min="1"
-                  max="3000"
-                  step="1"
-                  inputMode="numeric"
-                  value={customAmount}
-                  onFocus={() => setSelectedPackage("custom")}
-                  onChange={(event) => {
-                    setCustomAmount(event.target.value);
-                    setSelectedPackage("custom");
-                  }}
-                  placeholder="1 - 3000"
-                  aria-label="自定义充值金额，单位元"
-                />
-                <em>元</em>
-              </div>
-            </label>
-            <small>
-              {!customAmount
-                ? "支持 1 - 3000 元整数充值"
-                : !customAmountCents
-                  ? "请输入 1 到 3000 的整数金额"
-                  : customQuoteLoading
-                    ? "正在获取服务器报价..."
-                    : customQuoteError
-                      ? customQuoteError
-                      : customQuote
-                        ? `预计到账 ${totalPoints(customQuote).toLocaleString()} 积分（自定义金额不参与固定套餐赠送）`
-                        : "正在获取服务器报价..."}
-            </small>
-          </div>
+          {/* 中转站只有固定档位（≤6 档），没有自定义金额，故选中中转编号时隐藏该块。 */}
+          {!selectedStation && (
+            <div className={`custom-topup ${selectedPackage === "custom" ? "is-active" : ""}`}>
+              <label>
+                <span>自定义金额</span>
+                <div>
+                  <b>¥</b>
+                  <input
+                    type="number"
+                    min="1"
+                    max="3000"
+                    step="1"
+                    inputMode="numeric"
+                    value={customAmount}
+                    onFocus={() => setSelectedPackage("custom")}
+                    onChange={(event) => {
+                      setCustomAmount(event.target.value);
+                      setSelectedPackage("custom");
+                    }}
+                    placeholder="1 - 3000"
+                    aria-label="自定义充值金额，单位元"
+                  />
+                  <em>元</em>
+                </div>
+              </label>
+              <small>
+                {!customAmount
+                  ? "支持 1 - 3000 元整数充值"
+                  : !customAmountCents
+                    ? "请输入 1 到 3000 的整数金额"
+                    : customQuoteLoading
+                      ? "正在获取服务器报价..."
+                      : customQuoteError
+                        ? customQuoteError
+                        : customQuote
+                          ? `预计到账 ${totalPoints(customQuote).toLocaleString()} 积分（自定义金额不参与固定套餐赠送）`
+                          : "正在获取服务器报价..."}
+              </small>
+            </div>
+          )}
           <button className="primary-topup" type="button" disabled={!activePackage || creating || customQuoteLoading} onClick={() => void submitTopup(activePackage)}>
             {creating ? "正在创建服务器订单..." : "创建充值订单"}
           </button>
@@ -1454,32 +1674,84 @@ export function PersonalCenterPage({ feedbackPrefill = null }: PersonalCenterPag
           {paymentNotice && <p className="payment-notice">{paymentNotice}</p>}
         </article>
 
-        <article className="personal-card orders-card">
+        <article className="personal-card ledger-card">
           <div className="personal-card-title">
             <span className="iconfont icon-accountbook-fill" aria-hidden="true" />
-            <h2>最近订单</h2>
+            <div>
+              <h2>积分入账明细</h2>
+              <small>充值、档位赠送、每日/每周领取与划拨的每一笔入账都在这里留痕。</small>
+            </div>
           </div>
-          <div className="order-list">
-            {summary?.recent_orders.length ? summary.recent_orders.map((order) => (
-              <div key={order.order_id} className="order-row">
-                <div>
-                  <strong>{providerMeta[order.provider]?.label ?? order.provider} · {statusLabel(order.status)}</strong>
-                  <span>{order.out_trade_no}</span>
+          <div className="ledger-filters">
+            {([
+              ["", "全部"],
+              ["topup", "充值积分"],
+              ["reward", "活动积分"],
+            ] as Array<[BillingLedgerCategory, string]>).map(([value, label]) => (
+              <button
+                key={value || "all"}
+                type="button"
+                className={ledgerCategory === value ? "is-active" : ""}
+                aria-pressed={ledgerCategory === value}
+                onClick={() => {
+                  setLedgerCategory(value);
+                  setLedgerPage(1);
+                }}
+              >
+                {label}
+              </button>
+            ))}
+            <button
+              type="button"
+              className="ledger-refresh"
+              onClick={() => loadLedger(ledgerCategory, ledgerPage)}
+              disabled={ledgerLoading}
+            >
+              {ledgerLoading ? "读取中…" : "刷新"}
+            </button>
+          </div>
+          <div className="ledger-list">
+            {ledgerError ? (
+              <div className="empty-ledger">
+                <span className="iconfont icon-inbox" aria-hidden="true" />
+                <p>读取入账明细失败</p>
+                <span>{ledgerError}</span>
+              </div>
+            ) : ledgerItems.length ? ledgerItems.map((item) => (
+              <div key={item.entry_id} className="ledger-row">
+                <span className="ledger-row-icon">
+                  <span className={ledgerSourceIcon(item.source_type)} aria-hidden="true" />
+                </span>
+                <div className="ledger-row-main">
+                  <strong>{ledgerSourceLabel(item.source_type)}</strong>
+                  <span>{formatUsageTime(item.created_at)}</span>
                 </div>
-                <div>
-                  <b>{money(order.amount_cents)}</b>
-                  <span>+{totalPoints(order).toLocaleString()} 积分</span>
-                  {promotionBonusPoints(order) > 0 && <small>含赠送 {promotionBonusPoints(order).toLocaleString()} 积分</small>}
+                <div className="ledger-row-side">
+                  <b>+{item.points_delta.toLocaleString()}</b>
+                  <span className="ledger-tag">
+                    {LEDGER_TOPUP_SOURCES.has(item.source_type) ? "充值积分" : "活动积分"}
+                  </span>
                 </div>
               </div>
             )) : (
-              <div className="empty-orders">
+              <div className="empty-ledger">
                 <span className="iconfont icon-inbox" aria-hidden="true" />
-                <p>暂无充值订单</p>
-                <span>充值成功后将在这里显示最近记录</span>
+                <p>暂无积分入账记录</p>
+                <span>充值到账、每日/每周领取与划拨都会显示在这里</span>
               </div>
             )}
           </div>
+          {!ledgerError && ledgerPageCount > 1 && (
+            <div className="ledger-pager">
+              <button type="button" disabled={safeLedgerPage <= 1 || ledgerLoading} onClick={() => setLedgerPage(safeLedgerPage - 1)}>
+                上一页
+              </button>
+              <span>第 {safeLedgerPage} / {ledgerPageCount} 页 · {ledgerRangeStart}-{ledgerRangeEnd} / 共 {ledgerTotal} 条</span>
+              <button type="button" disabled={safeLedgerPage >= ledgerPageCount || ledgerLoading} onClick={() => setLedgerPage(safeLedgerPage + 1)}>
+                下一页
+              </button>
+            </div>
+          )}
         </article>
         </div> : activePanel === "pricing" ? (
           <article className="personal-card pricing-card">
@@ -1602,8 +1874,12 @@ export function PersonalCenterPage({ feedbackPrefill = null }: PersonalCenterPag
               </section>
             </div>
           </article>
+        ) : activePanel === "preferences" ? (
+          <PreferencesPanel />
         ) : activePanel === "version" ? (
           <SystemVersionPanel />
+        ) : activePanel === "promo" ? (
+          <PromotionPlanPanel />
         ) : activePanel === "feedback" ? (
           <div ref={feedbackRef}>
             <FeedbackPanel initialContent={prefillFeedback} />
