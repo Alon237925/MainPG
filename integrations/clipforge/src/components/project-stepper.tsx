@@ -3,6 +3,8 @@
 import Link from "next/link";
 import { useParams, usePathname } from "next/navigation";
 import { useT } from "@/lib/i18n";
+import type { OutputStrategy } from "@/lib/creation-brief";
+import { resolveStepperSteps, type StepperStepView } from "@/lib/stepper-flow-policy";
 
 // Pipeline steps in order; `path` is the route suffix under /project/[id]/
 const STEPS = [
@@ -11,6 +13,12 @@ const STEPS = [
   { key: "stepVideo", path: "video" },
   { key: "stepExport", path: "export" },
 ] as const;
+
+// 徽标中文文案（直写字面量，避免新增 i18n key），与 resolveStepperSteps 的状态对齐
+const STATUS_CHIPS: Record<NonNullable<StepperStepView["status"]>, string> = {
+  main: "主路径",
+  optional: "可选",
+};
 
 /**
  * Clickable four-step progress pills shared by the project pipeline pages
@@ -27,7 +35,7 @@ const STEPS = [
  * Once the avoidance is lifted, replace its inline stepper with this
  * component as well.
  */
-export function ProjectStepper() {
+export function ProjectStepper({ outputStrategy }: { outputStrategy?: OutputStrategy | null }) {
   const t = useT("common");
   const { id } = useParams<{ id: string }>();
   const pathname = usePathname();
@@ -36,6 +44,12 @@ export function ProjectStepper() {
     0,
     STEPS.findIndex((s) => pathname?.endsWith(`/${s.path}`))
   );
+
+  // 每个策略的主次标注；null/undefined（旧项目）→ 全部 status=null，纯胶囊展示
+  const views = resolveStepperSteps(outputStrategy);
+  const viewByPath = new Map(views.map((view) => [view.key, view]));
+  const currentView = viewByPath.get(STEPS[current].path);
+  const currentHint = currentView?.hint;
 
   return (
     <>
@@ -48,31 +62,49 @@ export function ProjectStepper() {
         <span className="text-primary-foreground/60">{current + 1}/{STEPS.length}</span>
       </div>
       {/* desktop: full pills; every step links to its page for free navigation */}
-      <div className="hidden sm:flex items-center gap-1">
-        {STEPS.map((step, i) => (
-          <div key={step.key} className="flex items-center">
-            <Link
-              href={`/project/${id}/${step.path}`}
-              className={`flex h-7 items-center gap-1.5 rounded-full px-3 text-xs font-medium transition-colors ${
-                i === current
-                  ? "bg-primary text-primary-foreground"
-                  : i < current
-                  ? "text-primary hover:bg-primary/10"
-                  : "text-muted-foreground hover:bg-muted/50"
-              }`}
-            >
-              <span
-                className={`flex h-4 w-4 items-center justify-center rounded-full text-[10px] ${
-                  i === current ? "bg-white/20" : i < current ? "bg-primary/20" : "bg-muted"
-                }`}
-              >
-                {i < current ? "✓" : i + 1}
-              </span>
-              {t(step.key)}
-            </Link>
-            {i < STEPS.length - 1 && <div className="mx-1 h-px w-4 bg-border" />}
-          </div>
-        ))}
+      <div className="hidden sm:flex flex-col items-end gap-1">
+        <div className="flex items-center gap-1">
+          {STEPS.map((step, i) => {
+            const view = viewByPath.get(step.path);
+            const chip = view?.status ? STATUS_CHIPS[view.status] : null;
+            return (
+              <div key={step.key} className="flex items-center">
+                <Link
+                  href={`/project/${id}/${step.path}`}
+                  className={`flex h-7 items-center gap-1.5 rounded-full px-3 text-xs font-medium transition-colors ${
+                    i === current
+                      ? "bg-primary text-primary-foreground"
+                      : i < current
+                      ? "text-primary hover:bg-primary/10"
+                      : "text-muted-foreground hover:bg-muted/50"
+                  }`}
+                >
+                  <span
+                    className={`flex h-4 w-4 items-center justify-center rounded-full text-[10px] ${
+                      i === current ? "bg-white/20" : i < current ? "bg-primary/20" : "bg-muted"
+                    }`}
+                  >
+                    {i < current ? "✓" : i + 1}
+                  </span>
+                  {t(step.key)}
+                  {chip && (
+                    <span
+                      className={`rounded-sm px-1 text-[10px] leading-4 ${
+                        i === current ? "bg-white/20" : "bg-primary/10 text-primary"
+                      }`}
+                    >
+                      {chip}
+                    </span>
+                  )}
+                </Link>
+                {i < STEPS.length - 1 && <div className="mx-1 h-px w-4 bg-border" />}
+              </div>
+            );
+          })}
+        </div>
+        {currentHint && (
+          <span className="text-[11px] leading-4 text-muted-foreground">{currentHint}</span>
+        )}
       </div>
     </>
   );
