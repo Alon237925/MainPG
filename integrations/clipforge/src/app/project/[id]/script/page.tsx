@@ -1,6 +1,6 @@
 "use client";
 
-import { useState, useEffect, useMemo } from "react";
+import { useState, useEffect, useMemo, useRef } from "react";
 import { useParams, useRouter } from "next/navigation";
 import { LuWand, LuClock, LuImage, LuArrowRight, LuBookmarkPlus, LuLoaderCircle, LuTriangleAlert, LuCircleCheck, LuCircleX, LuPencil } from "react-icons/lu";
 import { checkScriptCompliance } from "@/lib/ad-compliance";
@@ -127,6 +127,8 @@ export default function ScriptPage() {
   const [creationBrief, setCreationBrief] = useState<CreationBrief | null>(null);
   // 简报是否已经读取完成：区分「还没读到」与「读到了 null（旧项目）」，策略门控不会误判
   const [briefLoaded, setBriefLoaded] = useState(false);
+  // 读取失败 ≠ 旧项目：元数据读不到时绝不能被当成 legacy 而让 ?auto=1 误启免费链
+  const [briefLoadFailed, setBriefLoadFailed] = useState(false);
   // 主播的唯一解析来源：优先级见 resolveScriptCharacter（项目记录 → 创作简报 → URL 兜底）。
   // 脚本重生成、原生影片预览与提交都复用这里的同一个 presenter，页面不出现第二套角色解析。
   // ?presenter=<id> 只是旧链接的兜底，创建后的跳转链接并不带它。
@@ -161,6 +163,7 @@ export default function ScriptPage() {
       const dbScripts: DbScript[] = scriptsRes.ok ? await scriptsRes.json() : [];
       if (projectRes.ok) {
         const proj = await projectRes.json();
+        setBriefLoadFailed(false);
         setProjectName(proj.name ?? proj.productName ?? "");
         // 简报随每次读取刷新：脚本接口会把实际用到的风格与来源写回项目简报
         setCreationBrief(proj.creationBrief ? sanitizeCreationBrief(proj.creationBrief) : null);
@@ -174,6 +177,9 @@ export default function ScriptPage() {
           topic: proj.topic ?? "",
           characterId: proj.characterId ?? "",
         });
+      } else {
+        // 项目元数据读不到：不能当成「旧项目」误启免费链
+        setBriefLoadFailed(true);
       }
       if (Array.isArray(dbScripts) && dbScripts.length > 0) {
         setScripts(
@@ -195,6 +201,7 @@ export default function ScriptPage() {
       }
     } catch {
       setScripts([]);
+      setBriefLoadFailed(true);
     } finally {
       setLoading(false);
     }
@@ -314,6 +321,7 @@ export default function ScriptPage() {
         if (projectRes.ok) {
           const proj = await projectRes.json();
           if (!cancelled) {
+            setBriefLoadFailed(false);
             setProjectName(proj.name ?? proj.productName ?? "");
             // null 是合法状态（旧项目），必须与「还没读到」区分开，策略门控才不会误判
             setCreationBrief(proj.creationBrief ? sanitizeCreationBrief(proj.creationBrief) : null);
@@ -328,6 +336,9 @@ export default function ScriptPage() {
               characterId: proj.characterId ?? "",
             });
           }
+        } else if (!cancelled) {
+          // 项目元数据读不到：不能当成「旧项目」误启免费链
+          setBriefLoadFailed(true);
         }
         if (cancelled) return;
         if (Array.isArray(dbScripts) && dbScripts.length > 0) {
@@ -350,7 +361,11 @@ export default function ScriptPage() {
           setScripts([]);
         }
       } catch {
-        if (!cancelled) setScripts([]);
+        if (!cancelled) {
+          setScripts([]);
+          // 读取失败 ≠ 旧项目：不让 ?auto=1 在策略未知时误启免费链
+          setBriefLoadFailed(true);
+        }
       } finally {
         if (!cancelled) {
           // 「简报已读取」与「读到的是 null（旧项目）」必须分开：读取失败也当作已尝试，
@@ -469,8 +484,15 @@ export default function ScriptPage() {
   // (the ?auto=1 fresh-start trigger lives below, after the pipeline re-attach check)
   // 出片策略门控（设计 §7.4）：`null` 表示项目没有 creationBrief（旧项目，保留原行为）
   const outputStrategy: OutputStrategy | null = creationBrief?.outputStrategy ?? null;
+  // 简报读取状态：failed 时绝不能把付费项目误判成 legacy 而自动启动免费链
+  const briefState = briefLoadFailed ? "failed" : briefLoaded ? "loaded" : "loading";
   // 统一策略门控：uiMode 只是界面模式，绝不改判出片策略（见 script-flow-policy）
-  const flow = resolveScriptFlowPolicy({ outputStrategy, uiMode, autoMode });
+  const flow = resolveScriptFlowPolicy({ outputStrategy, uiMode, autoMode, briefState });
+  // 免费链是否为该项目的禁用路径：挂接/轮询发生在简报读完之前，必须用 ref 读最新策略
+  const freeChainForbiddenRef = useRef(false);
+  useEffect(() => {
+    freeChainForbiddenRef.current = !resolveScriptFlowPolicy({ outputStrategy }).allowFreeChain;
+  }, [outputStrategy]);
   // Judge pass — the quality bar runs in BOTH hands-off chains, not just the pro editor.
   // Four narrow judges tear the voiceover lines apart and their rewrites are applied
   // automatically BEFORE any footage matching / generation money. Beginners never operate
@@ -533,12 +555,19 @@ export default function ScriptPage() {
 
   /** Poll the project's latest pipeline run to a terminal status, mirroring stage labels. */
   const attachPipeline = async () => {
+    // 已知付费策略的项目不观察免费草稿任务；轮询里还会用 ref 再查一次——
+    // 挂接可能发生在简报读完之前，入口闭包里的 outputStrategy 还是旧值
+    if (freeChainForbiddenRef.current) return;
     setAutoFinishing(true);
     setAutoFinishError("");
     setResumableRun(null);
     try {
       // 2.5s × 312 ≈ 13 min, above the server-side compose polling budget
       for (let i = 0; i < 312; i++) {
+        if (freeChainForbiddenRef.current) {
+          setAutoFinishing(false);
+          return;
+        }
         const d = await fetch(`/api/project/${id}/pipeline`).then((x) => x.json()).catch(() => ({}));
         const run = d?.run;
         if (!run) throw new Error(t("autoFinishFailed"));
@@ -562,6 +591,8 @@ export default function ScriptPage() {
   const startPipeline = async (resume: boolean) => {
     if (autoFinishing) return;
     if (!resume && !currentScript) return;
+    // 纵深门禁：autoFinish / 断点续跑 / 重新开始都经过这里，付费策略一律拒绝免费链
+    if (!resolveScriptFlowPolicy({ outputStrategy, uiMode, autoMode }).allowFreeChain) return;
     setAutoFinishing(true);
     setAutoFinishError("");
     setAutoFinishStage(t("autoFinishSelecting"));
@@ -621,11 +652,11 @@ export default function ScriptPage() {
     setAutoModeTriggered(true);
     // 策略门控（设计 §7.4）：draft / legacy 才允许免费链自动跑；controlled-motion / native-film 停在
     // 脚本确认页等用户走各自的付费确认入口，绝不被 URL 参数静默降级成静态草稿
-    const flow = resolveScriptFlowPolicy({ outputStrategy, autoMode });
+    const flow = resolveScriptFlowPolicy({ outputStrategy, autoMode, briefState });
     if (!flow.allowAutoStart) return;
     autoFinish();
     // eslint-disable-next-line react-hooks/exhaustive-deps -- autoFinish is a stable page-level handler; triggering once per auto entry
-  }, [autoMode, autoModeTriggered, loading, briefLoaded, outputStrategy, currentScript, pipelineChecked, resumableRun]);
+  }, [autoMode, autoModeTriggered, loading, briefLoaded, outputStrategy, briefState, currentScript, pipelineChecked, resumableRun]);
 
   // ---- AI film chain (grid → one-call film): the paid path. The free script above is the
   // zero-cost "video plan" gate — money is only spent after this one explicit click, and the
@@ -680,6 +711,8 @@ export default function ScriptPage() {
   // only after the user confirms THIS preview (text-level confirmation before any spend).
   const runAiFilm = async () => {
     if (!currentScript || aiFilming || autoFinishing) return;
+    // 纵深门禁：整片链只属于 native-film / legacy，按钮显隐不是唯一防线
+    if (!resolveScriptFlowPolicy({ outputStrategy }).showNativeFilmAction) return;
     setAiFilming(true);
     setAiFilmError("");
     setFilmPreview(null);
@@ -705,6 +738,8 @@ export default function ScriptPage() {
   // dryRun must return the identical prompt (script edited in between → abort and re-preview).
   const confirmAiFilm = async () => {
     if (!currentScript || !filmPreview || aiFilming) return;
+    // 纵深门禁：付费提交前再校验一次出片策略，draft / controlled-motion 一律拒绝
+    if (!resolveScriptFlowPolicy({ outputStrategy }).showNativeFilmAction) return;
     setAiFilming(true);
     setAiFilmError("");
     try {
@@ -916,10 +951,21 @@ export default function ScriptPage() {
       />
       {flow.strategy === "legacy" && (
         <div className="rounded-xl border border-amber-500/40 bg-amber-500/10 px-4 py-3">
-          <p className="text-sm font-medium text-amber-500">旧项目：没有创作简报</p>
-          <p className="mt-1 text-xs leading-relaxed text-muted-foreground">
-            该项目创建于统一创作入口之前，没有记录出片策略；带 ?auto=1 打开时仍按原来的免费流水线行为运行，以便断点恢复。
-          </p>
+          {briefLoadFailed ? (
+            <>
+              <p className="text-sm font-medium text-amber-500">创作简报读取失败：出片策略未知</p>
+              <p className="mt-1 text-xs leading-relaxed text-muted-foreground">
+                已阻止免费草稿自动任务自动启动；请刷新页面重试，确认出片策略后再成片。
+              </p>
+            </>
+          ) : (
+            <>
+              <p className="text-sm font-medium text-amber-500">旧项目：没有创作简报</p>
+              <p className="mt-1 text-xs leading-relaxed text-muted-foreground">
+                该项目创建于统一创作入口之前，没有记录出片策略；带 ?auto=1 打开时仍按原来的免费流水线行为运行，以便断点恢复。
+              </p>
+            </>
+          )}
         </div>
       )}
       {/* 按出片策略给出各自的确认入口，绝不把付费策略静默降级成免费流水线 */}

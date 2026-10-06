@@ -21,6 +21,11 @@ export interface ScriptFlowPolicyArgs {
   uiMode?: "simple" | "pro" | null;
   /** ?auto=1 是否已触发（隐式启动免费链的意图）。 */
   autoMode?: boolean;
+  /**
+   * 简报读取状态（默认 "loaded"）：loading / failed 时绝不隐式自动启动免费链——
+   * 简报读不到的付费项目不能被误判成 legacy 旧项目而误启免费链。
+   */
+  briefState?: "loading" | "loaded" | "failed";
 }
 
 export interface ScriptFlowPolicy {
@@ -42,6 +47,8 @@ export interface ScriptFlowPolicy {
 
 export function resolveScriptFlowPolicy(args: ScriptFlowPolicyArgs): ScriptFlowPolicy {
   const autoMode = !!args.autoMode;
+  // 简报未读定（loading/failed）时不允许任何隐式自动启动：此时 outputStrategy 不可信
+  const briefSettled = (args.briefState ?? "loaded") === "loaded";
   // uiMode 被刻意忽略：界面模式（小白/导演）绝不能改判出片策略，
   // 否则切换界面会把付费策略降级成免费草稿、或反之改变计费路径。
   switch (args.outputStrategy) {
@@ -49,7 +56,7 @@ export function resolveScriptFlowPolicy(args: ScriptFlowPolicyArgs): ScriptFlowP
       return {
         strategy: "draft",
         primaryAction: "draft-auto-finish",
-        allowAutoStart: autoMode,
+        allowAutoStart: autoMode && briefSettled,
         allowFreeChain: true,
         showDraftAction: true,
         showControlledMotionAction: false,
@@ -80,7 +87,7 @@ export function resolveScriptFlowPolicy(args: ScriptFlowPolicyArgs): ScriptFlowP
       return {
         strategy: "legacy",
         primaryAction: "legacy",
-        allowAutoStart: autoMode,
+        allowAutoStart: autoMode && briefSettled,
         allowFreeChain: true,
         showDraftAction: true,
         showNativeFilmAction: true,

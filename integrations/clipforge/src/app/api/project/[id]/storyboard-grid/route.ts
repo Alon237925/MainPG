@@ -13,6 +13,7 @@ import { buildStoryboardGridPrompt, computeGridCells, GRID_MAX_SHOTS } from "@/l
 import { ffmpegBin } from "@/lib/ffmpeg-path";
 import { probeMedia } from "@/lib/media-probe";
 import { apiError, errText } from "@/lib/api-error";
+import { filmChainStrategyGuard } from "@/lib/film-chain-gate";
 
 const execFileAsync = promisify(execFile);
 
@@ -65,6 +66,11 @@ export async function POST(req: NextRequest, { params }: { params: Promise<{ id:
       return apiError(req, "无效的项目ID", "Invalid project id", 400);
     }
     const body = await req.json();
+    // 服务端出片策略门禁：九宫格只属于 native-film / 旧项目（按钮显隐不是唯一防线）
+    const gate = await filmChainStrategyGuard(id);
+    if (!gate.allowed) {
+      return apiError(req, `出片策略「${gate.strategy}」不允许整片生成`, `Output strategy "${gate.strategy}" does not allow native film generation`, 409);
+    }
     const { scriptId, provider: providerName, model, apiKey, baseUrl, options, characterSheetUrl, productImageUrl } = body as {
       scriptId?: string;
       provider?: string;

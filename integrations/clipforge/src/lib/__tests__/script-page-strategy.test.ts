@@ -52,9 +52,9 @@ describe("resolveScriptFlowPolicy 接入（design §7.4）", () => {
     expect(resolveScriptFlowPolicy({ outputStrategy: "controlled-motion", autoMode: true }).allowAutoStart).toBe(false);
   });
 
-  it("自动启动判据是 outputStrategy 与 autoMode 的组合", () => {
+  it("自动启动判据是 outputStrategy 与 autoMode 的组合（并带 briefState）", () => {
     const body = autoStartEffectBody();
-    expect(body).toMatch(/resolveScriptFlowPolicy\(\{ outputStrategy, autoMode \}\)/);
+    expect(body).toMatch(/resolveScriptFlowPolicy\(\{ outputStrategy, autoMode, briefState \}\)/);
     expect(body).toMatch(/if \(!flow\.allowAutoStart\) return/);
     // 门控在前、启动在后：非 draft 策略在到达 autoFinish 之前就返回了
     expect(body.indexOf("resolveScriptFlowPolicy")).toBeLessThan(body.indexOf("autoFinish()"));
@@ -63,7 +63,7 @@ describe("resolveScriptFlowPolicy 接入（design §7.4）", () => {
   it("简报还没读到时门控不生效，避免把受控动态误当成旧项目自动跑", () => {
     const body = autoStartEffectBody();
     expect(body).toMatch(/!briefLoaded/);
-    expect(scriptPage).toMatch(/\[autoMode, autoModeTriggered, loading, briefLoaded, outputStrategy, currentScript, pipelineChecked, resumableRun\]/);
+    expect(scriptPage).toMatch(/\[autoMode, autoModeTriggered, loading, briefLoaded, outputStrategy, briefState, currentScript, pipelineChecked, resumableRun\]/);
     // genPref 已彻底移除（无产生者，不发明替代参数）
     expect(body).not.toMatch(/genPref/);
   });
@@ -197,5 +197,51 @@ describe("脚本页：ProjectHeader 与 409 显式风格", () => {
     expect(scriptPage).toMatch(/snapshotCurrentScripts/);
     expect(scriptPage).toMatch(/previousScriptsPanel/);
     expect(scriptPage).toMatch(/setPreviousScripts/);
+  });
+});
+
+describe("纵深门禁：按钮显隐不是唯一防线", () => {
+  const sliceFrom = (marker: string, endMarker: string) => {
+    const from = scriptPage.slice(scriptPage.indexOf(marker));
+    return from.slice(0, from.indexOf(endMarker));
+  };
+
+  it("startPipeline（autoFinish / 断点续跑 / 重新开始的共同入口）自带 allowFreeChain 门禁", () => {
+    const body = sliceFrom("const startPipeline", "const autoFinish");
+    expect(body).toMatch(/if \(!resolveScriptFlowPolicy\(\{ outputStrategy, uiMode, autoMode \}\)\.allowFreeChain\) return;/);
+  });
+
+  it("attachPipeline 拒绝为免费链禁用项目挂接，轮询中再查最新策略", () => {
+    const body = sliceFrom("const attachPipeline", "const startPipeline");
+    expect(body).toMatch(/if \(freeChainForbiddenRef\.current\) return;/);
+    expect(body).toMatch(/if \(freeChainForbiddenRef\.current\) \{\s*setAutoFinishing\(false\);\s*return;/);
+  });
+
+  it("freeChainForbiddenRef 随 outputStrategy 更新（简报读完前挂接也能止损）", () => {
+    expect(scriptPage).toMatch(/freeChainForbiddenRef\.current = !resolveScriptFlowPolicy\(\{ outputStrategy \}\)\.allowFreeChain;/);
+  });
+
+  it("runAiFilm 自带 showNativeFilmAction 门禁（不修改其九宫格/整片生成逻辑）", () => {
+    const body = sliceFrom("const runAiFilm", "// Phase 2");
+    expect(body).toMatch(/if \(!resolveScriptFlowPolicy\(\{ outputStrategy \}\)\.showNativeFilmAction\) return;/);
+  });
+
+  it("confirmAiFilm 在付费提交前同样校验 showNativeFilmAction", () => {
+    const body = sliceFrom("const confirmAiFilm", "// switching scripts");
+    expect(body).toMatch(/if \(!resolveScriptFlowPolicy\(\{ outputStrategy \}\)\.showNativeFilmAction\) return;/);
+  });
+});
+
+describe("简报读取失败 ≠ 旧项目（不得误启免费链）", () => {
+  it("失败记 briefLoadFailed，策略解析带 briefState，自动启动被拦", () => {
+    expect(scriptPage).toMatch(/const \[briefLoadFailed, setBriefLoadFailed\] = useState\(false\)/);
+    expect(scriptPage).toMatch(/const briefState = briefLoadFailed \? "failed" : briefLoaded \? "loaded" : "loading"/);
+    expect(scriptPage).toMatch(/resolveScriptFlowPolicy\(\{ outputStrategy, uiMode, autoMode, briefState \}\)/);
+    expect(autoStartEffectBody()).toMatch(/resolveScriptFlowPolicy\(\{ outputStrategy, autoMode, briefState \}\)/);
+  });
+
+  it("失败态横幅明确策略未知且已阻止自动启动", () => {
+    expect(scriptPage).toMatch(/创作简报读取失败：出片策略未知/);
+    expect(scriptPage).toMatch(/已阻止免费草稿自动任务自动启动/);
   });
 });

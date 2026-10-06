@@ -69,3 +69,26 @@ describe("resolveScriptFlowPolicy：出片策略 → 脚本页主操作与自动
     expect(p.allowFreeChain).toBe(true);
   });
 });
+
+describe("resolveScriptFlowPolicy：简报读取状态（briefState）", () => {
+  it("简报 loading/failed 时绝不隐式自动启动免费链（draft 与 legacy 同样被拦）", () => {
+    for (const briefState of ["loading", "failed"] as const) {
+      expect(resolveScriptFlowPolicy({ outputStrategy: "draft", autoMode: true, briefState }).allowAutoStart).toBe(false);
+      expect(resolveScriptFlowPolicy({ outputStrategy: null, autoMode: true, briefState }).allowAutoStart).toBe(false);
+    }
+  });
+
+  it("简报读定后 draft/legacy 恢复自动启动权限（briefState 缺省即 loaded）", () => {
+    expect(resolveScriptFlowPolicy({ outputStrategy: "draft", autoMode: true }).allowAutoStart).toBe(true);
+    expect(resolveScriptFlowPolicy({ outputStrategy: null, autoMode: true, briefState: "loaded" }).allowAutoStart).toBe(true);
+  });
+
+  it("briefState 只拦自动启动，不改变策略归属与其它门禁", () => {
+    const failedDraft = resolveScriptFlowPolicy({ outputStrategy: "draft", autoMode: true, briefState: "failed" });
+    expect(failedDraft.strategy).toBe("draft");
+    expect(failedDraft.allowFreeChain).toBe(true);
+    expect(failedDraft.primaryAction).toBe("draft-auto-finish");
+    expect(resolveScriptFlowPolicy({ outputStrategy: "native-film", autoMode: true, briefState: "failed" }).allowAutoStart).toBe(false);
+    expect(resolveScriptFlowPolicy({ outputStrategy: "controlled-motion", autoMode: true, briefState: "failed" }).allowFreeChain).toBe(false);
+  });
+});
