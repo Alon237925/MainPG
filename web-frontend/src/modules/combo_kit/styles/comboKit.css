@@ -110,7 +110,7 @@
 }
 .combo-grid textarea, .combo-section textarea, .combo-preset-custom textarea { resize: none; min-height: 72px; font-family: inherit; }
 
-.combo-actions { display: flex; gap: 10px; margin-top: 12px; flex-wrap: wrap; }
+.combo-actions { display: flex; align-items: center; gap: 10px; margin-top: 12px; flex-wrap: wrap; }
 .combo-actions button, .combo-kit-list button { padding: 10px 14px; border-radius: 11px; border: 1px solid var(--theme-module-border, #cfe0eb); background: var(--theme-module-surface, #fff); color: var(--theme-text-secondary, #2f5878); cursor: pointer; font-size: 13px; font-weight: 800; transition: border-color .18s ease, box-shadow .18s ease, transform .18s ease; }
 .combo-actions button:hover:not(:disabled), .combo-kit-list button:hover:not(:disabled) { border-color: var(--theme-module-border-strong, #82c9ef); box-shadow: 0 8px 18px #188bd61a; }
 .combo-actions button:disabled { cursor: not-allowed; color: var(--theme-text-muted, #9caaba); background: var(--theme-module-surface-soft, #f5f8fb); }
@@ -118,6 +118,15 @@
 .combo-actions button.danger, .combo-history-actions .btn-mini.danger { border: 1px solid #ffd5d5; color: #db5960; background: #fff8f8; }
 
 .combo-upload { display: inline-block; padding: 9px 14px; border: 1.5px dashed #bcd6ec; border-radius: 11px; cursor: pointer; font-size: 13px; color: #087bf5; background: #fbfdff; margin-bottom: 12px; font-weight: 800; }
+/* 与同排按钮统一为等高实心主按钮：虚线框会与实心按钮错位、层级也乱。 */
+.combo-actions .combo-upload {
+  display: inline-flex; align-items: center; justify-content: center;
+  margin: 0; padding: 10px 16px; border: 1px solid transparent; border-radius: 11px;
+  color: var(--theme-on-primary, #fff); font-size: 13px; font-weight: 800;
+  background: var(--theme-primary-button-gradient, linear-gradient(105deg, #087bf5, #14c8c0));
+  box-shadow: 0 8px 18px #188bd626; transition: box-shadow .18s ease, transform .18s ease;
+}
+.combo-actions .combo-upload:hover { box-shadow: 0 10px 22px #188bd640; transform: translateY(-1px); }
 
 /* 生成选型卡片：套装组合 / 单品多视角二选一，决定后续生图方式。
    版式按「广告横幅」来做：左侧商品实拍轮播（多视角）+ 右侧标题说明，整体可点选。 */
@@ -184,6 +193,11 @@
 .combo-kit-content { flex: 1; display: flex; flex-direction: column; gap: 16px; }
 /* 步骤内容容器跟随主区一起撑满，无数据时也不留大片空白。 */
 .combo-kit-content > .combo-section { flex: 1; }
+/* 每步底部的「下一步」：完成本步后手动推进到下一步。 */
+.combo-step-footer { display: flex; align-items: center; gap: 12px; padding: 2px 4px 4px; }
+.combo-step-footer-hint { margin-right: auto; color: #7890a5; font-size: 12px; font-weight: 700; }
+.combo-step-footer button { padding: 11px 24px; border: 0; border-radius: 11px; color: var(--theme-on-primary, #fff); font-size: 14px; font-weight: 800; cursor: pointer; background: var(--theme-primary-button-gradient, linear-gradient(105deg, #087bf5, #14c8c0)); box-shadow: 0 10px 22px #188bd633; transition: box-shadow .18s ease, transform .18s ease; }
+.combo-step-footer button:hover { box-shadow: 0 12px 26px #188bd640; transform: translateY(-1px); }
 
 /* 主界面单图蒙版编辑区 */
 .combo-edit-stage { margin-top: 14px; border: 1px solid #e1ebf2; border-radius: 16px; padding: 16px; background: #f8fbfd; }
@@ -196,6 +210,17 @@
 .combo-edit-stage-info .combo-primary-toggle { flex-direction: row; align-items: center; gap: 8px; cursor: pointer; }
 .combo-primary-toggle input { width: auto; height: auto; margin: 0; }
 .combo-primary-toggle span { color: #087bf5; font-weight: 700; }
+
+/* 右侧内联缩略图组：无需打开抽屉即可快速切换当前编辑的图。 */
+.combo-edit-stage-thumbs { margin-top: 2px; }
+.combo-edit-stage-thumbs-title { display: block; font-size: 12px; color: #7890a5; font-weight: 700; margin-bottom: 6px; }
+.combo-edit-stage-thumb-grid { display: grid; grid-template-columns: repeat(3, minmax(0, 1fr)); gap: 8px; }
+.combo-edit-stage-thumb { position: relative; padding: 0; border: 2px solid transparent; border-radius: 10px; overflow: hidden; background: #eef4f9; cursor: pointer; aspect-ratio: 1 / 1; transition: border-color .16s ease, box-shadow .16s ease; }
+.combo-edit-stage-thumb img { width: 100%; height: 100%; object-fit: cover; display: block; }
+.combo-edit-stage-thumb:hover { border-color: #82c9ef; }
+.combo-edit-stage-thumb.is-active { border-color: #087bf5; box-shadow: 0 6px 14px #188bd633; }
+.combo-edit-stage-thumb-idx { position: absolute; left: 4px; bottom: 4px; padding: 1px 6px; border-radius: 8px; background: rgba(15, 42, 66, .66); color: #fff; font-size: 11px; font-weight: 700; }
+.combo-edit-stage-thumb-primary { position: absolute; right: 4px; top: 4px; padding: 1px 6px; border-radius: 8px; background: #ffb020; color: #fff; font-size: 11px; font-weight: 700; }
 
 /* 素材 2×2 缩略格 */
 .combo-items { display: grid; grid-template-columns: repeat(2, 1fr); gap: 14px; }
@@ -250,6 +275,25 @@
 
 /* 预检面板 */
 .combo-preview-review { display: flex; flex-direction: column; gap: 10px; }
+/* 预检：分区卡片 + 紧凑事实表 + 缩略图，避免字段散落在整页空白上。 */
+.combo-preview-action { display: flex; align-items: center; gap: 16px; padding: 14px 16px; border: 1px dashed #cfe0ee; border-radius: 14px; background: #f8fbfd; }
+.combo-preview-action > div { display: flex; flex-direction: column; gap: 3px; margin-right: auto; }
+.combo-preview-action b { font-size: 14px; color: #172b44; }
+.combo-preview-action small { font-size: 12px; color: #7890a5; }
+.combo-preview-block { border: 1px solid #e6eff6; border-radius: 14px; padding: 0 16px 14px; background: #fdfeff; margin-bottom: 14px; }
+.combo-preview-block > .combo-subtitle { display: flex; align-items: baseline; gap: 8px; }
+.combo-preview-count { font-size: 12px; color: #7890a5; font-weight: 700; font-style: normal; }
+.combo-preview-facts { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 0 22px; }
+.combo-preview-facts > div { display: flex; align-items: baseline; justify-content: space-between; gap: 12px; padding: 7px 0; border-bottom: 1px dashed #edf3f8; }
+.combo-preview-facts span { flex: 0 0 auto; font-size: 12px; color: #7890a5; font-weight: 700; }
+.combo-preview-facts b { min-width: 0; font-size: 13px; color: #172b44; font-weight: 700; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.combo-preview-checks { display: grid; grid-template-columns: repeat(3, minmax(0, 1fr)); gap: 10px; }
+.combo-preview-thumbs { display: grid; grid-template-columns: repeat(auto-fill, minmax(150px, 1fr)); gap: 12px; }
+.combo-preview-thumb { margin: 0; border: 1px solid #e1ebf2; border-radius: 12px; overflow: hidden; background: #fbfdff; }
+.combo-preview-thumb img { display: block; width: 100%; aspect-ratio: 1 / 1; object-fit: contain; background: #f3f6f9; }
+.combo-preview-thumb figcaption { display: flex; flex-direction: column; gap: 2px; padding: 8px 10px; }
+.combo-preview-thumb figcaption b { font-size: 12px; color: #172b44; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.combo-preview-thumb figcaption small { font-size: 12px; color: #6f849a; }
 .combo-preview-status { margin: 0; color: #36526c; }
 .combo-preview-status strong { color: #087bf5; }
 .combo-preview-reason { display: block; margin-top: 6px; color: #db5960; font-style: normal; font-size: 13px; }
@@ -351,3 +395,8 @@
 [data-theme] :is(.combo-history-drawer-item, .combo-drawer-head button) { border-color: var(--theme-module-border); color: var(--theme-text-secondary); background: var(--theme-module-surface-raised); }
 [data-theme] .combo-modal-actions button.primary { border-color: transparent; color: var(--theme-on-primary); background: var(--theme-primary-button-gradient); box-shadow: 0 7px 14px var(--theme-primary-button-shadow); }
 [data-theme] :is(.combo-drawer-mask, .combo-modal-mask) { background: var(--theme-module-overlay); }
+[data-theme] :is(.combo-preview-block, .combo-preview-action, .combo-preview-thumb) { border-color: var(--theme-module-border); background: var(--theme-module-surface-raised); }
+[data-theme] :is(.combo-preview-action b, .combo-preview-facts b, .combo-preview-thumb figcaption b) { color: var(--theme-text-primary); }
+[data-theme] :is(.combo-preview-action small, .combo-preview-facts span, .combo-preview-count, .combo-preview-thumb figcaption small, .combo-preview-status) { color: var(--theme-text-secondary); }
+[data-theme] .combo-preview-thumb img { background: var(--theme-module-surface-soft); }
+[data-theme] .combo-preview-facts > div { border-bottom-color: var(--theme-module-border); }

@@ -9,6 +9,7 @@ import {
   getListingAdvice,
   getPreviewFinalizeRun,
   importPreviewAssetFromUrl,
+  listPreviewFinalizeRuns,
   regeneratePreviewDetail,
   retryMediaAsset,
   retryPreviewFinalizeRun,
@@ -38,6 +39,7 @@ import {
   createPrecheckFinalizeRefresh,
   type PrecheckFinalizeRefresh,
 } from '../data/precheckFinalizeRefresh';
+import { resolveFinalizeRequest, stableStringify } from '../data/precheckFinalizeRequest';
 import type {
   MiaoshouTemplateKind,
   PreviewCoreFields,
@@ -161,73 +163,6 @@ function mergeAssets(...groups: Array<PreviewImageAsset[] | undefined>): Preview
   return Array.from(byId.values());
 }
 
-function stableStringify(value: unknown): string {
-  if (value === null || typeof value !== 'object') return JSON.stringify(value) ?? 'null';
-  if (Array.isArray(value)) return `[${value.map(stableStringify).join(',')}]`;
-  const record = value as Record<string, unknown>;
-  const entries = Object.keys(record)
-    .sort()
-    .map((key) => `${JSON.stringify(key)}:${stableStringify(record[key])}`);
-  return `{${entries.join(',')}}`;
-}
-
-async function hashStableValue(value: unknown): Promise<string> {
-  const input = stableStringify(value);
-  if (globalThis.crypto?.subtle) {
-    const digest = await globalThis.crypto.subtle.digest('SHA-256', new TextEncoder().encode(input));
-    return Array.from(new Uint8Array(digest), (byte) => byte.toString(16).padStart(2, '0')).join('');
-  }
-  let hash = 2166136261;
-  for (let index = 0; index < input.length; index += 1) {
-    hash ^= input.charCodeAt(index);
-    hash = Math.imul(hash, 16777619);
-  }
-  return (hash >>> 0).toString(16).padStart(8, '0');
-}
-
-type StoredFinalizeRequest = {
-  fingerprint: string;
-  idempotencyKey: string;
-  items: PreviewSavePayload[];
-};
-
-async function resolveFinalizeRequest(
-  workspaceId: string,
-  taskId: number,
-  items: PreviewSavePayload[],
-  storageKey: string,
-): Promise<{ idempotencyKey: string; items: PreviewSavePayload[] }> {
-  const fingerprint = await hashStableValue({
-    workspaceId,
-    taskId,
-    desiredState: items.map(({ product_draft_id, expected_result_version, overrides }) => ({
-      product_draft_id,
-      expected_result_version,
-      overrides,
-    })),
-  });
-  const stored = readSession(storageKey);
-  if (stored) {
-    try {
-      const parsed = JSON.parse(stored) as Partial<StoredFinalizeRequest>;
-      if (
-        parsed.fingerprint === fingerprint
-        && typeof parsed.idempotencyKey === 'string'
-        && parsed.idempotencyKey.length > 0
-        && Array.isArray(parsed.items)
-      ) {
-        return { idempotencyKey: parsed.idempotencyKey, items: parsed.items as PreviewSavePayload[] };
-      }
-    } catch {
-      // Replace malformed or legacy session data below.
-    }
-  }
-  const idempotencyKey = `pp-preview-finalize-${taskId}-${fingerprint}`;
-  const record: StoredFinalizeRequest = { fingerprint, idempotencyKey, items };
-  writeSession(storageKey, JSON.stringify(record));
-  return { idempotencyKey, items };
-}
-
 function readSession(key: string): string | null {
   try {
     return window.sessionStorage.getItem(key);
@@ -252,6 +187,24 @@ function removeSession(key: string): void {
   }
 }
 
+/** 历史导出列表的状态文案（与结果卡片同一口径）。 */
+const FINALIZE_RUN_STATUS_LABELS: Record<PreviewFinalizeRun['status'], string> = {
+  queued: '等待发布',
+  publishing: '发布中',
+  publish_failed: '发布失败',
+  stale: '版本已变化',
+  completed: '已完成',
+};
+
+/** ISO 时间转成本地「年-月-日 时:分」，供历史导出列表区分是哪一次。 */
+function formatFinalizeTime(value?: string): string {
+  if (!value) return '时间未知';
+  const parsed = new Date(value);
+  if (Number.isNaN(parsed.getTime())) return value;
+  const pad = (input: number) => String(input).padStart(2, '0');
+  return `${parsed.getFullYear()}-${pad(parsed.getMonth() + 1)}-${pad(parsed.getDate())} ${pad(parsed.getHours())}:${pad(parsed.getMinutes())}`;
+}
+
 export function ProductProcessingPrecheckPage({ taskId, initialChangeSetId, onOpenDimensionItem, onOpenDraftPool, isActive = true }: Props) {
   const ctx = useMemo(() => api(), []);
   const [preview, setPreview] = useState<PreviewResponse | null>(null);
@@ -266,11 +219,16 @@ export function ProductProcessingPrecheckPage({ taskId, initialChangeSetId, onOp
   const [downloading, setDownloading] = useState(false);
   const [msExporting, setMsExporting] = useState<MiaoshouTemplateKind | null>(null);
   const [finalizeRun, setFinalizeRun] = useState<PreviewFinalizeRun | null>(null);
+  // 该任务的历史导出记录：结果卡片只活在当前页面会话里，关掉页面就找不到表格了，
+  // 这份列表从服务端读回，保证「文件弄丢了」始终有入口重新下载。
+  const [historyRuns, setHistoryRuns] = useState<PreviewFinalizeRun[]>([]);
   const [message, setMessage] = useState('');
   const [error, setError] = useState('');
   const [activeImage, setActiveImage] = useState<string | null>(null);
   const [undoSnackbar, setUndoSnackbar] = useState<UndoSnackbar | null>(null);
   const refreshRef = useRef<PrecheckFinalizeRefresh | null>(null);
+  // 已经同步进历史列表的 run id，避免完成态轮询时反复刷新历史。
+  const historySyncedRunRef = useRef('');
   const [pageSize, setPageSize] = useState<number>(PRECHECK_DEFAULT_PAGE_SIZE);
   const [page, setPage] = useState(1);
   const [search, setSearch] = useState('');
@@ -361,7 +319,11 @@ export function ProductProcessingPrecheckPage({ taskId, initialChangeSetId, onOp
     setDownloading(true);
     try {
       await ppDownload(ctx, run.download, run.file);
-      notify(`最终版表格已生成（${run.product_count} 个商品 / ${run.row_count} 行）`);
+      // 说清文件叫什么、去了哪：原先只说「表格已生成」，用户下载完就找不到文件了。
+      notify(
+        `表格 ${run.file} 已下载（${run.product_count} 个商品 / ${run.row_count} 行）：` +
+          '文件保存在浏览器的默认下载目录；找不到了可以在下方「历史导出」里重新下载',
+      );
     } catch (err) {
       fail(err);
     } finally {
@@ -385,17 +347,35 @@ export function ProductProcessingPrecheckPage({ taskId, initialChangeSetId, onOp
     }
   }, [ctx, taskId, finalizeRun, fail, notify]);
 
-  const acceptFinalizeRun = useCallback((run: PreviewFinalizeRun) => {
-    // 完成后不自动下载：表格按格式统一在结果卡片里下载/生成。
-    // 保留 runStorageKey，刷新页面后仍能恢复结果卡片继续下载。
-    setFinalizeRun(run);
-  }, []);
+  const refreshHistory = useCallback(async () => {
+    try {
+      setHistoryRuns(await listPreviewFinalizeRuns(ctx, taskId));
+    } catch {
+      // 历史列表只用于找回文件，读失败不该打断预检主流程。
+    }
+  }, [ctx, taskId]);
+
+  const acceptFinalizeRun = useCallback(
+    (run: PreviewFinalizeRun) => {
+      // 完成后不自动下载：表格按格式统一在结果卡片里下载/生成。
+      // 保留 runStorageKey，刷新页面后仍能恢复结果卡片继续下载。
+      setFinalizeRun(run);
+      // 每次有 run 完成就刷新一次历史（同一 run 只同步一次，避免轮询期间反复请求）。
+      if (run.status === 'completed' && historySyncedRunRef.current !== run.id) {
+        historySyncedRunRef.current = run.id;
+        void refreshHistory();
+      }
+    },
+    [refreshHistory],
+  );
 
   useEffect(() => {
     setPreview(null);
     setEdits({});
     setRetryingMediaAssetIds(new Set());
     setFinalizeRun(null);
+    setHistoryRuns([]);
+    historySyncedRunRef.current = '';
     setUndoSnackbar(null);
     setActiveImage(null);
     setExcludingDraftIds(new Set());
@@ -410,7 +390,8 @@ export function ProductProcessingPrecheckPage({ taskId, initialChangeSetId, onOp
 
   useEffect(() => {
     void load();
-  }, [load]);
+    void refreshHistory();
+  }, [load, refreshHistory]);
 
   useEffect(() => {
     const refresh = createPrecheckFinalizeRefresh<PreviewFinalizeRun>({
@@ -1122,12 +1103,13 @@ export function ProductProcessingPrecheckPage({ taskId, initialChangeSetId, onOp
       }
 
       const desiredItems = exportableItems.map(collectDesiredState);
-      const request = await resolveFinalizeRequest(
-        ctx.workspaceId,
+      const request = await resolveFinalizeRequest({
+        workspaceId: ctx.workspaceId,
         taskId,
-        desiredItems,
-        idempotencyStorageKey,
-      );
+        items: desiredItems,
+        storageKey: idempotencyStorageKey,
+        storage: { read: readSession, write: writeSession },
+      });
       const run = await finalizeProductPreview(
         ctx,
         taskId,
@@ -1174,6 +1156,18 @@ export function ProductProcessingPrecheckPage({ taskId, initialChangeSetId, onOp
     removeSession(runStorageKey);
     removeSession(idempotencyStorageKey);
     setFinalizeRun(null);
+  };
+
+  /**
+   * 工具栏「重新加载」：重拉预检数据，并丢掉会话里缓存的导出幂等键。
+   *
+   * 导出本身会把 preview_revision 推进一格，若继续复用那份旧键，后端会按
+   * 「同一个键换了另一个请求」拒绝，而且因为键是按期望状态算出来的，
+   * 不清掉就永远算回同一个键。清掉之后重算的键包含 revision，能正常重新发起。
+   */
+  const reloadForRetry = () => {
+    removeSession(idempotencyStorageKey);
+    void load();
   };
 
   const restoreUndo = () => {
@@ -1386,7 +1380,7 @@ export function ProductProcessingPrecheckPage({ taskId, initialChangeSetId, onOp
                 ? `正在导入图片（${pendingUploads}）`
                 : '完成预审并导出'}
           </button>
-          <button type="button" onClick={() => void load()} disabled={loading || mutationsLocked}>重新加载</button>
+          <button type="button" onClick={reloadForRetry} disabled={loading || mutationsLocked}>重新加载</button>
           <button
             type="button"
             onClick={() => setSkuManagerOpen(true)}
@@ -1485,6 +1479,37 @@ export function ProductProcessingPrecheckPage({ taskId, initialChangeSetId, onOp
           onReloadStale={() => void reloadAfterStale()}
           onExcludeFailed={() => void excludeFailedItems()}
         />
+      )}
+
+      {historyRuns.length > 0 && (
+        <section className="precheck-finalize-history">
+          <header>
+            <h2>历史导出</h2>
+            <span>表格生成后一直保存在本机，这里可以直接重新下载，不用再导出一次</span>
+          </header>
+          <ul>
+            {historyRuns.map((run) => (
+              <li key={run.id}>
+                <div>
+                  <strong>{formatFinalizeTime(run.created_at)}</strong>
+                  <span>
+                    {run.status === 'completed'
+                      ? `${run.product_count} 个商品 / ${run.row_count} 行`
+                      : FINALIZE_RUN_STATUS_LABELS[run.status]}
+                    {run.file ? ` · ${run.file}` : ''}
+                  </span>
+                </div>
+                <button
+                  type="button"
+                  disabled={downloading || !run.workbook_ready || !run.download}
+                  onClick={() => void downloadRun(run, false)}
+                >
+                  {run.workbook_ready ? '重新下载' : '暂无表格'}
+                </button>
+              </li>
+            ))}
+          </ul>
+        </section>
       )}
 
       {allItems.length === 0 && <p className="verify-empty">任务没有可预检的成功商品。</p>}

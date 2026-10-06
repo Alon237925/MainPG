@@ -104,8 +104,10 @@ $clipforgePrepareScript = Join-Path $clipforgeRoot "scripts\prepare-mainpg-sidec
 # build output and the vendored source tree, so `next build` can never clean it.
 $clipforgePublishRoot = Join-Path $PSScriptRoot "outputs\wh-local\clipforge"
 Push-Location $clipforgeRoot
-& $pnpmCommand.Source install --frozen-lockfile
-if ($LASTEXITCODE -ne 0) { throw "ClipForge dependency installation failed" }
+if ($env:CLIPFORGE_SKIP_INSTALL -ne "1") {
+    & $pnpmCommand.Source install --frozen-lockfile
+    if ($LASTEXITCODE -ne 0) { throw "ClipForge dependency installation failed" }
+}
 & $pnpmCommand.Source build
 if ($LASTEXITCODE -ne 0) { throw "ClipForge build failed" }
 & $nodeCommand.Source $clipforgePrepareScript --output-root $clipforgePublishRoot

@@ -4730,6 +4730,23 @@ USER-REQUESTED PANEL PLANNING ADDITIONS (user extra requirements only; they MUST
             raise ProductProcessingNotFound("preview finalization run not found")
         return run
 
+    def list_preview_finalize_runs(
+        self,
+        task_id: int,
+        *,
+        workspace_id: str = "local",
+        limit: int = 10,
+    ) -> list[dict[str, Any]]:
+        """该任务的历史导出记录（按时间倒序）。
+
+        导出结果卡片只活在当前页面的会话里，关掉页面就找不到之前生成的表格了。
+        这个列表是「文件弄丢了」之后的找回入口。
+        """
+        self._require_task(task_id, workspace_id)
+        return self.preview_images.list_finalize_runs(
+            task_id, workspace_id=workspace_id, limit=limit
+        )
+
     def retry_preview_finalize(
         self,
         task_id: int,
