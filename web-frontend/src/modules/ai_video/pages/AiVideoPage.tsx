@@ -22,6 +22,15 @@ export type AiVideoNavHref = (typeof AI_VIDEO_NAV)[number]["href"];
 export const AI_VIDEO_NAVIGATE_MESSAGE = "mainpg:ai-video-navigate";
 export const AI_VIDEO_LOCATION_MESSAGE = "mainpg:ai-video-location";
 
+// uiMode 同步协议：父 -> iframe 下发界面模式；iframe -> 父 回报当前界面模式。
+// uiMode 只允许 "simple"（小白模式）与 "pro"（导演模式）两种取值。
+export const AI_VIDEO_UI_MODE_SET_MESSAGE = "mainpg:ai-video-ui-mode-set";
+export const AI_VIDEO_UI_MODE_STATE_MESSAGE = "mainpg:ai-video-ui-mode-state";
+// 独立存储键：专属于 AI 视频界面模式，不复用全局布局模式已占用的首页模式键。
+export const AI_VIDEO_UI_MODE_STORAGE_KEY = "mainpg.aiVideo.uiMode";
+
+export type AiVideoUiMode = "simple" | "pro";
+
 // 外层导航状态：高亮项、iframe 是否已就绪（收到过第一条 location 消息）、ready 前最后一次点击的目标。
 export type AiVideoNavState = {
   activeHref: AiVideoNavHref;
@@ -102,6 +111,16 @@ export function resetAiVideoNavForInstance(_state: AiVideoNavState): AiVideoNavS
   return { ...AI_VIDEO_NAV_INITIAL_STATE };
 }
 
+// 严格白名单：只有 "simple" 与 "pro" 是合法界面模式，其余一律拒绝。
+export function isAiVideoUiMode(value: unknown): value is AiVideoUiMode {
+  return value === "simple" || value === "pro";
+}
+
+// 从持久化读到的原始值还原界面模式：白名单之外的任何值（含 null/空串）都回落为 "simple"。
+export function aiVideoUiModeFromStored(raw: string | null | undefined): AiVideoUiMode {
+  return isAiVideoUiMode(raw) ? raw : "simple";
+}
+
 // 向内嵌 iframe 发送跳转指令；拿不到 iframe 窗口或目标 origin 时不发送。
 function postAiVideoNavigate(frame: HTMLIFrameElement | null, targetOrigin: string | null, href: AiVideoNavHref) {
   const target = frame?.contentWindow;
@@ -109,11 +128,26 @@ function postAiVideoNavigate(frame: HTMLIFrameElement | null, targetOrigin: stri
   target.postMessage({ type: AI_VIDEO_NAVIGATE_MESSAGE, href }, targetOrigin);
 }
 
+// 向内嵌 iframe 下发界面模式；同样要求拿到 iframe 窗口与目标 origin，否则不发送。
+function postAiVideoUiModeSet(frame: HTMLIFrameElement | null, targetOrigin: string | null, uiMode: AiVideoUiMode) {
+  const target = frame?.contentWindow;
+  if (!target || !targetOrigin) return;
+  target.postMessage({ type: AI_VIDEO_UI_MODE_SET_MESSAGE, uiMode }, targetOrigin);
+}
+
 export function AiVideoPage() {
   // 服务健康状态来自真实轮询：服务退出或换实例后状态会自己变，不靠挂载时那一次请求。
   const { status, error, start } = useClipForgeService();
   const [bridgeTimedOut, setBridgeTimedOut] = useState(false);
   const [navState, setNavState] = useState<AiVideoNavState>(AI_VIDEO_NAV_INITIAL_STATE);
+  // 界面模式：从本地持久化还原，读写失败（如隐私模式）时静默回落，绝不影响页面主流程。
+  const [uiMode, setUiMode] = useState<AiVideoUiMode>(() => {
+    try {
+      return aiVideoUiModeFromStored(window.localStorage.getItem(AI_VIDEO_UI_MODE_STORAGE_KEY));
+    } catch {
+      return "simple";
+    }
+  });
   // iframe 常驻引用：外层导航只发消息，绝不销毁或重建 iframe。
   const frameRef = useRef<HTMLIFrameElement | null>(null);
   // message 监听需要读到最新导航状态，用 ref 与 state 同步提交，避免把副作用塞进 setState 更新函数。
@@ -132,6 +166,22 @@ export function AiVideoPage() {
     setBridgeTimedOut(false);
   }, [instanceKey]);
 
+  // 界面模式每一次变化都写回本地持久化；写失败（局部存储被禁用）时静默忽略，切换仍然可用。
+  useEffect(() => {
+    try {
+      window.localStorage.setItem(AI_VIDEO_UI_MODE_STORAGE_KEY, uiMode);
+    } catch {
+      // localStorage 不可写：仅本次会话内生效，不打断用户操作。
+    }
+  }, [uiMode]);
+
+  // 桥接就绪后把当前界面模式同步给 iframe；换实例后新 iframe 回报第一条 location 消息
+  // （bridgeReady 重新变 true）会再次触发，从而把保存的模式重新下发。未就绪或拿不到 origin 时绝不发送。
+  useEffect(() => {
+    if (!bridgeReady || !iframeOrigin) return;
+    postAiVideoUiModeSet(frameRef.current, iframeOrigin, uiMode);
+  }, [uiMode, bridgeReady, instanceKey, iframeOrigin]);
+
   // 统一提交状态迁移：写入 ref 与 state，并在需要时把跳转指令发给 iframe。
   const commitNavTransition = useCallback((transition: AiVideoNavTransition) => {
     navStateRef.current = transition.state;
@@ -148,11 +198,17 @@ export function AiVideoPage() {
   useEffect(() => {
     if (!iframeOrigin) return;
     const onMessage = (event: MessageEvent) => {
-      // 只接受当前 iframe 从 clipforge 服务同源发出的 location 消息。
+      // 只接受当前 iframe 从 clipforge 服务同源发出的消息。
       if (event.origin !== iframeOrigin) return;
       if (event.source !== frameRef.current?.contentWindow) return;
-      const data = event.data as { type?: unknown; pathname?: unknown } | null;
-      if (!data || data.type !== AI_VIDEO_LOCATION_MESSAGE) return;
+      const data = event.data as { type?: unknown; pathname?: unknown; uiMode?: unknown } | null;
+      if (!data || data.type !== AI_VIDEO_LOCATION_MESSAGE) {
+        // uiMode 回报：同样只信当前 iframe 同源消息，且 uiMode 必须通过白名单校验后才落地。
+        if (data && data.type === AI_VIDEO_UI_MODE_STATE_MESSAGE && isAiVideoUiMode(data.uiMode)) {
+          setUiMode(data.uiMode);
+        }
+        return;
+      }
       if (typeof data.pathname !== "string") return;
       commitNavTransition(applyAiVideoLocation(navStateRef.current, data.pathname));
     };
@@ -187,7 +243,29 @@ export function AiVideoPage() {
           <h2>AI 视频制作</h2>
           <p>从商品素材到分镜、生成与导出，全部在界野工作台内完成。</p>
         </div>
-        <span className={badgeClass}>{badgeText}</span>
+        <div className="ai-video-header-side">
+          <div className="ai-video-ui-mode-toggle" role="group" aria-label="AI 视频界面模式">
+            <button
+              type="button"
+              className={uiMode === "simple" ? "is-active" : ""}
+              aria-pressed={uiMode === "simple"}
+              disabled={!serviceReady || !iframeOrigin}
+              onClick={() => setUiMode("simple")}
+            >
+              小白模式
+            </button>
+            <button
+              type="button"
+              className={uiMode === "pro" ? "is-active" : ""}
+              aria-pressed={uiMode === "pro"}
+              disabled={!serviceReady || !iframeOrigin}
+              onClick={() => setUiMode("pro")}
+            >
+              导演模式
+            </button>
+          </div>
+          <span className={badgeClass}>{badgeText}</span>
+        </div>
       </header>
       <nav className="ai-video-module-nav" aria-label="AI 视频功能导航">
         {AI_VIDEO_NAV.map((item) => (

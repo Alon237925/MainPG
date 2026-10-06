@@ -33,6 +33,9 @@ function loadAiVideoLogic() {
     sliceSource(/^const AI_VIDEO_NAV = \[[\s\S]*?^\] as const;$/m, "AI_VIDEO_NAV 定义"),
     sliceSource(/^export const AI_VIDEO_NAVIGATE_MESSAGE = .*$/m, "AI_VIDEO_NAVIGATE_MESSAGE 常量"),
     sliceSource(/^export const AI_VIDEO_LOCATION_MESSAGE = .*$/m, "AI_VIDEO_LOCATION_MESSAGE 常量"),
+    sliceSource(/^export const AI_VIDEO_UI_MODE_SET_MESSAGE = .*$/m, "AI_VIDEO_UI_MODE_SET_MESSAGE 常量"),
+    sliceSource(/^export const AI_VIDEO_UI_MODE_STATE_MESSAGE = .*$/m, "AI_VIDEO_UI_MODE_STATE_MESSAGE 常量"),
+    sliceSource(/^export const AI_VIDEO_UI_MODE_STORAGE_KEY = .*$/m, "AI_VIDEO_UI_MODE_STORAGE_KEY 常量"),
     sliceSource(/^export const AI_VIDEO_NAV_INITIAL_STATE[\s\S]*?^};$/m, "AI_VIDEO_NAV_INITIAL_STATE 状态"),
     ...[
       "aiVideoNavHrefForPath",
@@ -40,6 +43,8 @@ function loadAiVideoLogic() {
       "applyAiVideoLocation",
       "resetAiVideoNavForInstance",
       "clipForgeOrigin",
+      "isAiVideoUiMode",
+      "aiVideoUiModeFromStored",
     ].map((name) => sliceSource(new RegExp(`^export function ${name}\\([\\s\\S]*?^\\}$`, "m"), `${name} 函数`)),
   ];
   const compiled = ts.transpileModule(snippets.join("\n\n").replace(/^export /gm, ""), {
@@ -49,12 +54,17 @@ function loadAiVideoLogic() {
     "AI_VIDEO_NAV",
     "AI_VIDEO_NAVIGATE_MESSAGE",
     "AI_VIDEO_LOCATION_MESSAGE",
+    "AI_VIDEO_UI_MODE_SET_MESSAGE",
+    "AI_VIDEO_UI_MODE_STATE_MESSAGE",
+    "AI_VIDEO_UI_MODE_STORAGE_KEY",
     "AI_VIDEO_NAV_INITIAL_STATE",
     "aiVideoNavHrefForPath",
     "selectAiVideoNav",
     "applyAiVideoLocation",
     "resetAiVideoNavForInstance",
     "clipForgeOrigin",
+    "isAiVideoUiMode",
+    "aiVideoUiModeFromStored",
   ];
   return new Function(`${compiled}\nreturn { ${exported.join(", ")} };`)();
 }
@@ -239,4 +249,62 @@ test("only trusts messages coming from the ClipForge sidecar origin", () => {
   assert.equal(logic.clipForgeOrigin(null), null);
   assert.equal(logic.clipForgeOrigin(undefined), null);
   assert.equal(logic.clipForgeOrigin("not a url"), null);
+});
+
+test("freezes the ui-mode protocol constants and the set-message payload", () => {
+  assert.equal(logic.AI_VIDEO_UI_MODE_SET_MESSAGE, "mainpg:ai-video-ui-mode-set");
+  assert.equal(logic.AI_VIDEO_UI_MODE_STATE_MESSAGE, "mainpg:ai-video-ui-mode-state");
+  // 两个消息类型字面量与「父 -> iframe」的 uiMode 字段一起上线。
+  assert.match(page, /"mainpg:ai-video-ui-mode-set"/);
+  assert.match(page, /"mainpg:ai-video-ui-mode-state"/);
+  assert.match(page, /postMessage\(\{ type: AI_VIDEO_UI_MODE_SET_MESSAGE, uiMode \}, targetOrigin\)/);
+});
+
+test("whitelists ui-mode values and maps unknown stored values to simple", () => {
+  assert.equal(logic.isAiVideoUiMode("simple"), true);
+  assert.equal(logic.isAiVideoUiMode("pro"), true);
+  assert.equal(logic.isAiVideoUiMode("easy"), false);
+  assert.equal(logic.isAiVideoUiMode(""), false);
+  assert.equal(logic.isAiVideoUiMode(null), false);
+  assert.equal(logic.isAiVideoUiMode(123), false);
+  assert.equal(logic.isAiVideoUiMode(undefined), false);
+
+  assert.equal(logic.aiVideoUiModeFromStored("simple"), "simple");
+  assert.equal(logic.aiVideoUiModeFromStored("pro"), "pro");
+  assert.equal(logic.aiVideoUiModeFromStored("easy"), "simple");
+  assert.equal(logic.aiVideoUiModeFromStored(""), "simple");
+  assert.equal(logic.aiVideoUiModeFromStored(null), "simple");
+  assert.equal(logic.aiVideoUiModeFromStored(undefined), "simple");
+});
+
+test("accepts ui-mode-state only from the same iframe after whitelist validation", () => {
+  // 与 location 分支共享同一套三重校验：同源、当前 iframe、以及 uiMode 白名单。
+  assert.match(page, /event\.origin !== iframeOrigin/);
+  assert.match(page, /event\.source !== frameRef\.current\?\.contentWindow/);
+  assert.match(page, /data\.type === AI_VIDEO_UI_MODE_STATE_MESSAGE/);
+  assert.match(page, /isAiVideoUiMode\(data\.uiMode\)/);
+  assert.match(page, /setUiMode\(data\.uiMode\)/);
+});
+
+test("re-syncs the saved ui-mode once a new iframe reports ready", () => {
+  // 桥接就绪才发送；实例变化后新 iframe 的首次 location 会让 bridgeReady 重新变 true，从而再次下发。
+  assert.match(page, /postAiVideoUiModeSet\(frameRef\.current, iframeOrigin, uiMode\)/);
+  assert.match(page, /\[uiMode, bridgeReady, instanceKey, iframeOrigin\]/);
+});
+
+test("persists ui-mode under its own storage key, not the global layout mode", () => {
+  assert.equal(logic.AI_VIDEO_UI_MODE_STORAGE_KEY, "mainpg.aiVideo.uiMode");
+  assert.match(page, /AI_VIDEO_UI_MODE_STORAGE_KEY = "mainpg\.aiVideo\.uiMode"/);
+  assert.match(page, /localStorage\.getItem\(AI_VIDEO_UI_MODE_STORAGE_KEY\)/);
+  assert.match(page, /localStorage\.setItem\(AI_VIDEO_UI_MODE_STORAGE_KEY, uiMode\)/);
+  // 不得占用全局布局模式的键盘 "mainpg.uiMode"。
+  assert.doesNotMatch(page, /"mainpg\.uiMode"/);
+});
+
+test("renders the two-segment 小白/导演 mode switch in the header", () => {
+  assert.match(page, /ai-video-ui-mode-toggle/);
+  assert.match(page, /小白模式/);
+  assert.match(page, /导演模式/);
+  assert.match(page, /aria-pressed=\{uiMode === "simple"\}/);
+  assert.match(page, /aria-pressed=\{uiMode === "pro"\}/);
 });
