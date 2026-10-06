@@ -1,7 +1,7 @@
 import { readFileSync } from "node:fs";
 import { resolve } from "node:path";
 import { describe, expect, it } from "vitest";
-import { shouldAutoStartPipeline } from "@/app/project/[id]/script/page";
+import { resolveScriptFlowPolicy } from "@/lib/script-flow-policy";
 import {
   NEEDS_EXPLICIT_STYLE_CODE,
   parseStyleRequirement,
@@ -11,11 +11,13 @@ import {
  * 仓库没有组件渲染器（无 @testing-library/react），脚本页的行为用「纯函数直测 + 源码契约」断言，
  * 与 src/components/project-creation/__tests__/start-entry.test.ts 的既有风格一致。
  *
- * 覆盖计划 Task 2.2 / Task 3.1 的脚本页部分与设计 §6.2 / §7.4。
+ * 覆盖计划 Task 2 / Task 3（脚本页策略门控收敛到 resolveScriptFlowPolicy，genPref 删除）。
+ * 纯函数判据本身由 script-flow-policy.test.ts 直测，这里只钉页面与组件的接线。
  */
 const read = (file: string) => readFileSync(resolve(process.cwd(), file), "utf8");
 
 const scriptPage = read("src/app/project/[id]/script/page.tsx");
+const simpleModeActions = read("src/components/script/simple-mode-actions.tsx");
 const requirementModule = read("src/components/project-creation/script-style-requirement.ts");
 const promptModule = read("src/components/project-creation/style-choice-prompt.tsx");
 
@@ -25,65 +27,114 @@ const autoStartEffectBody = () => {
   return fromComment.slice(0, fromComment.indexOf("}, [autoMode"));
 };
 
-/** 非 draft 策略各自的分支：从策略判断到下一个页面级代码块。 */
+/** autoFinish 触发器函数体（到服务端续跑注释为止）。 */
+const autoFinishBody = () => {
+  const from = scriptPage.slice(scriptPage.indexOf("const autoFinish"));
+  return from.slice(0, from.indexOf("// On entry"));
+};
+
+/** 转手动按钮完整片段（含 onClick 处理器，到 </Button> 为止）。 */
+const manualButtonRegion = () => {
+  const labelIdx = scriptPage.indexOf("autoModeManual");
+  const btnIdx = scriptPage.lastIndexOf("<Button", labelIdx);
+  return scriptPage.slice(btnIdx, scriptPage.indexOf("</Button>", labelIdx) + "</Button>".length);
+};
+
 const strategyBlock = (marker: string, endMarker: string) =>
   scriptPage.slice(scriptPage.indexOf(marker), scriptPage.indexOf(endMarker));
 
-describe("shouldAutoStartPipeline（出片策略门控，设计 §7.4）", () => {
-  it("只有 draft 策略 + ?auto=1 才自动启动免费流水线", () => {
-    expect(shouldAutoStartPipeline({ outputStrategy: "draft", autoParam: true })).toBe(true);
+describe("resolveScriptFlowPolicy 接入（design §7.4）", () => {
+  it("页面放弃 shouldAutoStartPipeline，改从 resolveScriptFlowPolicy 取判据", () => {
+    expect(scriptPage).not.toMatch(/shouldAutoStartPipeline/);
+    expect(scriptPage).toMatch(/resolveScriptFlowPolicy/);
+    // 语义保持不变：draft 才允许自动启动
+    expect(resolveScriptFlowPolicy({ outputStrategy: "draft", autoMode: true }).allowAutoStart).toBe(true);
+    expect(resolveScriptFlowPolicy({ outputStrategy: "controlled-motion", autoMode: true }).allowAutoStart).toBe(false);
   });
 
-  it("controlled-motion / native-film 一律不许自动启动免费流水线", () => {
-    expect(shouldAutoStartPipeline({ outputStrategy: "controlled-motion", autoParam: true })).toBe(false);
-    expect(shouldAutoStartPipeline({ outputStrategy: "native-film", autoParam: true })).toBe(false);
-  });
-
-  it("旧项目（没有 creationBrief → null）保留原 ?auto=1 断点恢复行为", () => {
-    expect(shouldAutoStartPipeline({ outputStrategy: null, autoParam: true })).toBe(true);
-  });
-
-  it("没有 auto 参数时任何策略都不启动", () => {
-    const strategies = [null, "draft", "controlled-motion", "native-film"] as const;
-    for (const outputStrategy of strategies) {
-      expect(shouldAutoStartPipeline({ outputStrategy, autoParam: false })).toBe(false);
-    }
-  });
-});
-
-describe("脚本页：自动出片只发生在 draft 分支", () => {
-  it("自动启动判据是 outputStrategy 与 URL auto 参数的组合", () => {
+  it("自动启动判据是 outputStrategy 与 autoMode 的组合", () => {
     const body = autoStartEffectBody();
-    expect(body).toMatch(/shouldAutoStartPipeline\(\{ outputStrategy, autoParam: autoMode \}\)/);
-    expect(body).toMatch(/if \(!shouldAutoStartPipeline/);
+    expect(body).toMatch(/resolveScriptFlowPolicy\(\{ outputStrategy, autoMode \}\)/);
+    expect(body).toMatch(/if \(!flow\.allowAutoStart\) return/);
     // 门控在前、启动在后：非 draft 策略在到达 autoFinish 之前就返回了
-    expect(body.indexOf("shouldAutoStartPipeline")).toBeLessThan(body.indexOf("autoFinish()"));
-    expect(body).toMatch(/if \(genPref !== "ai"\) autoFinish\(\)/);
+    expect(body.indexOf("resolveScriptFlowPolicy")).toBeLessThan(body.indexOf("autoFinish()"));
   });
 
   it("简报还没读到时门控不生效，避免把受控动态误当成旧项目自动跑", () => {
     const body = autoStartEffectBody();
     expect(body).toMatch(/!briefLoaded/);
-    expect(scriptPage).toMatch(/\[autoMode, autoModeTriggered, loading, briefLoaded, outputStrategy/);
+    expect(scriptPage).toMatch(/\[autoMode, autoModeTriggered, loading, briefLoaded, outputStrategy, currentScript, pipelineChecked, resumableRun\]/);
+    // genPref 已彻底移除（无产生者，不发明替代参数）
+    expect(body).not.toMatch(/genPref/);
+  });
+
+  it("autoFinish 自带 allowFreeChain 门控：付费策略绝不被这一个按钮降级成静态草稿", () => {
+    const body = autoFinishBody();
+    expect(body).toMatch(/resolveScriptFlowPolicy/);
+    expect(body).toMatch(/if \(!flow\.allowFreeChain\) return/);
+    expect(body).toMatch(/startPipeline\(false\)/);
   });
 
   it("接管进度卡片只在免费链确实适用时出现", () => {
-    expect(scriptPage).toMatch(/const freeChainApplies = shouldAutoStartPipeline\(\{ outputStrategy, autoParam: autoMode \}\)/);
-    expect(scriptPage).toMatch(/if \(\(freeChainApplies && !autoFinishError/);
+    expect(scriptPage).toMatch(/flow\.allowAutoStart && !autoFinishError && \(autoFinishing \|\| !autoModeTriggered\)/);
   });
 
-  it("controlled-motion 停在脚本确认页，给逐镜动态确认入口且不启动流水线", () => {
-    const block = strategyBlock('outputStrategy === "controlled-motion"', 'outputStrategy === "native-film"');
+  it("genPref 从页面彻底删除，不再读取 ?gen=ai", () => {
+    expect(scriptPage).not.toMatch(/genPref/);
+    expect(scriptPage).not.toMatch(/qs\.get\("gen"\)/);
+  });
+});
+
+describe("simple 模式：动作区委托给 SimpleModeActions 组件", () => {
+  it("页面导入并渲染 SimpleModeActions，自身不再内联双按钮", () => {
+    expect(scriptPage).toMatch(/import \{ SimpleModeActions \} from "@\/components\/script\/simple-mode-actions"/);
+    expect(scriptPage).toMatch(/<SimpleModeActions/);
+  });
+
+  it("组件按策略渲染四种形态，且不直接发起任何 fetch/API", () => {
+    expect(simpleModeActions).not.toMatch(/fetch\(|api\//);
+    expect(simpleModeActions).toMatch(/policy\.strategy/);
+    // controlled-motion 主操作 = 进素材页逐镜动态链接
+    expect(simpleModeActions).toMatch(/\$\{id\}\/assets/);
+    expect(simpleModeActions).toMatch(/进入素材页生成逐镜动态/);
+    // draft 走 autoFinish、native-film 走 runAiFilm、legacy 保留双入口并标注策略未记录
+    expect(simpleModeActions).toMatch(/autoFinish/);
+    expect(simpleModeActions).toMatch(/runAiFilm/);
+    expect(simpleModeActions).toMatch(/策略未记录/);
+  });
+});
+
+describe("pro 模式：策略一致的非主操作", () => {
+  it("免费快剪 / 素材链接 / 整片预览分别按 flow.show* 门控", () => {
+    expect(scriptPage).toMatch(/flow\.showDraftAction/);
+    expect(scriptPage).toMatch(/flow\.showControlledMotionAction/);
+    expect(scriptPage).toMatch(/flow\.showNativeFilmAction/);
+  });
+});
+
+describe("转手动（Task 3）：进入导演模式且任务继续运行", () => {
+  it("onClick 同时切导演模式且绝不取消/停止/重提交流水线", () => {
+    const region = manualButtonRegion();
+    expect(region).toMatch(/setAutoMode\(false\);\s*setUiMode\("pro"\)/);
+    expect(region).not.toMatch(/cancel|stopPipeline|abort|revoke/i);
+    expect(region).not.toMatch(/startPipeline|autoFinish|api\//);
+  });
+});
+
+describe("脚本页：出片策略停在脚本确认页（沿用？auto=1 不降级语义）", () => {
+  it("controlled-motion 给逐镜动态确认入口且不启动流水线", () => {
+    const block = strategyBlock('flow.strategy === "controlled-motion"', 'flow.strategy === "native-film"');
     expect(block).toMatch(/该策略不会自动启动免费静态流水线/);
     expect(block).toMatch(/project\/\$\{id\}\/assets/);
     expect(block).not.toMatch(/autoFinish\(\)|startPipeline\(/);
   });
 
-  it("native-film 停在脚本确认页，给整片预览与计费确认入口且不启动流水线", () => {
-    const block = strategyBlock('outputStrategy === "native-film"', "// 重新生成 = 新版本");
+  it("native-film 给整片预览与计费确认入口且不启动流水线", () => {
+    const block = strategyBlock('flow.strategy === "native-film"', "// 重新生成 = 新版本");
     expect(block).toMatch(/该策略不会自动启动免费静态流水线/);
     expect(block).toMatch(/onClick=\{runAiFilm\}/);
     expect(block).not.toMatch(/autoFinish\(\)|startPipeline\(/);
+    expect(block).toMatch(/模型原生音频/);
   });
 });
 
@@ -100,7 +151,13 @@ describe("脚本页：旧项目（creationBrief 为 null）兼容", () => {
   });
 });
 
-describe("脚本页：简报摘要与 409 显式风格", () => {
+describe("脚本页：ProjectHeader 与 409 显式风格", () => {
+  it("把 outputStrategy 传给 ProjectHeader（步进器消费）", () => {
+    expect(scriptPage).toMatch(
+      /<ProjectHeader projectName=\{projectName \|\| t\("defaultProjectName"\)\} outputStrategy=\{outputStrategy\} \/>/
+    );
+  });
+
   it("页面持久展示 CreationBriefSummary", () => {
     expect(scriptPage).toMatch(
       /import \{ CreationBriefSummary \} from "@\/components\/project-creation\/creation-brief-summary"/
@@ -114,11 +171,9 @@ describe("脚本页：简报摘要与 409 显式风格", () => {
       /import \{ StyleChoicePrompt \} from "@\/components\/project-creation\/style-choice-prompt"/
     );
     expect(scriptPage).toMatch(/<StyleChoicePrompt/);
-    // 页面消费该 code 与 candidates（经共享解析器）
     expect(scriptPage).toMatch(/needs_explicit_style/);
     expect(scriptPage).toMatch(/candidates/);
     expect(scriptPage).toMatch(/parseStyleRequirement\(res\.status, e\)/);
-    // 409 分支在抛错之前返回
     const generateBlock = scriptPage.slice(scriptPage.indexOf("const handleGenerate"), scriptPage.indexOf("/** 用户在 409"));
     expect(generateBlock.indexOf("setStylePrompt(requirement)")).toBeLessThan(generateBlock.indexOf("throw new Error("));
   });
