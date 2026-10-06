@@ -488,11 +488,14 @@ export default function ScriptPage() {
   const briefState = briefLoadFailed ? "failed" : briefLoaded ? "loaded" : "loading";
   // 统一策略门控：uiMode 只是界面模式，绝不改判出片策略（见 script-flow-policy）
   const flow = resolveScriptFlowPolicy({ outputStrategy, uiMode, autoMode, briefState });
-  // 免费链是否为该项目的禁用路径：挂接/轮询发生在简报读完之前，必须用 ref 读最新策略
+  // 免费链是否为该项目的禁用路径：挂接/轮询发生在简报读完之前，必须用 ref 读最新策略。
+  // 简报读取失败同样视为禁用（fail-closed）；loading 期间暂不拦挂接——挂接只是观察，
+  // 要为 draft 旧项目的断点恢复保留入口，轮询循环里会随最新策略止损。
   const freeChainForbiddenRef = useRef(false);
   useEffect(() => {
-    freeChainForbiddenRef.current = !resolveScriptFlowPolicy({ outputStrategy }).allowFreeChain;
-  }, [outputStrategy]);
+    freeChainForbiddenRef.current =
+      briefLoadFailed || !resolveScriptFlowPolicy({ outputStrategy }).allowFreeChain;
+  }, [outputStrategy, briefLoadFailed]);
   // Judge pass — the quality bar runs in BOTH hands-off chains, not just the pro editor.
   // Four narrow judges tear the voiceover lines apart and their rewrites are applied
   // automatically BEFORE any footage matching / generation money. Beginners never operate
@@ -591,8 +594,8 @@ export default function ScriptPage() {
   const startPipeline = async (resume: boolean) => {
     if (autoFinishing) return;
     if (!resume && !currentScript) return;
-    // 纵深门禁：autoFinish / 断点续跑 / 重新开始都经过这里，付费策略一律拒绝免费链
-    if (!resolveScriptFlowPolicy({ outputStrategy, uiMode, autoMode }).allowFreeChain) return;
+    // 纵深门禁：autoFinish / 断点续跑 / 重新开始都经过这里，付费策略或简报未读定一律拒绝免费链
+    if (!resolveScriptFlowPolicy({ outputStrategy, uiMode, autoMode, briefState }).allowFreeChain) return;
     setAutoFinishing(true);
     setAutoFinishError("");
     setAutoFinishStage(t("autoFinishSelecting"));
@@ -614,8 +617,9 @@ export default function ScriptPage() {
   };
 
   const autoFinish = () => {
-    const flow = resolveScriptFlowPolicy({ outputStrategy, uiMode, autoMode });
-    // 只允许 draft / legacy 跑免费草稿链；controlled-motion / native-film 绝不能被这一个按钮降级成静态草稿
+    const flow = resolveScriptFlowPolicy({ outputStrategy, uiMode, autoMode, briefState });
+    // 只允许 draft / legacy 且简报已读定跑免费草稿链；controlled-motion / native-film 及
+    // 简报未读定绝不能被这一个按钮降级成静态草稿
     if (!flow.allowFreeChain) return;
     return startPipeline(false);
   };
@@ -711,8 +715,8 @@ export default function ScriptPage() {
   // only after the user confirms THIS preview (text-level confirmation before any spend).
   const runAiFilm = async () => {
     if (!currentScript || aiFilming || autoFinishing) return;
-    // 纵深门禁：整片链只属于 native-film / legacy，按钮显隐不是唯一防线
-    if (!resolveScriptFlowPolicy({ outputStrategy }).showNativeFilmAction) return;
+    // 纵深门禁：整片链只属于 native-film / legacy 且简报已读定，按钮显隐不是唯一防线
+    if (!resolveScriptFlowPolicy({ outputStrategy, briefState }).showNativeFilmAction) return;
     setAiFilming(true);
     setAiFilmError("");
     setFilmPreview(null);
@@ -738,8 +742,8 @@ export default function ScriptPage() {
   // dryRun must return the identical prompt (script edited in between → abort and re-preview).
   const confirmAiFilm = async () => {
     if (!currentScript || !filmPreview || aiFilming) return;
-    // 纵深门禁：付费提交前再校验一次出片策略，draft / controlled-motion 一律拒绝
-    if (!resolveScriptFlowPolicy({ outputStrategy }).showNativeFilmAction) return;
+    // 纵深门禁：付费提交前再校验一次出片策略，draft / controlled-motion 与简报未读定一律拒绝
+    if (!resolveScriptFlowPolicy({ outputStrategy, briefState }).showNativeFilmAction) return;
     setAiFilming(true);
     setAiFilmError("");
     try {

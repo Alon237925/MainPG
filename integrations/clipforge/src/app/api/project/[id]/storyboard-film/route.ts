@@ -25,7 +25,7 @@ import { toRemoteUsableImage } from "@/lib/remote-image";
 import { probeMedia } from "@/lib/media-probe";
 import { recordAiTask, updateAiTask } from "@/lib/ai-tasks";
 import { apiError, errText } from "@/lib/api-error";
-import { filmChainStrategyGuard } from "@/lib/film-chain-gate";
+import { filmChainStrategyGuard, filmChainGateError } from "@/lib/film-chain-gate";
 
 const IMAGE_EXT_RE = /\.(png|jpe?g|webp|bmp|gif)$/i;
 
@@ -55,10 +55,12 @@ export async function POST(req: NextRequest, { params }: { params: Promise<{ id:
       return apiError(req, "无效的项目ID", "Invalid project id", 400);
     }
     const body = await req.json();
-    // 服务端出片策略门禁：原生整片（含 dryRun 预览）只属于 native-film / 旧项目（按钮显隐不是唯一防线）
+    // 服务端出片策略门禁（fail-closed）：原生整片（含 dryRun 预览）只放行
+    // 明确的 native-film 或「项目存在且无简报」的旧项目；其余一律拒绝
     const gate = await filmChainStrategyGuard(id);
     if (!gate.allowed) {
-      return apiError(req, `出片策略「${gate.strategy}」不允许整片生成`, `Output strategy "${gate.strategy}" does not allow native film generation`, 409);
+      const error = filmChainGateError(gate);
+      return apiError(req, error.zh, error.en, error.status);
     }
     const { scriptId, provider: providerName, model, apiKey, baseUrl, options, characterSheetUrl, dryRun, spendCapUsd, acknowledgeOverCap } = body as {
       scriptId?: string;

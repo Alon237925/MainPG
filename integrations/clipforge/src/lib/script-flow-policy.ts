@@ -47,7 +47,8 @@ export interface ScriptFlowPolicy {
 
 export function resolveScriptFlowPolicy(args: ScriptFlowPolicyArgs): ScriptFlowPolicy {
   const autoMode = !!args.autoMode;
-  // 简报未读定（loading/failed）时不允许任何隐式自动启动：此时 outputStrategy 不可信
+  // 简报未读定（loading/failed）时关闭全部生成动作：自动启动、免费链、整片预览、恢复/重跑
+  // 都不允许——只有「成功读到简报」（含读到 null=旧项目）才算 settled
   const briefSettled = (args.briefState ?? "loaded") === "loaded";
   // uiMode 被刻意忽略：界面模式（小白/导演）绝不能改判出片策略，
   // 否则切换界面会把付费策略降级成免费草稿、或反之改变计费路径。
@@ -57,8 +58,8 @@ export function resolveScriptFlowPolicy(args: ScriptFlowPolicyArgs): ScriptFlowP
         strategy: "draft",
         primaryAction: "draft-auto-finish",
         allowAutoStart: autoMode && briefSettled,
-        allowFreeChain: true,
-        showDraftAction: true,
+        allowFreeChain: briefSettled,
+        showDraftAction: briefSettled,
         showControlledMotionAction: false,
         showNativeFilmAction: false,
       };
@@ -69,7 +70,7 @@ export function resolveScriptFlowPolicy(args: ScriptFlowPolicyArgs): ScriptFlowP
         allowAutoStart: false,
         allowFreeChain: false,
         showDraftAction: false,
-        showControlledMotionAction: true,
+        showControlledMotionAction: briefSettled,
         showNativeFilmAction: false,
       };
     case "native-film":
@@ -80,17 +81,18 @@ export function resolveScriptFlowPolicy(args: ScriptFlowPolicyArgs): ScriptFlowP
         allowFreeChain: false,
         showDraftAction: false,
         showControlledMotionAction: false,
-        showNativeFilmAction: true,
+        showNativeFilmAction: briefSettled,
       };
     default:
       // null / undefined（旧项目）与未知字符串都回退到 legacy：保留原双入口与断点恢复行为。
+      // 但只有简报读定才放开动作；loading/failed 时双入口全部关闭（见上方 briefSettled）。
       return {
         strategy: "legacy",
         primaryAction: "legacy",
         allowAutoStart: autoMode && briefSettled,
-        allowFreeChain: true,
-        showDraftAction: true,
-        showNativeFilmAction: true,
+        allowFreeChain: briefSettled,
+        showDraftAction: briefSettled,
+        showNativeFilmAction: briefSettled,
         showControlledMotionAction: false,
       };
   }

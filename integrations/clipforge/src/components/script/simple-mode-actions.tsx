@@ -44,7 +44,7 @@ export function SimpleModeActions({
 
   return (
     <div className="flex flex-col items-center gap-3">
-      {policy.strategy === "draft" && (
+      {policy.strategy === "draft" && policy.showDraftAction && (
         <>
           <Button size="lg" className="brand-gradient text-white w-full" disabled={busy} onClick={autoFinish}>
             {autoFinishing ? (autoFinishStage || t("autoFinish")) : `⚡ ${t("autoFinish")}`}
@@ -53,7 +53,7 @@ export function SimpleModeActions({
         </>
       )}
 
-      {policy.strategy === "controlled-motion" && (
+      {policy.strategy === "controlled-motion" && policy.showControlledMotionAction && (
         <Link href={`/project/${id}/assets`} className="w-full">
           <Button size="lg" className="brand-gradient text-white w-full" disabled={autoFinishing || aiFilming}>
             进入素材页生成逐镜动态
@@ -61,7 +61,7 @@ export function SimpleModeActions({
         </Link>
       )}
 
-      {policy.strategy === "native-film" && (
+      {policy.strategy === "native-film" && policy.showNativeFilmAction && (
         <>
           <Button size="lg" className="brand-gradient text-white w-full" disabled={busy} onClick={runAiFilm}>
             {t("aiFilmPreviewTitle")}
@@ -70,15 +70,19 @@ export function SimpleModeActions({
         </>
       )}
 
-      {policy.strategy === "legacy" && (
+      {policy.strategy === "legacy" && (policy.showDraftAction || policy.showNativeFilmAction) && (
         <>
           <div className="grid w-full gap-2 sm:grid-cols-2">
-            <Button size="lg" className="brand-gradient text-white w-full" disabled={busy} onClick={autoFinish}>
-              {autoFinishing ? (autoFinishStage || t("autoFinish")) : `⚡ ${t("autoFinish")}`}
-            </Button>
-            <Button size="lg" variant="outline" className="w-full" disabled={busy} onClick={runAiFilm}>
-              {`✨ ${t("aiFilmCta")}`}
-            </Button>
+            {policy.showDraftAction && (
+              <Button size="lg" className="brand-gradient text-white w-full" disabled={busy} onClick={autoFinish}>
+                {autoFinishing ? (autoFinishStage || t("autoFinish")) : `⚡ ${t("autoFinish")}`}
+              </Button>
+            )}
+            {policy.showNativeFilmAction && (
+              <Button size="lg" variant="outline" className="w-full" disabled={busy} onClick={runAiFilm}>
+                {`✨ ${t("aiFilmCta")}`}
+              </Button>
+            )}
           </div>
           <p className="text-center text-xs text-muted-foreground">{t("autoFinishHint")}</p>
           <p className="text-center text-xs text-muted-foreground">
@@ -86,6 +90,14 @@ export function SimpleModeActions({
           </p>
           <p className="text-center text-xs text-muted-foreground/80">{t("aiFilmCostNote")}</p>
         </>
+      )}
+
+      {/* 简报读取失败/未读定（legacy 但全部入口关闭）：不给任何可执行动作，避免误触发 */}
+      {policy.strategy === "legacy" && !policy.showDraftAction && !policy.showNativeFilmAction && (
+        <div className="w-full rounded-xl border border-amber-500/40 bg-amber-500/10 px-4 py-3 text-center">
+          <p className="text-sm font-medium text-amber-500">{t("strategyUnknown")}</p>
+          <p className="mt-1 text-xs text-muted-foreground">{t("strategyUnknownHint")}</p>
+        </div>
       )}
 
       {/* quality reassurance: both paths run the judge panel automatically — Easy mode

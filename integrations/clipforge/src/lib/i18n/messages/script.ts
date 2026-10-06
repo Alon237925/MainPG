@@ -109,6 +109,8 @@ export const script: NamespaceMessages = {
     autoModeTitle: "AI 正在为你出片",
     autoModeHint: "自动完成：写脚本 → 判官团审台词 → 配画面（免费素材）→ 免费 Edge 配音合成。通常 1–3 分钟，完成后直接看成片。",
     autoModeManual: "进入导演模式（任务继续运行）",
+    strategyUnknown: "出片策略未知",
+    strategyUnknownHint: "请刷新页面重试，确认出片策略后再成片。",
     simpleTitle: "脚本好了",
     simpleSubtitle: "看一眼口播文案，没问题就选一种方式成片；想换一版就重新生成",
     simpleGoPro: "进导演模式精修 →",
@@ -242,6 +244,8 @@ export const script: NamespaceMessages = {
     autoJudging: "Judge panel reviewing the lines (weak ones auto-rewritten)\u2026",
     autoJudgeNote: "Before anything renders, the judge panel (pacing / spoken voice / freshness / structure) automatically reviews every line and rewrites the weak ones \u2014 the review itself costs no generation credits",
     autoModeManual: "Enter Director mode (task keeps running)",
+    strategyUnknown: "Output strategy unknown",
+    strategyUnknownHint: "Refresh the page and confirm the output strategy before generating.",
     simpleTitle: "Script ready",
     simpleSubtitle: "Skim the voice-over — happy? Pick a finishing path. Want another take? Regenerate.",
     // AI film chain (storyboard grid → one-call film): the only paid click on this page

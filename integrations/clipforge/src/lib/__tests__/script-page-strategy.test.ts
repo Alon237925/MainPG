@@ -102,6 +102,17 @@ describe("simple 模式：动作区委托给 SimpleModeActions 组件", () => {
     expect(simpleModeActions).toMatch(/runAiFilm/);
     expect(simpleModeActions).toMatch(/策略未记录/);
   });
+
+  it("每个入口都受 policy.show* 旗标约束：简报未读定时不给任何可执行动作", () => {
+    expect(simpleModeActions).toMatch(/policy\.strategy === "draft" && policy\.showDraftAction/);
+    expect(simpleModeActions).toMatch(/policy\.strategy === "controlled-motion" && policy\.showControlledMotionAction/);
+    expect(simpleModeActions).toMatch(/policy\.strategy === "native-film" && policy\.showNativeFilmAction/);
+    expect(simpleModeActions).toMatch(/policy\.strategy === "legacy" && \(policy\.showDraftAction \|\| policy\.showNativeFilmAction\)/);
+    // legacy 且双入口都被关（简报失败）时只显示「策略未知」提示，无任何按钮动作
+    expect(simpleModeActions).toMatch(/!policy\.showDraftAction && !policy\.showNativeFilmAction/);
+    expect(simpleModeActions).toMatch(/t\("strategyUnknown"\)/);
+    expect(simpleModeActions).toMatch(/t\("strategyUnknownHint"\)/);
+  });
 });
 
 describe("pro 模式：策略一致的非主操作", () => {
@@ -208,7 +219,7 @@ describe("纵深门禁：按钮显隐不是唯一防线", () => {
 
   it("startPipeline（autoFinish / 断点续跑 / 重新开始的共同入口）自带 allowFreeChain 门禁", () => {
     const body = sliceFrom("const startPipeline", "const autoFinish");
-    expect(body).toMatch(/if \(!resolveScriptFlowPolicy\(\{ outputStrategy, uiMode, autoMode \}\)\.allowFreeChain\) return;/);
+    expect(body).toMatch(/if \(!resolveScriptFlowPolicy\(\{ outputStrategy, uiMode, autoMode, briefState \}\)\.allowFreeChain\) return;/);
   });
 
   it("attachPipeline 拒绝为免费链禁用项目挂接，轮询中再查最新策略", () => {
@@ -217,18 +228,26 @@ describe("纵深门禁：按钮显隐不是唯一防线", () => {
     expect(body).toMatch(/if \(freeChainForbiddenRef\.current\) \{\s*setAutoFinishing\(false\);\s*return;/);
   });
 
-  it("freeChainForbiddenRef 随 outputStrategy 更新（简报读完前挂接也能止损）", () => {
-    expect(scriptPage).toMatch(/freeChainForbiddenRef\.current = !resolveScriptFlowPolicy\(\{ outputStrategy \}\)\.allowFreeChain;/);
+  it("freeChainForbiddenRef = 简报失败或策略禁止，随两者更新（fail-closed 且不破坏 loading 期挂接）", () => {
+    expect(scriptPage).toMatch(
+      /freeChainForbiddenRef\.current =\s*briefLoadFailed \|\| !resolveScriptFlowPolicy\(\{ outputStrategy \}\)\.allowFreeChain;/
+    );
+    expect(scriptPage).toMatch(/\[outputStrategy, briefLoadFailed\]/);
   });
 
-  it("runAiFilm 自带 showNativeFilmAction 门禁（不修改其九宫格/整片生成逻辑）", () => {
+  it("runAiFilm 自带 showNativeFilmAction 门禁（含 briefState，不修改其九宫格/整片生成逻辑）", () => {
     const body = sliceFrom("const runAiFilm", "// Phase 2");
-    expect(body).toMatch(/if \(!resolveScriptFlowPolicy\(\{ outputStrategy \}\)\.showNativeFilmAction\) return;/);
+    expect(body).toMatch(/if \(!resolveScriptFlowPolicy\(\{ outputStrategy, briefState \}\)\.showNativeFilmAction\) return;/);
   });
 
-  it("confirmAiFilm 在付费提交前同样校验 showNativeFilmAction", () => {
+  it("confirmAiFilm 在付费提交前同样校验 showNativeFilmAction（含 briefState）", () => {
     const body = sliceFrom("const confirmAiFilm", "// switching scripts");
-    expect(body).toMatch(/if \(!resolveScriptFlowPolicy\(\{ outputStrategy \}\)\.showNativeFilmAction\) return;/);
+    expect(body).toMatch(/if \(!resolveScriptFlowPolicy\(\{ outputStrategy, briefState \}\)\.showNativeFilmAction\) return;/);
+  });
+
+  it("autoFinish 函数体同样带 briefState 门控", () => {
+    const body = autoFinishBody();
+    expect(body).toMatch(/resolveScriptFlowPolicy\(\{ outputStrategy, uiMode, autoMode, briefState \}\)/);
   });
 });
 
