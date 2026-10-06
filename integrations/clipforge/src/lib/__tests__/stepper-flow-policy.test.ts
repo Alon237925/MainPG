@@ -14,12 +14,10 @@ describe("resolveStepperSteps：draft（免费草稿）", () => {
     expect(statusOf(rows, "export")).toBe("main");
   });
 
-  it("素材/视频的可选提示说明「已跳过时可手动进入」", () => {
+  it("素材/视频的可选提示经 i18n key 给出（已跳过/手动进入语义在文案里）", () => {
     const rows = resolveStepperSteps("draft");
-    expect(hintOf(rows, "assets")).toContain("已跳过");
-    expect(hintOf(rows, "assets")).toContain("手动进入");
-    expect(hintOf(rows, "video")).toContain("已跳过");
-    expect(hintOf(rows, "video")).toContain("合成");
+    expect(hintOf(rows, "assets")).toBe("stepDraftAssetsHint");
+    expect(hintOf(rows, "video")).toBe("stepDraftVideoHint");
   });
 });
 
@@ -42,12 +40,11 @@ describe("resolveStepperSteps：native-film（原生整片）", () => {
     expect(statusOf(rows, "export")).toBe("main");
   });
 
-  it("脚本提示整片在脚本页预览确认，素材/视频标为可选工具", () => {
+  it("脚本/素材/视频的提示经 i18n key 给出", () => {
     const rows = resolveStepperSteps("native-film");
-    expect(hintOf(rows, "script")).toContain("脚本页预览确认");
-    expect(hintOf(rows, "assets")).toContain("可选工具");
-    expect(hintOf(rows, "video")).toContain("可选工具");
-    expect(hintOf(rows, "video")).toContain("本地合成");
+    expect(hintOf(rows, "script")).toBe("stepFilmScriptHint");
+    expect(hintOf(rows, "assets")).toBe("stepFilmAssetsHint");
+    expect(hintOf(rows, "video")).toBe("stepFilmVideoHint");
   });
 });
 

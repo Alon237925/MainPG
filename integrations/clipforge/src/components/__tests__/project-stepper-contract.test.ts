@@ -24,9 +24,30 @@ describe("ProjectStepper 接受并消费 outputStrategy", () => {
     expect(stepper).toMatch(/import\s*\{[^}]*resolveStepperSteps[^}]*\}\s*from\s+"@\/lib\/stepper-flow-policy"/);
   });
 
-  it("主路径 / 可选徽标文案以中文字面量渲染（不新增 i18n key）", () => {
-    expect(stepper).toContain("主路径");
-    expect(stepper).toContain("可选");
+  it("主路径 / 可选徽标经 useT 解析（不写死任何语言），common 中英双语都有", () => {
+    expect(stepper).toMatch(/t\(statusChipKey\(/);
+    expect(stepper).toContain("stepMainChip");
+    expect(stepper).toContain("stepOptionalChip");
+    expect(stepper).not.toMatch(/["'`]主路径["'`]|["'`]可选["'`]/);
+    const common = read("src/lib/i18n/messages/common.ts");
+    expect(common).toContain('stepMainChip: "主路径"');
+    expect(common).toContain('stepMainChip: "Main path"');
+    expect(common).toContain('stepOptionalChip: "可选"');
+    expect(common).toContain('stepOptionalChip: "Optional"');
+  });
+
+  it("draft / native-film 的提示经 i18n key 渲染，双语文案齐备", () => {
+    expect(stepper).toMatch(/currentView\?\.hint \? t\(currentView\.hint\)/);
+    const common = read("src/lib/i18n/messages/common.ts");
+    for (const key of ["stepDraftAssetsHint", "stepDraftVideoHint", "stepFilmScriptHint", "stepFilmAssetsHint", "stepFilmVideoHint"]) {
+      expect(stepper).not.toContain(key); // 组件不写死 key 之外的文案
+      expect(common).toContain(`${key}: "`);
+    }
+  });
+
+  it("移动端徽标同样显示当前步的策略状态（主路径/可选）", () => {
+    const mobile = stepper.slice(stepper.indexOf("sm:hidden"), stepper.indexOf("sm:hidden") + 600);
+    expect(mobile).toMatch(/currentView\?\.status && \(\s*<span[^>]*>\s*\{t\(statusChipKey\(currentView\.status\)\)\}/);
   });
 });
 

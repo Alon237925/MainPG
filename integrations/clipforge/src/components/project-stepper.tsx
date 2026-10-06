@@ -14,11 +14,9 @@ const STEPS = [
   { key: "stepExport", path: "export" },
 ] as const;
 
-// 徽标中文文案（直写字面量，避免新增 i18n key），与 resolveStepperSteps 的状态对齐
-const STATUS_CHIPS: Record<NonNullable<StepperStepView["status"]>, string> = {
-  main: "主路径",
-  optional: "可选",
-};
+// 徽标与提示都走 i18n（common 命名空间），中英文自动跟随语言设置
+const statusChipKey = (status: NonNullable<StepperStepView["status"]>) =>
+  status === "main" ? "stepMainChip" : "stepOptionalChip";
 
 /**
  * Clickable four-step progress pills shared by the project pipeline pages
@@ -49,7 +47,7 @@ export function ProjectStepper({ outputStrategy }: { outputStrategy?: OutputStra
   const views = resolveStepperSteps(outputStrategy);
   const viewByPath = new Map(views.map((view) => [view.key, view]));
   const currentView = viewByPath.get(STEPS[current].path);
-  const currentHint = currentView?.hint;
+  const currentHint = currentView?.hint ? t(currentView.hint) : undefined;
 
   return (
     <>
@@ -59,6 +57,11 @@ export function ProjectStepper({ outputStrategy }: { outputStrategy?: OutputStra
           {current + 1}
         </span>
         {t(STEPS[current].key)}
+        {currentView?.status && (
+          <span className="rounded-sm bg-white/20 px-1 text-[10px] leading-4">
+            {t(statusChipKey(currentView.status))}
+          </span>
+        )}
         <span className="text-primary-foreground/60">{current + 1}/{STEPS.length}</span>
       </div>
       {/* desktop: full pills; every step links to its page for free navigation */}
@@ -66,7 +69,7 @@ export function ProjectStepper({ outputStrategy }: { outputStrategy?: OutputStra
         <div className="flex items-center gap-1">
           {STEPS.map((step, i) => {
             const view = viewByPath.get(step.path);
-            const chip = view?.status ? STATUS_CHIPS[view.status] : null;
+            const chip = view?.status ? t(statusChipKey(view.status)) : null;
             return (
               <div key={step.key} className="flex items-center">
                 <Link
