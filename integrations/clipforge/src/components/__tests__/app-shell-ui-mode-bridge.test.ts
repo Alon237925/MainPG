@@ -30,4 +30,9 @@ describe("AppShell uiMode 桥接：来源与守卫", () => {
       shell,
     ).toMatch(/useEffect\(\(\) => \{\s*if \(window\.parent === window\) return;[\s\S]*?postMessage\(\{ type: MAINPG_EMBED_UI_MODE_STATE, uiMode \}, "\*"\)/);
   });
+
+  it("挂载不抢先回报本地 uiMode：首条被跳过，只有真实变化才回报（避免覆盖父侧权威模式）", () => {
+    expect(shell).toMatch(/const uiModeStateSent = useRef\(false\)/);
+    expect(shell).toMatch(/if \(!uiModeStateSent\.current\) \{[\s\S]*?uiModeStateSent\.current = true;[\s\S]*?return;/);
+  });
 });

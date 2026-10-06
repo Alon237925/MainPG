@@ -308,3 +308,14 @@ test("renders the two-segment 小白/导演 mode switch in the header", () => {
   assert.match(page, /aria-pressed=\{uiMode === "simple"\}/);
   assert.match(page, /aria-pressed=\{uiMode === "pro"\}/);
 });
+
+test("uiMode 首次握手由父侧权威推进：先下发、后接受 iframe 回报", () => {
+  // 下发标记：父侧成功下发过一次 set 之前，绝不接受 iframe 的本地模式回报
+  assert.match(page, /const uiModeSetSentRef = useRef\(false\)/);
+  assert.match(page, /postAiVideoUiModeSet\(frameRef\.current, iframeOrigin, uiMode\);\s*uiModeSetSentRef\.current = true;/);
+  assert.match(page, /data\.type === AI_VIDEO_UI_MODE_STATE_MESSAGE &&\s*isAiVideoUiMode\(data\.uiMode\) &&\s*uiModeSetSentRef\.current/);
+});
+
+test("换实例归零下发标记，等新 iframe 完成第一次握手后再接受回报", () => {
+  assert.match(page, /uiModeSetSentRef\.current = false;[\s\S]*?\}, \[instanceKey\]\)/);
+});

@@ -152,18 +152,23 @@ export function AiVideoPage() {
   const frameRef = useRef<HTMLIFrameElement | null>(null);
   // message 监听需要读到最新导航状态，用 ref 与 state 同步提交，避免把副作用塞进 setState 更新函数。
   const navStateRef = useRef<AiVideoNavState>(AI_VIDEO_NAV_INITIAL_STATE);
+  // uiMode 权威下发标记：父侧成功下发过一次 set 之前，绝不吃 iframe 的本地模式回报，
+  // 否则 iframe 会先回报自己 localStorage 里的模式、覆盖父页面保存的权威 uiMode。
+  const uiModeSetSentRef = useRef(false);
   const iframeOrigin = clipForgeOrigin(status?.url);
   // 服务健康与 bridge 健康是两件事：前者看后端状态，后者只看 iframe 是否回报过可信 location。
   const instanceKey = clipForgeInstanceKey(status);
   const serviceReady = canEmbedClipForge(status);
   const bridgeReady = navState.ready;
 
-  // 实例变化（新 instanceId 或新端口）意味着换了 sidecar 进程：旧 iframe 文档与导航态全部作废。
+  // 实例变化（新 instanceId 或新端口）意味着换了 sidecar 进程：旧 iframe 文档与导航态全部作废，
+  // uiMode 下发标记也归零，等新 iframe 的第一次握手后再接受它的回报。
   useEffect(() => {
     const reset = resetAiVideoNavForInstance(navStateRef.current);
     navStateRef.current = reset;
     setNavState(reset);
     setBridgeTimedOut(false);
+    uiModeSetSentRef.current = false;
   }, [instanceKey]);
 
   // 界面模式每一次变化都写回本地持久化；写失败（局部存储被禁用）时静默忽略，切换仍然可用。
@@ -180,6 +185,7 @@ export function AiVideoPage() {
   useEffect(() => {
     if (!bridgeReady || !iframeOrigin) return;
     postAiVideoUiModeSet(frameRef.current, iframeOrigin, uiMode);
+    uiModeSetSentRef.current = true;
   }, [uiMode, bridgeReady, instanceKey, iframeOrigin]);
 
   // 统一提交状态迁移：写入 ref 与 state，并在需要时把跳转指令发给 iframe。
@@ -203,8 +209,14 @@ export function AiVideoPage() {
       if (event.source !== frameRef.current?.contentWindow) return;
       const data = event.data as { type?: unknown; pathname?: unknown; uiMode?: unknown } | null;
       if (!data || data.type !== AI_VIDEO_LOCATION_MESSAGE) {
-        // uiMode 回报：同样只信当前 iframe 同源消息，且 uiMode 必须通过白名单校验后才落地。
-        if (data && data.type === AI_VIDEO_UI_MODE_STATE_MESSAGE && isAiVideoUiMode(data.uiMode)) {
+        // uiMode 回报：同样只信当前 iframe 同源消息、白名单校验通过、且父侧已完成第一次
+        // 权威下发之后才落地——防止 iframe 挂载时的本地模式抢先覆盖父页面保存的模式。
+        if (
+          data &&
+          data.type === AI_VIDEO_UI_MODE_STATE_MESSAGE &&
+          isAiVideoUiMode(data.uiMode) &&
+          uiModeSetSentRef.current
+        ) {
           setUiMode(data.uiMode);
         }
         return;

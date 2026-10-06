@@ -1,6 +1,6 @@
 "use client";
 
-import { useEffect, useState } from "react";
+import { useEffect, useRef, useState } from "react";
 import Link from "next/link";
 import { usePathname, useRouter } from "next/navigation";
 import { LanguageToggle } from "@/components/language-toggle";
@@ -143,9 +143,15 @@ export function AppShell({ children, embedded }: { children: React.ReactNode; em
     window.parent.postMessage({ type: MAINPG_EMBED_LOCATION, pathname }, "*");
   }, [pathname]);
 
-  // uiMode 变化（用户切换或脚本页 setUiMode）都回报父窗口，独立壳不参与
+  // uiMode 变化才回报父窗口；挂载后的第一条不回发——本壳本地持久化的模式不能抢先覆盖
+  // 父侧保存的权威模式，必须等父侧下发 set 之后、发生真实变化时才回报。
+  const uiModeStateSent = useRef(false);
   useEffect(() => {
     if (window.parent === window) return;
+    if (!uiModeStateSent.current) {
+      uiModeStateSent.current = true;
+      return;
+    }
     window.parent.postMessage({ type: MAINPG_EMBED_UI_MODE_STATE, uiMode }, "*");
   }, [uiMode]);
 
